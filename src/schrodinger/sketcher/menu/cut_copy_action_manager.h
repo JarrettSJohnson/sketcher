@@ -14,6 +14,12 @@ namespace sketcher
 class SketcherModel;
 enum class SceneSubset;
 
+/**
+ * Categories used to tag Copy As menu actions so the menu can be filtered to
+ * the formats relevant to the current scene contents.
+ */
+enum class CopyFormatCategory : int { ATOMISTIC, REACTION, MONOMERIC };
+
 class SKETCHER_API CutCopyActionManager : public QWidget
 {
     Q_OBJECT
@@ -48,7 +54,9 @@ class SKETCHER_API CutCopyActionManager : public QWidget
     SceneSubset getSubset();
 
     /**
-     * Initializes the Copy As menu with both standard and reaction formats
+     * Initializes the Copy As menu with atomistic, reaction, and monomeric
+     * formats. Visibility is filtered by updateActions() based on the
+     * current scene contents.
      */
     void initCopyAsMenu();
 

@@ -65,7 +65,7 @@ SceneSubset CutCopyActionManager::getSubset()
 
 void CutCopyActionManager::initCopyAsMenu()
 {
-    auto init_menu = [&](const auto& format_list, bool is_reaction_format) {
+    auto init_menu = [&](const auto& format_list, CopyFormatCategory category) {
         for (const auto& format : format_list) {
             // Clang < 16 does not allow capturing structured bindings, so
             // we'll extract "manually".
@@ -74,13 +74,14 @@ void CutCopyActionManager::initCopyAsMenu()
             auto slot = [this, fmt]() { emit copyRequested(fmt, getSubset()); };
             auto action = m_copy_as_menu->addAction(
                 QString::fromStdString(label), this, slot);
-            // set a flag on the action to determine its visibility later
-            action->setData(QVariant(is_reaction_format));
+            // tag the action so it can be shown/hidden based on scene contents
+            action->setData(QVariant(static_cast<int>(category)));
         }
     };
 
-    init_menu(get_standard_export_formats(), false);
-    init_menu(get_reaction_export_formats(), true);
+    init_menu(get_standard_export_formats(), CopyFormatCategory::ATOMISTIC);
+    init_menu(get_reaction_export_formats(), CopyFormatCategory::REACTION);
+    init_menu(get_monomeric_export_formats(), CopyFormatCategory::MONOMERIC);
 
     // Add a separator and the option to export as an image
     auto separator = m_copy_as_menu->addSeparator();
@@ -115,13 +116,22 @@ void CutCopyActionManager::updateActions()
         show_reaction = m_sketcher_model->allItemsSelected();
     }
 
+    // Pick the format category that matches the current scene contents
+    CopyFormatCategory active_category = CopyFormatCategory::ATOMISTIC;
+    if (m_sketcher_model->getMoleculeType() == MoleculeType::MONOMERIC) {
+        active_category = CopyFormatCategory::MONOMERIC;
+    } else if (show_reaction) {
+        active_category = CopyFormatCategory::REACTION;
+    }
+
     for (auto act : m_copy_as_menu->actions()) {
         if (m_hide_for_selections.contains(act)) {
             // export as image and its separator, only show for full scene
             act->setVisible(!export_selection);
         } else {
-            // structure vs reaction formats
-            act->setVisible(act->data().toBool() == show_reaction);
+            auto act_category =
+                static_cast<CopyFormatCategory>(act->data().toInt());
+            act->setVisible(act_category == active_category);
         }
     }
 }

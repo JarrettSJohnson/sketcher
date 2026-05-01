@@ -49,10 +49,12 @@ SKETCHER_API FormatList<rdkit_extensions::Format> get_import_formats();
 
 /**
  * @return list of exportable (format enum, menu label, allowable extensions)
- *  for both standard molecules, reactions, and image formats
+ *  for standard molecules, reactions, monomeric models, and image formats
  */
 SKETCHER_API FormatList<rdkit_extensions::Format> get_standard_export_formats();
 SKETCHER_API FormatList<rdkit_extensions::Format> get_reaction_export_formats();
+SKETCHER_API FormatList<rdkit_extensions::Format>
+get_monomeric_export_formats();
 SKETCHER_API FormatList<ImageFormat> get_image_export_formats();
 
 /**

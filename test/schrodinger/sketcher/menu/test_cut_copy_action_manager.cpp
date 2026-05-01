@@ -42,22 +42,27 @@ BOOST_AUTO_TEST_CASE(test_updateActions)
     BOOST_TEST(mgr.m_copy_action->text().toStdString() == "Copy");
     BOOST_TEST(mgr.m_copy_as_menu->title().toStdString() == "Copy As");
 
-    // All formats are present as actions, we just show/hide based on whether
-    // there is a mol or a reaction present
+    // All formats are present as actions, we just show/hide based on the
+    // active scene contents (mol vs reaction vs monomer)
     BOOST_TEST(mgr.m_copy_as_menu->actions().size() ==
                get_standard_export_formats().size() +
                    get_reaction_export_formats().size() +
+                   get_monomeric_export_formats().size() +
                    2); // + (separator + image)
 
-    // confirm copy as menu toggles based on reactions
-    auto reaction_actions_visible = [&mgr](bool expect_reaction) {
+    // Confirm copy as menu only shows actions tagged with the expected
+    // category. The image action and its separator follow a separate rule
+    // (only visible during "Copy All As").
+    auto category_actions_visible = [&mgr](CopyFormatCategory expected_cat) {
         for (auto act : mgr.m_copy_as_menu->actions()) {
-            bool expected = act->data().toBool() == expect_reaction;
-            // copy as image (and its separator) are only visible for Copy All
-            // As
+            bool expected;
             if (act->isSeparator() || act->text() == "Image") {
                 expected =
                     mgr.m_copy_as_menu->title().toStdString() == "Copy All As";
+            } else {
+                auto act_cat =
+                    static_cast<CopyFormatCategory>(act->data().toInt());
+                expected = (act_cat == expected_cat);
             }
             if (act->isVisible() != expected) {
                 return false;
@@ -71,36 +76,49 @@ BOOST_AUTO_TEST_CASE(test_updateActions)
         mol_model->select({atom}, {}, {}, {}, {}, SelectMode::SELECT_ONLY);
     };
 
-    BOOST_TEST(reaction_actions_visible(false));
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::ATOMISTIC));
     mol_model->clear();
-    BOOST_TEST(reaction_actions_visible(false));
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::ATOMISTIC));
     sk.addFromString("CC>>CC");
-    BOOST_TEST(reaction_actions_visible(true));
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::REACTION));
     select_one_atom();
-    BOOST_TEST(reaction_actions_visible(false));
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::ATOMISTIC));
     mol_model->selectAll();
-    BOOST_TEST(reaction_actions_visible(true));
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::REACTION));
     mol_model->clear();
-    BOOST_TEST(reaction_actions_visible(false));
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::ATOMISTIC));
     sk.addFromString("CC");
-    BOOST_TEST(reaction_actions_visible(false));
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::ATOMISTIC));
+
+    // monomeric content swaps to the monomeric category
+    mol_model->clear();
+    sk.addFromString("PEPTIDE1{A.G.L}$$$$V2.0");
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::MONOMERIC));
+    mol_model->clear();
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::ATOMISTIC));
 
     // background context menu always "Copy All"
     mgr.setAlwaysCopyAll(true);
 
-    BOOST_TEST(reaction_actions_visible(false));
-    mol_model->clear();
-    BOOST_TEST(reaction_actions_visible(false));
-    sk.addFromString("CC>>CC");
-    BOOST_TEST(reaction_actions_visible(true));
-    select_one_atom();
-    BOOST_TEST(reaction_actions_visible(true)); // ignores selection
-    mol_model->selectAll();
-    BOOST_TEST(reaction_actions_visible(true)); // ignores selection
-    mol_model->clear();
-    BOOST_TEST(reaction_actions_visible(false));
     sk.addFromString("CC");
-    BOOST_TEST(reaction_actions_visible(false));
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::ATOMISTIC));
+    mol_model->clear();
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::ATOMISTIC));
+    sk.addFromString("CC>>CC");
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::REACTION));
+    select_one_atom();
+    BOOST_TEST(
+        category_actions_visible(CopyFormatCategory::REACTION)); // ignores sel
+    mol_model->selectAll();
+    BOOST_TEST(
+        category_actions_visible(CopyFormatCategory::REACTION)); // ignores sel
+    mol_model->clear();
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::ATOMISTIC));
+    sk.addFromString("CC");
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::ATOMISTIC));
+    mol_model->clear();
+    sk.addFromString("PEPTIDE1{A.G.L}$$$$V2.0");
+    BOOST_TEST(category_actions_visible(CopyFormatCategory::MONOMERIC));
 }
 
 } // namespace sketcher

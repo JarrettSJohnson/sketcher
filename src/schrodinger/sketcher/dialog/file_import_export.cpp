@@ -116,6 +116,18 @@ FormatList<Format> get_reaction_export_formats()
     return export_formats;
 };
 
+FormatList<Format> get_monomeric_export_formats()
+{
+    // Format::FASTA is the only writable FASTA format - the peptide/DNA/RNA
+    // subtypes are read-only and throw on write. HELM and FASTA aren't
+    // registered in rdkit_extensions::get_mol_extensions, so we attach
+    // extensions explicitly here for downstream file-dialog use.
+    return {
+        {Format::HELM, "HELM", {".helm"}},
+        {Format::FASTA, "FASTA", {".fasta"}},
+    };
+};
+
 // We define get_image_formats as a function for consistency with
 // the above, even though it doesn't depend on any other values
 FormatList<ImageFormat> get_image_export_formats()

@@ -91,10 +91,12 @@ MoreActionsMenu::MoreActionsMenu(SketcherModel* model, QWidget* parent) :
     m_flip_horizontal_act =
         m_modify_structure_menu->addAction("Flip Horizontal");
     m_flip_vertical_act = m_modify_structure_menu->addAction("Flip Vertical");
-    m_modify_structure_menu->addSeparator();
+    m_modify_structure_separator_before_aromatize =
+        m_modify_structure_menu->addSeparator();
     m_aromatize_act = m_modify_structure_menu->addAction("Aromatize");
     m_kekulize_act = m_modify_structure_menu->addAction("Kekulize");
-    m_modify_structure_menu->addSeparator();
+    m_modify_structure_separator_before_hydrogens =
+        m_modify_structure_menu->addSeparator();
     m_add_explicit_hydrogens_act =
         m_modify_structure_menu->addAction("Add Explicit Hydrogens");
     m_remove_explicit_hydrogens_act =

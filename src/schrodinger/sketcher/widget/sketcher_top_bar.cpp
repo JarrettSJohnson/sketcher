@@ -194,10 +194,13 @@ void SketcherTopBar::updateWidgetsEnabled()
     }
 
     auto has_monomers = model->getMoleculeType() == MoleculeType::MONOMERIC;
-    for (auto act : {m_more_actions_menu->m_aromatize_act,
-                     m_more_actions_menu->m_kekulize_act,
-                     m_more_actions_menu->m_add_explicit_hydrogens_act,
-                     m_more_actions_menu->m_remove_explicit_hydrogens_act}) {
+    for (auto act :
+         {m_more_actions_menu->m_aromatize_act,
+          m_more_actions_menu->m_kekulize_act,
+          m_more_actions_menu->m_add_explicit_hydrogens_act,
+          m_more_actions_menu->m_remove_explicit_hydrogens_act,
+          m_more_actions_menu->m_modify_structure_separator_before_aromatize,
+          m_more_actions_menu->m_modify_structure_separator_before_hydrogens}) {
         act->setVisible(!has_monomers);
     }
     m_more_actions_menu->m_select_all_act->setEnabled(

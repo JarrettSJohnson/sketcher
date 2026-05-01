@@ -51,8 +51,10 @@ class SKETCHER_API MoreActionsMenu : public QMenu
 
     QAction* m_flip_horizontal_act = nullptr;
     QAction* m_flip_vertical_act = nullptr;
+    QAction* m_modify_structure_separator_before_aromatize = nullptr;
     QAction* m_aromatize_act = nullptr;
     QAction* m_kekulize_act = nullptr;
+    QAction* m_modify_structure_separator_before_hydrogens = nullptr;
     QAction* m_add_explicit_hydrogens_act = nullptr;
     QAction* m_remove_explicit_hydrogens_act = nullptr;
 };
