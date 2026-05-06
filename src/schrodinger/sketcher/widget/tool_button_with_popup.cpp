@@ -18,6 +18,7 @@ namespace sketcher
 
 ToolButtonWithPopup::ToolButtonWithPopup(QWidget* parent) : QToolButton(parent)
 {
+    setAttribute(Qt::WA_Hover, true);
     m_popup_timer = new QTimer(this);
     m_popup_timer->setSingleShot(true);
     m_popup_timer->setInterval(m_popup_delay);
@@ -37,7 +38,9 @@ void ToolButtonWithPopup::paintEvent(QPaintEvent* event)
     QStylePainter p(this);
     QStyleOptionToolButton opt;
     initStyleOption(&opt);
-    if (m_show_corner_arrow) {
+    bool hovered = opt.state & QStyle::State_MouseOver;
+    if (m_show_corner_arrow ||
+        (m_show_corner_arrow_on_hover && hovered && isEnabled())) {
         opt.features |= QStyleOptionToolButton::HasMenu;
     }
     p.drawComplexControl(QStyle::CC_ToolButton, opt);
@@ -70,6 +73,16 @@ void ToolButtonWithPopup::showPopupIndicator(bool show)
 {
     m_show_corner_arrow = show;
     updateStyle();
+}
+
+void ToolButtonWithPopup::showPopupIndicatorOnHover(bool show)
+{
+    if (m_show_corner_arrow_on_hover == show) {
+        return;
+    }
+    m_show_corner_arrow_on_hover = show;
+    updateStyle();
+    update();
 }
 
 void ToolButtonWithPopup::showPopup()
@@ -131,7 +144,7 @@ void ToolButtonWithPopup::setStyleSheet(QString text)
 void ToolButtonWithPopup::updateStyle()
 {
     QString style;
-    if (m_show_corner_arrow) {
+    if (m_show_corner_arrow || m_show_corner_arrow_on_hover) {
         style.append(TOOL_BUTTON_CORNER_ARROW_STYLE);
     }
     style.append(m_custom_style_sheet);
