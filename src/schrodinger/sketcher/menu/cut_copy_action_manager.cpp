@@ -40,9 +40,10 @@ void CutCopyActionManager::setModel(SketcherModel* model)
     // Postpone connecting actions until the model is set since copy
     // queries the model to determine which subset value to emit
     connect(m_cut_action, &QAction::triggered, this,
-            [this]() { emit cutRequested(DEFAULT_FORMAT); });
-    connect(m_copy_action, &QAction::triggered, this,
-            [this]() { emit copyRequested(DEFAULT_FORMAT, getSubset()); });
+            [this]() { emit cutRequested(getCutCopyFormat()); });
+    connect(m_copy_action, &QAction::triggered, this, [this]() {
+        emit copyRequested(getCutCopyFormat(), getSubset());
+    });
     initCopyAsMenu();
 
     // Initialize
@@ -61,6 +62,14 @@ SceneSubset CutCopyActionManager::getSubset()
     } else {
         return SceneSubset::SELECTION;
     }
+}
+
+Format CutCopyActionManager::getCutCopyFormat() const
+{
+    if (m_sketcher_model->getMoleculeType() == MoleculeType::MONOMERIC) {
+        return Format::HELM;
+    }
+    return DEFAULT_FORMAT;
 }
 
 void CutCopyActionManager::initCopyAsMenu()
