@@ -207,6 +207,21 @@ function drawSketch(
     const BOND_STROKE = 2;
     const BOND_DOUBLE_OFFSET = 4.5;
 
+    // Centroid of all atoms — used to pick the "inside" side for aromatic
+    // inner-dashed lines so a benzene ring shows three inward dashes (the
+    // classic look). Falls back to the geometric origin for an empty mol.
+    let centroidX = 0;
+    let centroidY = 0;
+    for (const a of rd.atoms) {
+        centroidX += a.x;
+        centroidY += a.y;
+    }
+    if (rd.atoms.length > 0) {
+        centroidX /= rd.atoms.length;
+        centroidY /= rd.atoms.length;
+    }
+    const centroidPx = pixelFromModel(canvas, centroidX, centroidY);
+
     for (let i = 0; i < rd.bonds.length; ++i) {
         const b = rd.bonds[i];
         const p1 = pixelFromModel(canvas, rd.atoms[b.a].x, rd.atoms[b.a].y);
@@ -263,6 +278,47 @@ function drawSketch(
                 ctx.lineTo(cx - px * halfW, cy - py2 * halfW);
                 ctx.stroke();
             }
+        } else if (b.arom) {
+            // Aromatic: plain solid line PLUS an inner dashed line offset
+            // toward the molecule centroid. Replaces both the single-stroke
+            // path and the would-be double-stroke (RDKit reports aromatic
+            // bonds as b.o = 1.5, which doesn't enter the 2/3 branch below).
+            ctx.lineWidth = BOND_STROKE;
+            ctx.beginPath();
+            ctx.moveTo(p1.px, p1.py);
+            ctx.lineTo(p2.px, p2.py);
+            ctx.stroke();
+
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy);
+            // Unit perpendicular to the bond direction.
+            const nx = -dy / len;
+            const ny = dx / len;
+            // Bond midpoint → centroid: pick the offset sign whose dot
+            // product with the perpendicular is positive (i.e. the side
+            // that points toward the rest of the molecule).
+            const mx = (p1.px + p2.px) / 2;
+            const my = (p1.py + p2.py) / 2;
+            const sign = nx * (centroidPx.px - mx) + ny * (centroidPx.py - my) >= 0
+                ? 1
+                : -1;
+            const ox = nx * BOND_DOUBLE_OFFSET * sign;
+            const oy = ny * BOND_DOUBLE_OFFSET * sign;
+            // Shrink the inner line slightly along the bond so it doesn't
+            // collide with adjacent bonds at the ring vertices.
+            const shrink = 0.18;
+            const sx1 = p1.px + dx * shrink + ox;
+            const sy1 = p1.py + dy * shrink + oy;
+            const sx2 = p1.px + dx * (1 - shrink) + ox;
+            const sy2 = p1.py + dy * (1 - shrink) + oy;
+            ctx.setLineDash([5, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(sx1, sy1);
+            ctx.lineTo(sx2, sy2);
+            ctx.stroke();
+            ctx.setLineDash([]);
         } else {
             ctx.lineWidth = BOND_STROKE;
             ctx.beginPath();
@@ -270,7 +326,7 @@ function drawSketch(
             ctx.lineTo(p2.px, p2.py);
             ctx.stroke();
         }
-        if (b.o === 2 || b.o === 3) {
+        if (!b.arom && (b.o === 2 || b.o === 3)) {
             const dx = p2.px - p1.px;
             const dy = p2.py - p1.py;
             const len = Math.hypot(dx, dy);
