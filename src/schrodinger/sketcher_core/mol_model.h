@@ -121,6 +121,21 @@ class MolModel : public UndoableModel
      */
     void adjustChargeOnSelectedAtoms(int delta);
 
+    /**
+     * Replace the entire mol with the parsed SMILES, computing 2D coords +
+     * wedge bonds so the new structure is renderable. Single undo step
+     * (snapshot-based); throws std::invalid_argument if the SMILES is
+     * unparseable (caller decides whether to surface that to the user).
+     */
+    void loadFromSmiles(const std::string& smiles);
+
+    /**
+     * Serialize the current mol as a SMILES string. Returns an empty string
+     * for an empty mol. RDKit writes non-Kekulé canonical SMILES by default;
+     * stereo is preserved.
+     */
+    std::string toSmiles() const;
+
     // -- Selection --------------------------------------------------------
     // Selection is transient UI state, not undoable. Any mutation that may
     // reindex atoms/bonds clears it (matching the simplest correct policy

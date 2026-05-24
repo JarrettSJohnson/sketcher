@@ -615,3 +615,79 @@ BOOST_AUTO_TEST_CASE(testAdjustChargeNoOpWhenNothingSelectedOrDeltaZero)
     m.adjustChargeOnSelectedAtoms(0); // delta=0
     BOOST_CHECK_EQUAL(stack.count(), count_before);
 }
+
+BOOST_AUTO_TEST_CASE(testLoadFromSmilesReplacesMolWithCoords)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    // Pre-populate with a stray atom — load should fully replace it.
+    m.addAtom("F", 99, 99);
+    BOOST_CHECK_EQUAL(m.numAtoms(), 1u);
+
+    m.loadFromSmiles("CCO");
+    BOOST_CHECK_EQUAL(m.numAtoms(), 3u);
+    BOOST_CHECK_EQUAL(m.numBonds(), 2u);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getSymbol(), "C");
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getSymbol(), "C");
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(2)->getSymbol(), "O");
+
+    // compute2DCoords should have placed atoms at non-degenerate positions.
+    double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    m.atomPos(0, x0, y0);
+    m.atomPos(1, x1, y1);
+    BOOST_CHECK(std::abs(x0 - x1) + std::abs(y0 - y1) > 0.1);
+
+    // Undo restores the prior single-fluorine state.
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 1u);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getSymbol(), "F");
+}
+
+BOOST_AUTO_TEST_CASE(testLoadFromSmilesThrowsOnGarbage)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    BOOST_CHECK_THROW(m.loadFromSmiles("not a smiles!!!"),
+                      std::invalid_argument);
+    // Failure must leave the model untouched and not push an undo step.
+    BOOST_CHECK(m.isEmpty());
+    BOOST_CHECK_EQUAL(stack.count(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(testToSmilesEmpty)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    BOOST_CHECK_EQUAL(m.toSmiles(), "");
+}
+
+BOOST_AUTO_TEST_CASE(testToSmilesRoundTripsBenzene)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("c1ccccc1");
+    const auto out = m.toSmiles();
+    // Canonical form is c1ccccc1 (lowercase aromatic).
+    BOOST_CHECK_EQUAL(out, "c1ccccc1");
+}
+
+BOOST_AUTO_TEST_CASE(testToSmilesIncludesFormalCharge)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("N", 0, 0);
+    m.addAtom("H", 1.0, 0);
+    m.addAtom("H", 0, 1.0);
+    m.addAtom("H", -1.0, 0);
+    m.addAtom("H", 0, -1.0);
+    m.addBond(0, 1);
+    m.addBond(0, 2);
+    m.addBond(0, 3);
+    m.addBond(0, 4);
+    m.setAtomSelected(0, true);
+    m.adjustChargeOnSelectedAtoms(+1); // NH4+
+    const auto out = m.toSmiles();
+    // [NH4+] is the canonical form for ammonium when written from atoms.
+    BOOST_CHECK(out.find("NH4+") != std::string::npos ||
+                out.find("N+") != std::string::npos);
+}

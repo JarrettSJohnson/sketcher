@@ -25,6 +25,10 @@ export interface MolModelInstance {
     setBondDirForSelectedBonds(dir: number): void;
     addRing(size: number, cx: number, cy: number, aromatic: boolean): void;
     adjustChargeOnSelectedAtoms(delta: number): void;
+    /** Replace mol with parsed SMILES. Throws if SMILES is malformed. */
+    loadFromSmiles(smiles: string): void;
+    /** Canonical SMILES for the current mol; empty string if mol is empty. */
+    toSmiles(): string;
     undo(): void;
     redo(): void;
     numAtoms(): number;

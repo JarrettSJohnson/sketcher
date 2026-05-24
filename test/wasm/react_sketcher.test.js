@@ -418,6 +418,50 @@ test.describe('React Sketcher', () => {
         expect(doubles).toBe(0);
     });
 
+    test('SMILES Load parses input and Copy SMILES writes canonical form', async ({ page }) => {
+        const input = page.getByTestId('smiles-input');
+        await input.fill('c1ccccc1');
+        await page.getByTestId('smiles-load').click();
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(6);
+        expect(rd.bonds).toHaveLength(6);
+        expect(rd.atoms.every((a) => a.arom === true)).toBe(true);
+
+        // Copy SMILES populates the input with the canonical form even if
+        // clipboard access is denied (headless Chromium does grant it, but
+        // the input fallback is what the user sees in either case).
+        await page.getByTestId('smiles-copy').click();
+        await expect(input).toHaveValue('c1ccccc1');
+    });
+
+    test('SMILES Load accepts Enter key and supports undo', async ({ page }) => {
+        const input = page.getByTestId('smiles-input');
+        await input.fill('CCO');
+        await input.press('Enter');
+        let rd = await snapshot(page);
+        expect(rd.atoms.map((a) => a.el)).toEqual(['C', 'C', 'O']);
+        // Single undo reverts the entire SMILES load.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(0);
+    });
+
+    test('SMILES Load on garbage shows an error and leaves the sketch alone', async ({ page }) => {
+        // Pre-populate with one atom so we can confirm the failed load
+        // doesn't wipe existing work.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 250, y: 180 } });
+        const before = await snapshot(page);
+        expect(before.atoms).toHaveLength(1);
+
+        await page.getByTestId('smiles-input').fill('not a smiles!!!');
+        await page.getByTestId('smiles-load').click();
+        const status = await page.getByTestId('sketcher-status').textContent();
+        expect(status).toMatch(/SMILES failed/i);
+        const after = await snapshot(page);
+        expect(after.atoms).toHaveLength(1);
+    });
+
     test('charge +/- buttons adjust selected-atom formal charge', async ({ page }) => {
         const canvas = page.getByTestId('sketcher-canvas');
         await page.getByTestId('element-N').click();

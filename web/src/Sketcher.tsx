@@ -424,6 +424,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [hoverAtom, setHoverAtom] = useState<number | null>(null);
     const [dragRect, setDragRect] = useState<DragRect | null>(null);
     const [status, setStatus] = useState<string>('ready');
+    const [smilesInput, setSmilesInput] = useState<string>('');
     const [, bumpVersion] = useReducer((v: number) => v + 1, 0);
 
     // Build the C++ MolModel once per mount, tear it down on unmount.
@@ -841,6 +842,45 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         model.setBondDirForSelectedBonds(dir);
         setStatus(label);
     };
+    const doLoadSmiles = (): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        const text = smilesInput.trim();
+        if (!text) {
+            setStatus('paste a SMILES string first');
+            return;
+        }
+        try {
+            model.loadFromSmiles(text);
+            setPendingBondAtom(null);
+            setStatus(`loaded SMILES (${model.numAtoms()} atoms)`);
+        } catch (err) {
+            // RDKit throws on malformed SMILES; surface the message in the
+            // status bar so the user can see what went wrong.
+            const msg = err instanceof Error ? err.message : String(err);
+            setStatus(`SMILES failed: ${msg || 'invalid SMILES'}`);
+        }
+    };
+    const doCopySmiles = async (): Promise<void> => {
+        const model = modelRef.current;
+        if (!model) return;
+        const smi = model.toSmiles();
+        if (!smi) {
+            setStatus('nothing to copy — sketch something first');
+            return;
+        }
+        setSmilesInput(smi);
+        try {
+            await navigator.clipboard.writeText(smi);
+            setStatus(`copied: ${smi}`);
+        } catch {
+            // Clipboard write can fail in non-secure contexts / headless
+            // browsers. The input field still shows the SMILES so the user
+            // can copy manually.
+            setStatus(`SMILES: ${smi}`);
+        }
+    };
+
     const adjustCharge = (delta: number): void => {
         const model = modelRef.current;
         if (!model) return;
@@ -1049,6 +1089,37 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         onMouseLeave={onCanvasMouseLeave}
                         data-testid='sketcher-canvas'
                     />
+                    <div style={styles.smilesBar}>
+                        <input
+                            type='text'
+                            value={smilesInput}
+                            onChange={(e) => setSmilesInput(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    doLoadSmiles();
+                                }
+                            }}
+                            placeholder='SMILES (e.g. c1ccccc1, CCO, [NH4+])'
+                            style={styles.smilesInput}
+                            data-testid='smiles-input'
+                            spellCheck={false}
+                        />
+                        <ActionButton
+                            label='Load'
+                            onClick={doLoadSmiles}
+                            testid='smiles-load'
+                            title='Replace sketch with parsed SMILES (Enter)'
+                        />
+                        <ActionButton
+                            label='Copy SMILES'
+                            onClick={() => {
+                                void doCopySmiles();
+                            }}
+                            testid='smiles-copy'
+                            title='Write current sketch SMILES to clipboard'
+                        />
+                    </div>
                     <div style={styles.statusBox} data-testid='sketcher-status'>
                         {status}
                     </div>
@@ -1269,5 +1340,23 @@ const styles: Record<string, CSSProperties> = {
         padding: '4px 10px',
         color: '#555',
         minHeight: 22,
+    },
+    smilesBar: {
+        display: 'flex',
+        gap: 6,
+        alignItems: 'center',
+        padding: '6px 8px',
+        background: '#f7f7f7',
+        borderTop: `1px solid ${BORDER_COLOR}`,
+    },
+    smilesInput: {
+        flex: '1 1 auto',
+        font: '12px Menlo, Consolas, monospace',
+        padding: '4px 6px',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 3,
+        color: '#222',
+        background: 'white',
+        minWidth: 0,
     },
 };

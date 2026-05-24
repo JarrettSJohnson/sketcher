@@ -22,8 +22,11 @@
 #include <Geometry/point.h>
 #include <GraphMol/Atom.h>
 #include <GraphMol/Bond.h>
+#include <GraphMol/Chirality.h>
 #include <GraphMol/Conformer.h>
 
+#include "schrodinger/rdkit_extensions/convert.h"
+#include "schrodinger/rdkit_extensions/coord_utils.h"
 #include "schrodinger/sketcher_core/undo_stack.h"
 
 namespace schrodinger
@@ -318,6 +321,44 @@ void MolModel::adjustChargeOnSelectedAtoms(int delta)
     };
     doCommand(std::move(redo), std::move(undo),
               delta > 0 ? "Increase charge" : "Decrease charge");
+}
+
+void MolModel::loadFromSmiles(const std::string& smiles)
+{
+    // to_rdkit throws std::invalid_argument for malformed SMILES. Let it
+    // propagate — the embind/UI layer decides how to surface the failure
+    // (e.g. status text). Doing nothing on error would hide typos silently.
+    auto parsed = rdkit_extensions::to_rdkit(
+        smiles, rdkit_extensions::Format::SMILES);
+    RDKit::RWMol new_mol(*parsed);
+    if (new_mol.getNumAtoms() > 0) {
+        rdkit_extensions::compute2DCoords(new_mol);
+        // wedgeMolBonds reads atom-level CIP chirality and writes 2D bond
+        // dirs (BEGINWEDGE / BEGINDASH) into the conformer-bound bonds, so
+        // SMILES like [C@@H](F)(Cl)Br renders with stereo bars instead of
+        // flat lines. Swallow on failure — flat bonds are still readable.
+        try {
+            RDKit::Chirality::wedgeMolBonds(new_mol, &new_mol.getConformer());
+        } catch (...) {
+        }
+    }
+    doMutation([this, new_mol] { m_mol = new_mol; }, "Load SMILES");
+}
+
+std::string MolModel::toSmiles() const
+{
+    if (m_mol.getNumAtoms() == 0) {
+        return "";
+    }
+    try {
+        return rdkit_extensions::to_string(
+            m_mol, rdkit_extensions::Format::SMILES);
+    } catch (...) {
+        // SMILES writers can throw on partly-built mols (e.g. unset
+        // aromaticity flags after a degenerate edit). Return empty so the
+        // UI shows "(no smiles)" instead of crashing.
+        return "";
+    }
 }
 
 // -- Selection ------------------------------------------------------------

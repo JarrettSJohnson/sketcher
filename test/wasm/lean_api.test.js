@@ -422,6 +422,64 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
         expect(result.undoBonds).toBe(0);
     });
 
+    test('loadFromSmiles replaces mol with parsed structure and is undoable', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('F', 0, 0); // pre-existing atom we expect to be replaced
+            m.loadFromSmiles('c1ccccc1');
+            const desc = JSON.parse(m.description());
+            const before = {
+                nAtoms: desc.atoms.length,
+                nBonds: desc.bonds.length,
+                aromatic: desc.atoms.every((a) => a.arom === true),
+            };
+            m.undo(); // restores the stray fluorine
+            const afterUndo = JSON.parse(m.description());
+            m.delete();
+            return {
+                ...before,
+                undoNAtoms: afterUndo.atoms.length,
+                undoFirstElement: afterUndo.atoms[0]?.el,
+            };
+        });
+        expect(result.nAtoms).toBe(6);
+        expect(result.nBonds).toBe(6);
+        expect(result.aromatic).toBe(true);
+        expect(result.undoNAtoms).toBe(1);
+        expect(result.undoFirstElement).toBe('F');
+    });
+
+    test('loadFromSmiles throws on garbage input', async ({ page }) => {
+        const threw = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            let caught = false;
+            try {
+                m.loadFromSmiles('this is not a smiles');
+            } catch {
+                caught = true;
+            }
+            const n = m.numAtoms();
+            m.delete();
+            return { caught, n };
+        });
+        expect(threw.caught).toBe(true);
+        expect(threw.n).toBe(0); // model untouched by the failed load
+    });
+
+    test('toSmiles round-trips canonical SMILES', async ({ page }) => {
+        const out = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            const empty = m.toSmiles();
+            m.loadFromSmiles('OCC');
+            const after = m.toSmiles();
+            m.delete();
+            return { empty, after };
+        });
+        expect(out.empty).toBe('');
+        // Canonical form of ethanol — RDKit normalizes regardless of input order.
+        expect(out.after).toBe('CCO');
+    });
+
     test('adjustChargeOnSelectedAtoms updates q and nh in render description', async ({ page }) => {
         const result = await page.evaluate(() => {
             const m = new window.Module.MolModel();
