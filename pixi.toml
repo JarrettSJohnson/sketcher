@@ -1,0 +1,28 @@
+[workspace]
+authors = ["Jarrett Johnson <jarrett.johnson@schrodinger.com>"]
+channels = ["conda-forge"]
+name = "sketcher"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+build = "sh build.sh"
+clean-build = "rm -rf sketcher_build && sh build.sh"
+build_new = "cmake -B sketcher_build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build sketcher_build"
+sketcher = "open ./sketcher_build/sketcher_app/Sketcher.app"
+wasm-build = "sh wasm-build.sh"
+wasm-clean-build = "rm -rf sketcher_wasm_build && sh wasm-build.sh"
+wasm-serve = "python3 -m http.server 8000 --directory sketcher_wasm_build/sketcher_app"
+wasm-test = "cd test/wasm && SKETCHER_WASM_BUILD_DIR=sketcher_wasm_build npx playwright test"
+wasm-lean-build = "sh wasm-lean-build.sh"
+wasm-lean-clean-build = "rm -rf sketcher_lean_wasm_build && sh wasm-lean-build.sh"
+wasm-lean-serve = "python3 -m http.server 8001 --directory sketcher_lean_wasm_build/sketcher_lean_app"
+pre-commit = "pre-commit run --all-files"
+
+[dependencies]
+cmake = ">=3.24,<3.25"
+ninja = ">=1.13.2,<2"
+nodejs = ">=25.7.0,<25.8"
+emscripten = "3.1.58.*"
+clang-format = ">=14,<15"
+pre-commit = ">=4.5.1,<5"

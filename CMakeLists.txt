@@ -14,6 +14,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(BUILD_SHARED_LIBS "Build using shared libraries" OFF)
 option(ENABLE_TESTING "Build and enable tests" ON)
 option(ENFORCE_DEPENDENCY_VERSIONS "Require versions.json enforcement" ON)
+option(
+  SKETCHER_LEAN_ONLY
+  "Build only the lean Qt-free WASM target (skips sketcher lib, Qt app, tests)"
+  OFF)
 
 # Load dependency versions
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/external/versions.json VERSIONS)
@@ -44,6 +48,12 @@ if(CMAKE_FIND_ROOT_PATH)
   # make sure we can always find the dependencies that we've built, even if
   # emscripten is trying to prevent us from finding system libraries
   list(APPEND CMAKE_FIND_ROOT_PATH ${CMAKE_CURRENT_BINARY_DIR})
+  # Also honor CMAKE_PREFIX_PATH entries here, so consumers that point at a
+  # sibling build's externals (e.g. a worktree reusing the parent checkout's
+  # already-built deps) can still resolve find_package().
+  foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
+    list(APPEND CMAKE_FIND_ROOT_PATH "${_prefix}")
+  endforeach()
 endif()
 
 if(EMSCRIPTEN)
@@ -56,19 +66,23 @@ endif()
 find_package(
   Boost ${BOOST_VERSION} REQUIRED COMPONENTS filesystem iostreams json
                                              serialization unit_test_framework)
-find_package(Qt6 ${QT_VERSION} REQUIRED COMPONENTS Widgets Svg SvgWidgets Test)
 
-# Workaround for Qt 6.5.8 AGL framework issue on modern macOS AGL (Apple
-# Graphics Layer) was deprecated and removed from modern macOS SDKs This
-# workaround can be removed after BLDMGR-10714
-if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
-  get_target_property(_qt_opengl_libs WrapOpenGL::WrapOpenGL
-                      INTERFACE_LINK_LIBRARIES)
-  if(_qt_opengl_libs)
-    list(FILTER _qt_opengl_libs EXCLUDE REGEX "AGL")
-    set_target_properties(
-      WrapOpenGL::WrapOpenGL PROPERTIES INTERFACE_LINK_LIBRARIES
-                                        "${_qt_opengl_libs}")
+if(NOT SKETCHER_LEAN_ONLY)
+  find_package(Qt6 ${QT_VERSION} REQUIRED COMPONENTS Widgets Svg SvgWidgets
+                                                     Test)
+
+  # Workaround for Qt 6.5.8 AGL framework issue on modern macOS AGL (Apple
+  # Graphics Layer) was deprecated and removed from modern macOS SDKs This
+  # workaround can be removed after BLDMGR-10714
+  if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
+    get_target_property(_qt_opengl_libs WrapOpenGL::WrapOpenGL
+                        INTERFACE_LINK_LIBRARIES)
+    if(_qt_opengl_libs)
+      list(FILTER _qt_opengl_libs EXCLUDE REGEX "AGL")
+      set_target_properties(
+        WrapOpenGL::WrapOpenGL PROPERTIES INTERFACE_LINK_LIBRARIES
+                                          "${_qt_opengl_libs}")
+    endif()
   endif()
 endif()
 
@@ -213,6 +227,7 @@ target_link_libraries(
           ZLIB::ZLIB
           ${ZSTD_LIB_NAME})
 
+if(NOT SKETCHER_LEAN_ONLY)
 # schrodinger::sketcher library
 set(SKETCHER_TARGET sketcher)
 build_schrodinger_library(${SKETCHER_TARGET})
@@ -326,9 +341,43 @@ if(EMSCRIPTEN)
       ${CMAKE_BINARY_DIR}/sketcher_app --app-target
       $<TARGET_FILE_BASE_NAME:${APP_TARGET}>)
 endif()
+endif() # NOT SKETCHER_LEAN_ONLY
 
-# Tests
-if(ENABLE_TESTING)
+# Lean Qt-free WASM app (Phase 1 spike for Qt-removal plan).
+# Links only rdkit_extensions + RDKit core; no Qt, no SketcherWidget,
+# no ASYNCIFY. Produces sketcher_lean_app/SketcherLean.{wasm,js} + index.html.
+if(EMSCRIPTEN)
+  set(LEAN_APP_TARGET sketcher_lean)
+  add_executable(${LEAN_APP_TARGET} src/app/lean_main.cpp)
+  setup_target(${LEAN_APP_TARGET})
+  set_target_properties(
+    ${LEAN_APP_TARGET}
+    PROPERTIES OUTPUT_NAME "SketcherLean"
+               RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/sketcher_lean_app)
+  target_link_options(
+    ${LEAN_APP_TARGET}
+    PRIVATE
+    -sEXPORT_NAME=sketcher_lean_entry
+    -sMODULARIZE=1
+    -sEXPORTED_RUNTIME_METHODS=[getExceptionMessage]
+    -sALLOW_MEMORY_GROWTH=1
+    -sENVIRONMENT=web
+    -lembind
+    -fexceptions
+    -sDISABLE_EXCEPTION_CATCHING=0
+    -sEXPORT_EXCEPTION_HANDLING_HELPERS)
+  target_link_libraries(${LEAN_APP_TARGET}
+                        PRIVATE Boost::filesystem ${RDKIT_EXTENSIONS_TARGET})
+  add_custom_target(
+    update_lean_wasm_files ALL
+    DEPENDS ${LEAN_APP_TARGET}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/wasm/public/lean.html
+            ${CMAKE_BINARY_DIR}/sketcher_lean_app/index.html)
+endif()
+
+# Tests (skipped in lean-only mode — all existing tests link Qt).
+if(ENABLE_TESTING AND NOT SKETCHER_LEAN_ONLY)
   enable_testing()
 
   # Copy Python test directory to build directory so pytest can discover them
@@ -445,25 +494,27 @@ if(ENABLE_TESTING)
 endif()
 
 # Install public headers, generated version header, libraries, and executable
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/schrodinger
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-install(FILES ${PROJECT_BINARY_DIR}/include/schrodinger/sketcher/version.h
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/schrodinger/sketcher)
-if(APPLE)
-  # Install the full .app bundle
+if(NOT SKETCHER_LEAN_ONLY)
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/schrodinger
+          DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  install(FILES ${PROJECT_BINARY_DIR}/include/schrodinger/sketcher/version.h
+          DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/schrodinger/sketcher)
+  if(APPLE)
+    # Install the full .app bundle
+    install(
+      DIRECTORY $<TARGET_BUNDLE_DIR:${APP_TARGET}>
+      DESTINATION ${CMAKE_INSTALL_BINDIR}
+      USE_SOURCE_PERMISSIONS)
+  else()
+    # Install the application file preserving the build-time rpath
+    install(PROGRAMS $<TARGET_FILE:${APP_TARGET}>
+                     $<TARGET_FILE:${SMILES_TO_HELM_TARGET}>
+            DESTINATION ${CMAKE_INSTALL_BINDIR})
+  endif()
   install(
-    DIRECTORY $<TARGET_BUNDLE_DIR:${APP_TARGET}>
-    DESTINATION ${CMAKE_INSTALL_BINDIR}
-    USE_SOURCE_PERMISSIONS)
-else()
-  # Install the application file preserving the build-time rpath
-  install(PROGRAMS $<TARGET_FILE:${APP_TARGET}>
-                   $<TARGET_FILE:${SMILES_TO_HELM_TARGET}>
-          DESTINATION ${CMAKE_INSTALL_BINDIR})
+    FILES $<TARGET_FILE:${SKETCHER_TARGET}>
+          $<TARGET_FILE:${RDKIT_EXTENSIONS_TARGET}>
+          $<TARGET_LINKER_FILE:${SKETCHER_TARGET}>
+          $<TARGET_LINKER_FILE:${RDKIT_EXTENSIONS_TARGET}>
+    DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()
-install(
-  FILES $<TARGET_FILE:${SKETCHER_TARGET}>
-        $<TARGET_FILE:${RDKIT_EXTENSIONS_TARGET}>
-        $<TARGET_LINKER_FILE:${SKETCHER_TARGET}>
-        $<TARGET_LINKER_FILE:${RDKIT_EXTENSIONS_TARGET}>
-  DESTINATION ${CMAKE_INSTALL_LIBDIR})

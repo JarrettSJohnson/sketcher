@@ -36,3 +36,6 @@ compile_commands.json
 .vscode/
 .venv
 ext_bld
+# pixi env + Qt-removal lean WASM build dir
+.pixi/
+sketcher_lean_wasm_build/

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sketcher Lean WASM — spike</title>
+<style>
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  .meta { color: #666; font-size: 12px; margin-bottom: 16px; }
+  .row { display: flex; gap: 12px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+  input[type=text] { font: 13px monospace; padding: 6px 8px; flex: 1 1 320px; border: 1px solid #bbb; border-radius: 4px; }
+  button { font: 13px sans-serif; padding: 6px 12px; border: 1px solid #2b6cb0; background: #2b6cb0; color: white; border-radius: 4px; cursor: pointer; }
+  button:hover { background: #1e4e8c; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  pre { background: #f4f4f6; border: 1px solid #ddd; border-radius: 4px; padding: 10px; max-height: 60vh; overflow: auto; font-size: 12px; }
+  canvas { border: 1px solid #ddd; border-radius: 4px; background: white; display: block; }
+  .status { font-size: 12px; color: #666; }
+  .err { color: #b91c1c; }
+</style>
+</head>
+<body>
+<h1>Sketcher Lean WASM — Phase 1 spike</h1>
+<p class="meta">Loads only <code>rdkit_extensions</code> + RDKit. No Qt. Proves the lean-bundle thesis.</p>
+
+<div class="row">
+  <input id="smi" type="text" value="CC(=O)Oc1ccccc1C(=O)O" />
+  <button id="go">Parse + draw</button>
+  <span id="status" class="status">loading WASM module&hellip;</span>
+</div>
+
+<div class="grid">
+  <canvas id="canvas" width="500" height="400"></canvas>
+  <pre id="out">(render description JSON will appear here)</pre>
+</div>
+
+<script src="SketcherLean.js"></script>
+<script>
+  (async () => {
+    const status = document.getElementById('status');
+    const out = document.getElementById('out');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const smiInput = document.getElementById('smi');
+    const goBtn = document.getElementById('go');
+
+    let Module;
+    try {
+      Module = await sketcher_lean_entry();
+      status.textContent = 'ready';
+    } catch (e) {
+      status.textContent = 'WASM load failed: ' + e;
+      status.className = 'status err';
+      return;
+    }
+
+    function draw(rd) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!rd.atoms.length) { return; }
+
+      // Compute bounds + scale to fit
+      const xs = rd.atoms.map(a => a.x);
+      const ys = rd.atoms.map(a => a.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+      const pad = 40;
+      const scale = Math.min(
+        (canvas.width - 2 * pad) / Math.max(maxX - minX, 1),
+        (canvas.height - 2 * pad) / Math.max(maxY - minY, 1)
+      );
+      const cx = (canvas.width - (minX + maxX) * scale) / 2;
+      const cy = (canvas.height + (minY + maxY) * scale) / 2;
+      const px = a => a.x * scale + cx;
+      const py = a => -a.y * scale + cy;  // flip y to screen
+
+      // Bonds
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 1.5;
+      for (const b of rd.bonds) {
+        const a1 = rd.atoms[b.a], a2 = rd.atoms[b.b];
+        const x1 = px(a1), y1 = py(a1), x2 = px(a2), y2 = py(a2);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        if (b.o === 2) {
+          // crude double bond: parallel line
+          const dx = x2 - x1, dy = y2 - y1;
+          const len = Math.hypot(dx, dy);
+          const ox = -dy / len * 4, oy = dx / len * 4;
+          ctx.beginPath();
+          ctx.moveTo(x1 + ox, y1 + oy);
+          ctx.lineTo(x2 + ox, y2 + oy);
+          ctx.stroke();
+        }
+      }
+      // Atoms (just non-carbons get a label)
+      ctx.font = '13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (const a of rd.atoms) {
+        if (a.el === 'C') continue;
+        const x = px(a), y = py(a);
+        ctx.fillStyle = 'white';
+        ctx.fillRect(x - 9, y - 9, 18, 18);
+        ctx.fillStyle = a.el === 'O' ? '#c00' : a.el === 'N' ? '#06c' : '#333';
+        ctx.fillText(a.el, x, y);
+      }
+    }
+
+    function run() {
+      const smi = smiInput.value.trim();
+      if (!smi) return;
+      try {
+        const json = Module.render_description_from_smiles(smi);
+        const rd = JSON.parse(json);
+        out.textContent = JSON.stringify(rd, null, 2);
+        draw(rd);
+        status.textContent = `ready — ${rd.atoms.length} atoms, ${rd.bonds.length} bonds`;
+        status.className = 'status';
+      } catch (e) {
+        const msg = (typeof e === 'number')
+          ? Module.getExceptionMessage(e).join(': ')
+          : (e.message || String(e));
+        out.textContent = 'error: ' + msg;
+        status.textContent = 'parse failed';
+        status.className = 'status err';
+      }
+    }
+
+    goBtn.addEventListener('click', run);
+    smiInput.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+    run();
+  })();
+</script>
+</body>
+</html>
