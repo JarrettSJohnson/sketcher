@@ -859,6 +859,122 @@ test.describe('React Sketcher', () => {
         expect(undone.atoms[1].y).toBeCloseTo(before.atoms[1].y, 3);
     });
 
+    test('newly-wired elements P / S / F / Si place atoms via the icon-driven sidebar', async ({
+        page,
+    }) => {
+        // The icon-driven SetAtomWidget (set_atom_widget.ui) ships 9 elements
+        // — C/H/N, O/P/S, F/Cl/Si. Coverage previously only exercised C/N/O.
+        // This guards the four newly-wired buttons.
+        const canvas = page.getByTestId('sketcher-canvas');
+        const placements = [
+            ['P', 120],
+            ['S', 200],
+            ['F', 280],
+            ['Si', 360],
+        ];
+        for (const [el, x] of placements) {
+            await page.getByTestId(`element-${el}`).click();
+            await expect(page.getByTestId(`element-${el}`)).toHaveAttribute(
+                'aria-pressed',
+                'true',
+            );
+            await canvas.click({ position: { x, y: 200 } });
+        }
+        const rd = await snapshot(page);
+        const els = rd.atoms.map((a) => a.el);
+        expect(els).toEqual(['P', 'S', 'F', 'Si']);
+    });
+
+    test('newly-wired ring icons (cycloheptane / cyclopentadiene / cyclooctane / cyclobutane / cyclopropane) drop the right ring size', async ({
+        page,
+    }) => {
+        // RingToolWidget (ring_tool_widget.ui) ships 8 ring presets. The
+        // original 3-button sidebar only covered 3; this exercises the
+        // 5 newly visible buttons.
+        const canvas = page.getByTestId('sketcher-canvas');
+        const cases = [
+            ['cycloheptane', 7],
+            ['cyclopentadiene', 5],
+            ['cyclooctane', 8],
+            ['cyclobutane', 4],
+            ['cyclopropane', 3],
+        ];
+        for (const [label, size] of cases) {
+            await page.getByTestId('clear').click();
+            await page.getByTestId(`ring-${label}`).click();
+            await canvas.click({ position: { x: 260, y: 180 } });
+            const rd = await snapshot(page);
+            expect(rd.atoms).toHaveLength(size);
+        }
+    });
+
+    test('select-invert flips every atom and bond selection bit', async ({
+        page,
+    }) => {
+        // The Invert text-link comes from select_options_widget.ui ("Invert"
+        // in the second HBox). New in the icon-driven sidebar.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 } }); // sel atom 0
+        let rd = await snapshot(page);
+        expect(rd.atoms.map((a) => !!a.sel)).toEqual([true, false, false]);
+
+        await page.getByTestId('select-invert').click();
+        rd = await snapshot(page);
+        expect(rd.atoms.map((a) => !!a.sel)).toEqual([false, true, true]);
+    });
+
+    test('select-none clears the current selection', async ({ page }) => {
+        // The None text-link is also new — it's the "deselect all" shortcut.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+
+        await page.getByTestId('select-all').click();
+        let rd = await snapshot(page);
+        expect(rd.atoms.every((a) => a.sel)).toBe(true);
+
+        await page.getByTestId('select-none').click();
+        rd = await snapshot(page);
+        expect(rd.atoms.some((a) => a.sel)).toBe(false);
+    });
+
+    test('coming-soon stubs surface a friendly status message (no silent no-op)', async ({
+        page,
+    }) => {
+        // Several Qt-side widgets are present for visual fidelity but not yet
+        // ported (Move/Rotate, Erase, atom_query popup, periodic_table,
+        // bond_query, atom_chain, R-group, attachment point, reaction,
+        // monomeric mode, import/export/settings/help). All of them route
+        // through comingSoon() → setStatus(...) so users can tell the button
+        // is intentional rather than broken.
+        const status = page.getByTestId('sketcher-status');
+        const stubs = [
+            ['tool-move-rotate', /Move\/Rotate/],
+            ['tool-erase', /Erase tool/],
+            ['atom-query', /Atom query/],
+            ['periodic-table', /Periodic table/],
+            ['bond-query', /Bond query/],
+            ['atom-chain', /Atom chain/],
+            ['rgroup', /R-Group/],
+            ['attachment-point', /Attachment point/],
+            ['reaction', /Reaction/],
+            ['mode-monomeric', /Monomeric/],
+            ['import', /Import/],
+            ['export', /Export/],
+            ['settings', /Settings/],
+            ['help', /Help/],
+        ];
+        for (const [testid, pattern] of stubs) {
+            await page.getByTestId(testid).click();
+            await expect(status).toContainText(pattern);
+        }
+    });
+
     test('Wheel zoom is view-center-anchored and capped at DEFAULT_SCALE', async ({
         page,
     }) => {

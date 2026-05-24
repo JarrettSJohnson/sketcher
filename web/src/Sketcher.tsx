@@ -7,7 +7,6 @@ import {
     type CSSProperties,
     type JSX,
     type MouseEvent as ReactMouseEvent,
-    type ReactNode,
 } from 'react';
 import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 
@@ -18,7 +17,8 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 // tests cover.
 
 type Tool = 'atom' | 'bond' | 'select' | 'ring';
-type Element = 'C' | 'O' | 'N' | 'H' | 'Cl';
+// SetAtomWidget.ui ships C/H/N/O/P/S/F/Cl/Si on the atomistic panel.
+type Element = 'C' | 'H' | 'N' | 'O' | 'P' | 'S' | 'F' | 'Cl' | 'Si';
 // Qt's bond_group is a single radio group covering single/double/triple plus
 // the stereo variants — picking any one button replaces the previously-active
 // bond mode. We mirror that here: BondMode collapses "what order is the next
@@ -29,10 +29,25 @@ interface RingSpec {
     size: number;
     aromatic: boolean;
     label: string;
+    iconName: string;
 }
-const RING_BENZENE: RingSpec = { size: 6, aromatic: true, label: 'Benzene' };
-const RING_CYCLOHEXANE: RingSpec = { size: 6, aromatic: false, label: 'Cyclohexane' };
-const RING_CYCLOPENTANE: RingSpec = { size: 5, aromatic: false, label: 'Cyclopentane' };
+// RingToolWidget.ui ships 8 ring presets — wire all of them. Qt order:
+// row 0: cyclohexane, benzene, cycloheptane
+// row 1: cyclopentane, cyclopentadiene, cyclooctane
+// row 2: cyclobutane, cyclopropane
+const RING_CYCLOHEXANE: RingSpec = { size: 6, aromatic: false, label: 'Cyclohexane', iconName: 'ring_cyclohexane' };
+const RING_BENZENE: RingSpec = { size: 6, aromatic: true, label: 'Benzene', iconName: 'ring_benzene' };
+const RING_CYCLOHEPTANE: RingSpec = { size: 7, aromatic: false, label: 'Cycloheptane', iconName: 'ring_cycloheptane' };
+const RING_CYCLOPENTANE: RingSpec = { size: 5, aromatic: false, label: 'Cyclopentane', iconName: 'ring_cyclopentane' };
+const RING_CYCLOPENTADIENE: RingSpec = { size: 5, aromatic: true, label: 'Cyclopentadiene', iconName: 'ring_cyclopentadiene' };
+const RING_CYCLOOCTANE: RingSpec = { size: 8, aromatic: false, label: 'Cyclooctane', iconName: 'ring_cyclooctane' };
+const RING_CYCLOBUTANE: RingSpec = { size: 4, aromatic: false, label: 'Cyclobutane', iconName: 'ring_cyclobutane' };
+const RING_CYCLOPROPANE: RingSpec = { size: 3, aromatic: false, label: 'Cyclopropane', iconName: 'ring_cyclopropane' };
+const RING_PRESETS: RingSpec[] = [
+    RING_CYCLOHEXANE, RING_BENZENE, RING_CYCLOHEPTANE,
+    RING_CYCLOPENTANE, RING_CYCLOPENTADIENE, RING_CYCLOOCTANE,
+    RING_CYCLOBUTANE, RING_CYCLOPROPANE,
+];
 
 // Palette mirrors the original Qt sketcher's QSS so the React port doesn't
 // drift into a different look. Sage-green accent is the primary interactive
@@ -90,15 +105,19 @@ interface View {
 
 const DEFAULT_VIEW: View = { scale: DEFAULT_SCALE, offsetX: 0, offsetY: 0 };
 
-// Element colors approximate the CPK conventions the original uses.
+// Element colors approximate the CPK / Jmol conventions the original uses.
 // Chlorine is the deeper green used in the Qt build — pure #0c0 fights
 // the sage accent for attention.
 const ELEMENT_COLORS: Record<string, string> = {
     C: '#222',
-    O: '#c0392b',
+    H: '#444',
     N: '#1f4faa',
-    H: '#888',
+    O: '#c0392b',
+    P: '#cc8a00',
+    S: '#b58900',
+    F: '#3fa54f',
     Cl: '#3fa54f',
+    Si: '#7d6f4a',
 };
 
 function modelFromPixel(
@@ -1338,6 +1357,44 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         return () => window.removeEventListener('keydown', onKey);
     }, []);
 
+    // Features whose Qt counterparts exist in the UI files but whose C++ port
+    // isn't here yet. Showing the buttons keeps the visual layout matching the
+    // Qt original (per feedback_qt_removal_fidelity); clicking surfaces the
+    // gap rather than silently doing nothing.
+    const comingSoon = (name: string): void => {
+        setStatus(`${name} — not yet implemented in the Qt-free port`);
+    };
+
+    // Invert selection — Qt's SelectOptionsWidget "Invert" button. No
+    // dedicated C++ entry point yet, so do it client-side: get the full atom
+    // list and flip each selection bit. Idempotent (no re-entry guard needed
+    // since setAtomSelected emits selectionChanged once per call).
+    const doInvertSelection = (): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        let rd: RenderDesc = BLANK_DESC;
+        try {
+            rd = JSON.parse(model.description()) as RenderDesc;
+        } catch {
+            return;
+        }
+        for (const a of rd.atoms) {
+            model.setAtomSelected(a.i, !a.sel);
+        }
+        for (let i = 0; i < rd.bonds.length; ++i) {
+            const b = rd.bonds[i];
+            model.setBondSelected(i, !b.sel);
+        }
+        setStatus('inverted selection');
+    };
+
+    const doClearSelection = (): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        model.clearSelection();
+        setStatus('cleared selection');
+    };
+
     // More Actions submenu items — mirror Qt's MoreActionsMenu "Modify All"
     // submenu (sketcher_top_bar_menus.cpp:91-101) using exact Qt labels and
     // separator placement. Flattened into one popover here (not a true
@@ -1364,170 +1421,231 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
 
     return (
         <section style={styles.shell}>
+            {/* Top bar — sketcher_top_bar.ui order:
+                undo redo fit cleanup more | <spacer> | clear import export | settings help.
+                All 32×32 icon buttons (30×32 SVG iconSize, no border,
+                checked #d4e6f1, hover #edf7fc — sketcher_css_style.h). */}
             <div style={styles.topBar}>
                 <div style={styles.topBarGroup}>
-                    <ActionButton label='Undo' onClick={doUndo} testid='undo' title='Undo (Ctrl+Z)' />
-                    <ActionButton label='Redo' onClick={doRedo} testid='redo' title='Redo (Ctrl+Y)' />
-                </div>
-                <span style={styles.topDivider} />
-                <div style={styles.topBarGroup}>
-                    <ActionButton
-                        label='Fit to Screen'
-                        onClick={doFit}
-                        testid='fit-to-screen'
-                        title='Fit the structure to the canvas'
-                    />
-                    <ActionButton
-                        label='Clean Up'
-                        onClick={doCleanUp}
-                        testid='clean-up'
-                        title='Recompute 2D coordinates'
-                    />
-                </div>
-                <span style={styles.topDivider} />
-                <div style={styles.topBarGroup} data-testid='more-actions-wrapper'
-                    onMouseLeave={() => setMoreMenuOpen(false)}>
-                    <div style={{ position: 'relative' }}>
-                        <ActionButton
-                            label='More ▾'
+                    <IconButton icon='topbar_undo' onClick={doUndo}
+                        testid='undo' title='Undo (Ctrl+Z)' />
+                    <IconButton icon='topbar_redo' onClick={doRedo}
+                        testid='redo' title='Redo (Ctrl+Y)' />
+                    <IconButton icon='topbar_fit' onClick={doFit}
+                        testid='fit-to-screen' title='Fit to Screen' />
+                    <IconButton icon='topbar_cleanup' onClick={doCleanUp}
+                        testid='clean-up' title='Clean Up' />
+                    <div style={{ position: 'relative' }}
+                        data-testid='more-actions-wrapper'
+                        onMouseLeave={() => setMoreMenuOpen(false)}>
+                        <IconButton icon='topbar_more_actions'
                             onClick={() => setMoreMenuOpen((v) => !v)}
                             testid='more-actions-btn'
-                            title='More actions'
-                        />
+                            title='More Actions'
+                            active={moreMenuOpen} />
                         {moreMenuOpen && moreActions}
                     </div>
                 </div>
                 <div style={styles.topSpacer} />
                 <div style={styles.topBarGroup}>
-                    <ActionButton label='Clear' onClick={doClear} testid='clear'
-                        title='Clear Sketcher' />
-                </div>
-                <div style={styles.titleBlock}>
-                    <span style={styles.title}>2D Sketcher</span>
-                    <span style={styles.subtitle}>Qt-free preview</span>
+                    <span style={styles.topDivider} />
+                    <IconButton icon='topbar_clear_sketcher' onClick={doClear}
+                        testid='clear' title='Clear Sketcher' />
+                    <IconButton icon='topbar_import'
+                        onClick={() => comingSoon('Import')}
+                        testid='import' title='Import' />
+                    <IconButton icon='topbar_export'
+                        onClick={() => comingSoon('Export')}
+                        testid='export' title='Export' />
+                    <span style={styles.topDivider} />
+                    <IconButton icon='topbar_settings'
+                        onClick={() => comingSoon('Settings')}
+                        testid='settings' title='Settings' />
+                    <IconButton icon='topbar_help'
+                        onClick={() => comingSoon('Help')}
+                        testid='help' title='Help' />
                 </div>
             </div>
 
             <div style={styles.workspace}>
+                {/* Left sidebar — sketcher_side_bar.ui, 117px wide.
+                    Top-to-bottom: SELECT block, hr, DRAW label + atomistic/
+                    monomeric toggle, atomistic_page (SetAtomWidget grid +
+                    H/charge row, hr, bond_frame 2×3, hr, RingToolWidget 3×3,
+                    hr, EnumerationToolWidget). */}
                 <aside style={styles.sidebar}>
-                    {/* SELECT — mirrors Qt's SelectOptionsWidget
-                        (select_options_widget.ui): the Select tool plus the
-                        "Select all" action. We drop Erase / Move-Rotate /
-                        Invert Selection for now (deferred to a later batch).
-                    */}
-                    <Section label='SELECT'>
-                        <ToolButton
-                            label='Select'
-                            active={tool === 'select'}
-                            onClick={() => {
-                                setTool('select');
-                                setPendingBondAtom(null);
-                            }}
-                            testid='tool-select'
-                            title='Select atoms and bonds'
-                        />
-                        <ActionButton
-                            label='All'
-                            onClick={doSelectAll}
-                            testid='select-all'
-                            title='Select All (Ctrl+A)'
-                        />
-                    </Section>
-                    {/* DRAW — mirrors Qt's DrawToolsWidget (draw_tools_widget.ui).
-                        Atoms (with inline charge +/-) | divider | bond_group
-                        radio (Single, Double, Triple, Wedge, Dash) | divider
-                        | rings. bond_group in Qt is one mutually-exclusive
-                        radio group — picking Single clears stereo, picking
-                        Wedge implies single+wedge, etc.
-                    */}
-                    <Section label='DRAW'>
-                        {(['C', 'N', 'O', 'H', 'Cl'] as const).map((el) => (
-                            <ToolButton
-                                key={el}
-                                label={el}
+                    {/* SELECT — select_options_widget.ui. Background tints
+                        sage (#f3f6f0 SELECTION_ACTIVE_STYLE) when the
+                        Select tool is active. */}
+                    <div style={{
+                        ...styles.selectSection,
+                        ...(tool === 'select' ? styles.selectSectionActive : {}),
+                    }}>
+                        <div style={styles.sectionLabel}>SELECT</div>
+                        <div style={styles.row3}>
+                            <IconButton icon='select_square' testid='tool-select'
+                                title='Select'
+                                active={tool === 'select'}
+                                onClick={() => {
+                                    setTool('select');
+                                    setPendingBondAtom(null);
+                                    setStatus('select mode');
+                                }} />
+                            <IconButton icon='select_move_rotate'
+                                testid='tool-move-rotate'
+                                title='Move and Rotate'
+                                onClick={() => comingSoon('Move/Rotate tool')} />
+                            <IconButton icon='mode_erase'
+                                testid='tool-erase'
+                                title='Erase'
+                                onClick={() => comingSoon('Erase tool')} />
+                        </div>
+                        <div style={styles.row3}>
+                            <TextLinkButton label='All' testid='select-all'
+                                title='Select All (Ctrl+A)'
+                                onClick={doSelectAll} />
+                            <TextLinkButton label='Invert' testid='select-invert'
+                                title='Invert Selection'
+                                onClick={doInvertSelection} />
+                            <TextLinkButton label='None' testid='select-none'
+                                title='Clear Selection'
+                                onClick={doClearSelection} />
+                        </div>
+                    </div>
+
+                    <hr style={styles.hr} />
+
+                    {/* DRAW label + atomistic/monomeric toggle. Monomeric
+                        mode isn't ported yet — stub it. */}
+                    <div style={styles.sectionLabel}>DRAW</div>
+                    <div style={styles.row2}>
+                        <IconButton icon='mode_compound'
+                            testid='mode-atomistic'
+                            title='Atomistic'
+                            active
+                            onClick={() => { /* already atomistic */ }} />
+                        <IconButton icon='mode_monomer'
+                            testid='mode-monomeric'
+                            title='Monomeric'
+                            onClick={() => comingSoon('Monomeric mode')} />
+                    </div>
+
+                    {/* SetAtomWidget — 3 cols, 4 rows. Qt order:
+                        row 0 C H N, row 1 O P S, row 2 F Cl <last_picked>,
+                        row 3 atom_query (1 col) + periodic_table (2 cols).
+                        The last_picked slot is pinned to Si by default in
+                        this port (no live last-picked tracking yet). */}
+                    <div style={styles.elementGrid}>
+                        {(['C','H','N','O','P','S','F','Cl','Si'] as const).map((el) => (
+                            <LetterButton key={el} label={el}
+                                color={ELEMENT_COLORS[el]}
                                 active={tool === 'atom' && element === el}
+                                testid={`element-${el}`}
+                                title={`Draw ${el} atoms`}
                                 onClick={() => {
                                     setElement(el);
                                     setTool('atom');
                                     setPendingBondAtom(null);
-                                }}
-                                testid={`element-${el}`}
-                                color={ELEMENT_COLORS[el]}
-                                title={`Draw ${el} atoms`}
-                            />
+                                }} />
                         ))}
-                        <ActionButton
-                            label='+'
-                            onClick={() => adjustCharge(+1)}
+                    </div>
+                    <div style={styles.atomQueryRow}>
+                        <LetterButton label='A▾' testid='atom-query'
+                            title='Atom Query'
+                            onClick={() => comingSoon('Atom query popup')} />
+                        <IconButton icon='periodic_table'
+                            testid='periodic-table'
+                            title='Periodic Table'
+                            wide
+                            onClick={() => comingSoon('Periodic table')} />
+                    </div>
+
+                    {/* explicit_h / charge± row */}
+                    <div style={styles.row3}>
+                        <IconButton icon='atom_explicit_H'
+                            testid='explicit-h'
+                            title='Add Explicit Hydrogens'
+                            onClick={doAddHydrogens} />
+                        <IconButton icon='atom_charge_plus'
                             testid='charge-plus'
                             title='Increase charge on selected atoms'
-                        />
-                        <ActionButton
-                            label='−'
-                            onClick={() => adjustCharge(-1)}
+                            onClick={() => adjustCharge(+1)} />
+                        <IconButton icon='atom_charge_minus'
                             testid='charge-minus'
                             title='Decrease charge on selected atoms'
-                        />
-                    </Section>
-                    <div style={styles.sectionDivider} />
-                    <Section label=''>
-                        {/* bond_group radio (Qt: single_bond_btn,
-                            stereo_bond1_btn=Wedge, stereo_bond2_btn=Dash, and
-                            the bond_order_btn popups for Double/Triple). All
-                            five live in one mutually-exclusive group. */}
-                        <ToolButton
-                            label='Single'
-                            active={tool === 'bond' && bondMode === 'single'}
-                            onClick={() => pickBondModeApplying('single', 'single')}
-                            testid='bond-single'
+                            onClick={() => adjustCharge(-1)} />
+                    </div>
+
+                    <hr style={styles.hr} />
+
+                    {/* bond_frame 2×3 — draw_tools_widget.ui:
+                        row 0: single, wedge (stereo_bond1), dash (stereo_bond2)
+                        row 1: bond_order (Double; Triple is the popup option,
+                        deferred), bond_query (popup, deferred), atom_chain
+                        (deferred). All in one bond_group radio (Qt). */}
+                    <div style={styles.bondGrid}>
+                        <IconButton icon='bond_single' testid='bond-single'
                             title='Single Bond'
-                        />
-                        <ToolButton
-                            label='Double'
-                            active={tool === 'bond' && bondMode === 'double'}
-                            onClick={() => pickBondModeApplying('double', 'double')}
-                            testid='bond-double'
-                            title='Double Bond'
-                        />
-                        <ToolButton
-                            label='Triple'
-                            active={tool === 'bond' && bondMode === 'triple'}
-                            onClick={() => pickBondModeApplying('triple', 'triple')}
-                            testid='bond-triple'
-                            title='Triple Bond'
-                        />
-                        <ToolButton
-                            label='Wedge'
-                            active={tool === 'bond' && bondMode === 'wedge'}
-                            onClick={() => pickBondModeApplying('wedge', 'wedge')}
-                            testid='bond-wedge'
+                            active={tool === 'bond' && bondMode === 'single'}
+                            onClick={() => pickBondModeApplying('single', 'single')} />
+                        <IconButton icon='bond_up' testid='bond-wedge'
                             title='Up Bond (Wedge)'
-                        />
-                        <ToolButton
-                            label='Dash'
-                            active={tool === 'bond' && bondMode === 'dash'}
-                            onClick={() => pickBondModeApplying('dash', 'dash')}
-                            testid='bond-dash'
+                            active={tool === 'bond' && bondMode === 'wedge'}
+                            onClick={() => pickBondModeApplying('wedge', 'wedge')} />
+                        <IconButton icon='bond_down' testid='bond-dash'
                             title='Down Bond (Dash)'
-                        />
-                    </Section>
-                    <div style={styles.sectionDivider} />
-                    <Section label=''>
-                        {([RING_BENZENE, RING_CYCLOHEXANE, RING_CYCLOPENTANE] as const).map((spec) => (
-                            <ToolButton
-                                key={spec.label}
-                                label={spec.label}
+                            active={tool === 'bond' && bondMode === 'dash'}
+                            onClick={() => pickBondModeApplying('dash', 'dash')} />
+                        <IconButton icon='bond_double' testid='bond-double'
+                            title='Double Bond (Triple deferred to popup batch)'
+                            active={tool === 'bond' && bondMode === 'double'}
+                            onClick={() => pickBondModeApplying('double', 'double')} />
+                        <IconButton icon='bond_aromatic' testid='bond-query'
+                            title='Bond Query'
+                            onClick={() => comingSoon('Bond query popup')} />
+                        <IconButton icon='bond_chain' testid='atom-chain'
+                            title='Atom Chain'
+                            onClick={() => comingSoon('Atom chain tool')} />
+                    </div>
+
+                    <hr style={styles.hr} />
+
+                    {/* RingToolWidget 3×3 — ring_tool_widget.ui:
+                        row 0: cyclohexane, benzene, cycloheptane
+                        row 1: cyclopentane, cyclopentadiene, cyclooctane
+                        row 2: cyclobutane, cyclopropane (last cell empty). */}
+                    <div style={styles.ringGrid}>
+                        {RING_PRESETS.map((spec) => (
+                            <IconButton key={spec.label}
+                                icon={spec.iconName}
+                                testid={`ring-${spec.label.toLowerCase()}`}
+                                title={`Draw ${spec.label}`}
                                 active={tool === 'ring' && ring.label === spec.label}
                                 onClick={() => {
                                     setRing(spec);
                                     setTool('ring');
                                     setPendingBondAtom(null);
-                                }}
-                                testid={`ring-${spec.label.toLowerCase()}`}
-                                title={`Draw ${spec.label}`}
-                            />
+                                }} />
                         ))}
-                    </Section>
+                    </div>
+
+                    <hr style={styles.hr} />
+
+                    {/* EnumerationToolWidget — rgroup, attachment_point,
+                        reaction. Not ported yet — stub all three. */}
+                    <div style={styles.row3}>
+                        <LetterButton label='R' testid='rgroup'
+                            title='R-Group'
+                            onClick={() => comingSoon('R-Group')} />
+                        <IconButton icon='enumeration_attachment_point'
+                            testid='attachment-point'
+                            title='Attachment Point'
+                            onClick={() => comingSoon('Attachment point')} />
+                        <IconButton icon='reaction_arrow'
+                            testid='reaction'
+                            title='Reaction'
+                            onClick={() => comingSoon('Reaction tool')} />
+                    </div>
                 </aside>
 
                 <div style={styles.canvasColumn}>
@@ -1559,8 +1677,6 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             placeholder='Paste SMILES (c1ccccc1) or MOL block — Cmd+Enter to Load'
                             style={{
                                 ...styles.smilesInput,
-                                // Grow taller when content looks like a MOL block
-                                // (multi-line) so the user can see what they pasted.
                                 height: smilesInput.includes('\n') ? 96 : 26,
                             }}
                             data-testid='smiles-input'
@@ -1568,28 +1684,18 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             rows={smilesInput.includes('\n') ? 6 : 1}
                         />
                         <div style={styles.smilesButtons}>
-                            <ActionButton
-                                label='Load'
+                            <button type='button' style={styles.smilesBtn}
+                                data-testid='smiles-load'
                                 onClick={doLoadInput}
-                                testid='smiles-load'
-                                title='Parse input (SMILES or MOL) into the sketch — Cmd+Enter'
-                            />
-                            <ActionButton
-                                label='Copy SMILES'
-                                onClick={() => {
-                                    void doCopySmiles();
-                                }}
-                                testid='smiles-copy'
-                                title='Write current sketch SMILES to clipboard'
-                            />
-                            <ActionButton
-                                label='Copy MOL'
-                                onClick={() => {
-                                    void doCopyMolBlock();
-                                }}
-                                testid='mol-copy'
-                                title='Write current sketch as a V2000 MOL block to clipboard'
-                            />
+                                title='Parse input (SMILES or MOL) into the sketch — Cmd+Enter'>Load</button>
+                            <button type='button' style={styles.smilesBtn}
+                                data-testid='smiles-copy'
+                                onClick={() => { void doCopySmiles(); }}
+                                title='Write current sketch SMILES to clipboard'>Copy SMILES</button>
+                            <button type='button' style={styles.smilesBtn}
+                                data-testid='mol-copy'
+                                onClick={() => { void doCopyMolBlock(); }}
+                                title='Write current sketch as a V2000 MOL block to clipboard'>Copy MOL</button>
                         </div>
                     </div>
                     <div style={styles.statusBox} data-testid='sketcher-status'>
@@ -1598,15 +1704,6 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 </div>
             </div>
         </section>
-    );
-}
-
-function Section({ label, children }: { label: string; children: ReactNode }): JSX.Element {
-    return (
-        <div style={styles.section}>
-            {label !== '' && <div style={styles.sectionLabel}>{label}</div>}
-            <div style={styles.sectionGrid}>{children}</div>
-        </div>
     );
 }
 
@@ -1620,6 +1717,7 @@ function MoreItem({ label, onClick, testid }: MoreItemProps): JSX.Element {
     const [hover, setHover] = useState(false);
     return (
         <button
+            type='button'
             style={{
                 ...styles.moreItem,
                 ...(hover ? styles.moreItemHover : {}),
@@ -1634,73 +1732,134 @@ function MoreItem({ label, onClick, testid }: MoreItemProps): JSX.Element {
     );
 }
 
-interface ToolButtonProps {
-    label: string;
-    active: boolean;
+// 32×32 tool button rendering /icons/{icon}.svg (auto _dis variant when
+// disabled). Matches Qt QToolButton style: no border, transparent bg,
+// checked #d4e6f1, hover #edf7fc.
+interface IconButtonProps {
+    icon: string;
     onClick: () => void;
     testid: string;
-    color?: string;
     title?: string;
+    active?: boolean;
+    disabled?: boolean;
+    wide?: boolean; // double-width cell (periodic_table colspan=2)
 }
 
-function ToolButton({ label, active, onClick, testid, color, title }: ToolButtonProps): JSX.Element {
+function IconButton({
+    icon, onClick, testid, title, active, disabled, wide,
+}: IconButtonProps): JSX.Element {
+    const [hover, setHover] = useState(false);
+    const src = `/icons/${icon}${disabled ? '_dis' : ''}.svg`;
+    return (
+        <button
+            type='button'
+            style={{
+                ...styles.iconBtn,
+                ...(wide ? styles.iconBtnWide : {}),
+                ...(hover && !active && !disabled ? styles.iconBtnHover : {}),
+                ...(active ? styles.iconBtnActive : {}),
+            }}
+            onClick={onClick}
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
+            data-testid={testid}
+            disabled={disabled}
+            aria-pressed={active}
+            title={title}
+        >
+            <img src={src} alt='' draggable={false} style={styles.iconImg} />
+        </button>
+    );
+}
+
+// 32×32 letter button — atom elements + the "A▾" atom-query button.
+// Matches Qt ATOM_ELEMENT_OR_MONOMER_STYLE: 14pt Arimo bold #333333.
+interface LetterButtonProps {
+    label: string;
+    onClick: () => void;
+    testid: string;
+    title?: string;
+    active?: boolean;
+    color?: string;
+}
+
+function LetterButton({
+    label, onClick, testid, title, active, color,
+}: LetterButtonProps): JSX.Element {
     const [hover, setHover] = useState(false);
     return (
         <button
+            type='button'
             style={{
-                ...styles.toolBtn,
-                ...(hover && !active ? styles.toolBtnHover : {}),
-                ...(active ? styles.toolBtnActive : {}),
+                ...styles.letterBtn,
                 ...(color && !active ? { color } : {}),
+                ...(hover && !active ? styles.iconBtnHover : {}),
+                ...(active ? styles.iconBtnActive : {}),
             }}
             onClick={onClick}
             onMouseEnter={() => setHover(true)}
             onMouseLeave={() => setHover(false)}
             data-testid={testid}
             aria-pressed={active}
-            title={title ?? label}
+            title={title}
         >
             {label}
         </button>
     );
 }
 
-interface ActionButtonProps {
+// All / Invert / None text-link buttons. Qt TEXT_LINK_STYLE:
+// 10pt bold #3d5d71, hover #5b8aa8, transparent bg, no border.
+interface TextLinkButtonProps {
     label: string;
     onClick: () => void;
     testid: string;
     title?: string;
 }
 
-function ActionButton({ label, onClick, testid, title }: ActionButtonProps): JSX.Element {
+function TextLinkButton({
+    label, onClick, testid, title,
+}: TextLinkButtonProps): JSX.Element {
     const [hover, setHover] = useState(false);
     return (
         <button
+            type='button'
             style={{
-                ...styles.actionBtn,
-                ...(hover ? styles.actionBtnHover : {}),
+                ...styles.textLinkBtn,
+                ...(hover ? styles.textLinkBtnHover : {}),
             }}
             onClick={onClick}
             onMouseEnter={() => setHover(true)}
             onMouseLeave={() => setHover(false)}
             data-testid={testid}
-            title={title ?? label}
+            title={title}
         >
             {label}
         </button>
     );
 }
 
-// Palette echoes the original Qt QSS: accent sage green, sky-blue "checked"
-// state (matches Qt's QToolButton:checked), beige hover. The whole layout
-// (left sidebar + top action bar + canvas) mirrors sketcher_widget.ui so a
-// returning Qt user lands in the same place.
-const TOP_BAR_BG = '#f4f4f4';
-const SIDEBAR_BG = '#f4f4f4';
+// Palette comes from Qt's sketcher_css_style.h, applied literally so the
+// React port reads as the same widget:
+//   QToolButton                          { border: none }
+//   QToolButton:checked                  { background: #d4e6f1 }  // light blue
+//   QToolButton:hover:!checked           { background: #edf7fc }
+//   SELECTION_ACTIVE_STYLE (Select tool) { background: #f3f6f0 }  // sage
+//   PALETTE_TITLE_STYLE                  { 9px bold #666666 }
+//   TEXT_LINK_STYLE                      { 10px bold #3d5d71, hover #5b8aa8 }
+//   ATOM_ELEMENT_OR_MONOMER_STYLE        { 14px bold #333333 }
+const TOP_BAR_BG = 'white';
+const SIDEBAR_BG = 'white';
 const BORDER_COLOR = '#cfcfcf';
 const CHECKED_BG = '#d4e6f1';
-const CHECKED_BORDER = '#7fa9c7';
-const ACTION_HOVER_BG = '#edf7fc';
+const HOVER_BG = '#edf7fc';
+const SELECT_ACTIVE_BG = '#f3f6f0';
+const SECTION_LABEL_COLOR = '#666666';
+const TEXT_LINK_COLOR = '#3d5d71';
+const TEXT_LINK_HOVER = '#5b8aa8';
+const ATOM_LETTER_COLOR = '#333333';
+
+const ICON_BTN_SIZE = 32;
 
 const styles: Record<string, CSSProperties> = {
     shell: {
@@ -1717,65 +1876,146 @@ const styles: Record<string, CSSProperties> = {
     topBar: {
         display: 'flex',
         alignItems: 'center',
-        gap: 6,
-        padding: '6px 8px',
+        gap: 2,
+        padding: '2px 4px',
         background: TOP_BAR_BG,
         borderBottom: `1px solid ${BORDER_COLOR}`,
         minHeight: 35,
     },
-    topBarGroup: { display: 'flex', gap: 4, alignItems: 'center' },
+    topBarGroup: { display: 'flex', gap: 2, alignItems: 'center' },
     topDivider: {
         display: 'inline-block',
         width: 1,
         height: 22,
         background: BORDER_COLOR,
-        margin: '0 2px',
+        margin: '0 4px',
     },
     topSpacer: { flex: '1 1 auto' },
-    titleBlock: {
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'flex-end',
-        lineHeight: 1.1,
-    },
-    title: { fontSize: 13, fontWeight: 600, color: '#333' },
-    subtitle: { fontSize: 10, color: '#888' },
     workspace: { display: 'flex', alignItems: 'stretch' },
     sidebar: {
-        // Qt's left sidebar (sketcher_widget.ui side_panel_wdg) is ~100px;
-        // we match that here so the canvas claims the rest of the workspace.
-        width: 100,
-        flex: '0 0 100px',
+        // sketcher_side_bar.ui — 117px wide, VBox spacing=2.
+        width: 117,
+        flex: '0 0 117px',
         background: SIDEBAR_BG,
         borderRight: `1px solid ${BORDER_COLOR}`,
-        padding: '8px 6px',
+        padding: '4px 2px',
         display: 'flex',
         flexDirection: 'column',
-        gap: 8,
+        gap: 2,
         boxSizing: 'border-box',
         overflow: 'hidden',
     },
-    section: { display: 'flex', flexDirection: 'column', gap: 4 },
+    selectSection: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 2,
+        padding: '2px 0',
+        borderRadius: 3,
+    },
+    selectSectionActive: { background: SELECT_ACTIVE_BG },
     sectionLabel: {
-        // Qt's QGroupBox titles ("SELECT", "DRAW") are uppercase and
-        // small-cap weight — match that so headers read as in-place dividers
-        // rather than full headings.
-        fontSize: 10,
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
-        color: '#666',
-        padding: '0 2px',
-        fontWeight: 600,
+        fontSize: 9,
+        fontWeight: 700,
+        color: SECTION_LABEL_COLOR,
+        textAlign: 'center',
+        padding: '2px 0',
+        letterSpacing: 0.3,
     },
-    sectionGrid: {
-        display: 'grid',
-        gridTemplateColumns: 'repeat(2, 1fr)',
-        gap: 3,
-    },
-    sectionDivider: {
+    hr: {
         height: 1,
         background: BORDER_COLOR,
-        margin: '2px 2px',
+        border: 'none',
+        margin: '2px 0',
+        width: '100%',
+    },
+    row2: {
+        display: 'grid',
+        gridTemplateColumns: `repeat(2, ${ICON_BTN_SIZE}px)`,
+        gap: 2,
+        justifyContent: 'center',
+    },
+    row3: {
+        display: 'grid',
+        gridTemplateColumns: `repeat(3, ${ICON_BTN_SIZE}px)`,
+        gap: 2,
+        justifyContent: 'center',
+    },
+    elementGrid: {
+        display: 'grid',
+        gridTemplateColumns: `repeat(3, ${ICON_BTN_SIZE}px)`,
+        gap: 2,
+        justifyContent: 'center',
+    },
+    atomQueryRow: {
+        display: 'grid',
+        gridTemplateColumns: `${ICON_BTN_SIZE}px ${ICON_BTN_SIZE * 2 + 2}px`,
+        gap: 2,
+        justifyContent: 'center',
+    },
+    bondGrid: {
+        display: 'grid',
+        gridTemplateColumns: `repeat(3, ${ICON_BTN_SIZE}px)`,
+        gap: 2,
+        justifyContent: 'center',
+    },
+    ringGrid: {
+        display: 'grid',
+        gridTemplateColumns: `repeat(3, ${ICON_BTN_SIZE}px)`,
+        gap: 2,
+        justifyContent: 'center',
+    },
+    iconBtn: {
+        width: ICON_BTN_SIZE,
+        height: ICON_BTN_SIZE,
+        padding: 0,
+        border: 'none',
+        background: 'transparent',
+        cursor: 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 2,
+    },
+    iconBtnWide: { width: ICON_BTN_SIZE * 2 + 2 },
+    iconBtnHover: { background: HOVER_BG },
+    iconBtnActive: { background: CHECKED_BG },
+    iconImg: {
+        // Qt iconSize is 30×32; the button itself is 32×32 with 1px margin.
+        width: 30,
+        height: 32,
+        pointerEvents: 'none',
+        userSelect: 'none',
+    },
+    letterBtn: {
+        width: ICON_BTN_SIZE,
+        height: ICON_BTN_SIZE,
+        padding: 0,
+        border: 'none',
+        background: 'transparent',
+        cursor: 'pointer',
+        fontFamily: 'Arimo, "Helvetica Neue", Arial, sans-serif',
+        fontSize: 14,
+        fontWeight: 700,
+        color: ATOM_LETTER_COLOR,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 2,
+    },
+    textLinkBtn: {
+        height: 18,
+        padding: '0 2px',
+        border: 'none',
+        background: 'transparent',
+        cursor: 'pointer',
+        fontFamily: 'Arimo, "Helvetica Neue", Arial, sans-serif',
+        fontSize: 10,
+        fontWeight: 700,
+        color: TEXT_LINK_COLOR,
+    },
+    textLinkBtnHover: {
+        color: TEXT_LINK_HOVER,
+        background: 'transparent',
     },
     moreMenu: {
         position: 'absolute',
@@ -1815,59 +2055,12 @@ const styles: Record<string, CSSProperties> = {
         width: '100%',
         display: 'block',
     },
-    moreItemHover: {
-        background: ACTION_HOVER_BG,
-    },
+    moreItemHover: { background: HOVER_BG },
     canvasColumn: {
         flex: '1 1 auto',
         display: 'flex',
         flexDirection: 'column',
         background: 'white',
-    },
-    toolBtn: {
-        font: 'inherit',
-        fontSize: 12,
-        padding: '5px 4px',
-        minHeight: 28,
-        // minWidth:0 + overflow rules let the button shrink into its grid
-        // cell. Without these, long labels like "Cyclohexane" overflow and
-        // the visible button center can land on top of the adjacent canvas,
-        // which then intercepts pointer events on the button.
-        minWidth: 0,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
-        border: `1px solid ${BORDER_COLOR}`,
-        background: 'white',
-        color: '#222',
-        borderRadius: 3,
-        cursor: 'pointer',
-        textAlign: 'center',
-    },
-    toolBtnHover: {
-        background: ACTION_HOVER_BG,
-        borderColor: CHECKED_BORDER,
-    },
-    toolBtnActive: {
-        background: CHECKED_BG,
-        borderColor: CHECKED_BORDER,
-        color: '#111',
-        fontWeight: 600,
-    },
-    actionBtn: {
-        font: 'inherit',
-        fontSize: 12,
-        padding: '4px 10px',
-        minHeight: 24,
-        border: `1px solid ${BORDER_COLOR}`,
-        background: 'white',
-        color: '#222',
-        borderRadius: 3,
-        cursor: 'pointer',
-    },
-    actionBtnHover: {
-        background: ACTION_HOVER_BG,
-        borderColor: CHECKED_BORDER,
     },
     canvas: {
         background: 'white',
@@ -1907,8 +2100,6 @@ const styles: Record<string, CSSProperties> = {
         background: 'white',
         minWidth: 0,
         resize: 'vertical',
-        // Inherit the cell's vertical-aligned baseline so the input and
-        // adjacent buttons line up when the textarea is single-line.
         verticalAlign: 'top',
     },
     smilesButtons: {
@@ -1916,5 +2107,16 @@ const styles: Record<string, CSSProperties> = {
         flexDirection: 'column',
         gap: 4,
         flex: '0 0 auto',
+    },
+    smilesBtn: {
+        font: 'inherit',
+        fontSize: 12,
+        padding: '4px 10px',
+        minHeight: 24,
+        border: `1px solid ${BORDER_COLOR}`,
+        background: 'white',
+        color: '#222',
+        borderRadius: 3,
+        cursor: 'pointer',
     },
 };
