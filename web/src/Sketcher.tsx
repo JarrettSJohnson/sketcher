@@ -26,12 +26,17 @@ interface AtomDesc {
     x: number;
     y: number;
     sel?: boolean;
+    q?: number; // formal charge (omitted when 0)
+    nh?: number; // total H count (omitted when 0)
+    iso?: number; // isotope (omitted when 0)
+    arom?: boolean; // aromatic flag (omitted when false)
 }
 interface BondDesc {
     a: number;
     b: number;
     o: number;
     sel?: boolean;
+    arom?: boolean;
 }
 interface RenderDesc {
     atoms: AtomDesc[];
@@ -247,8 +252,12 @@ function drawSketch(
             ctx.arc(px, py, 13, 0, 2 * Math.PI);
             ctx.fill();
         }
-        if (a.el === 'C' && !isPending && !isHover && !a.sel) {
-            // Carbon: just a dot so the user can see something's there.
+        const hasCharge = typeof a.q === 'number' && a.q !== 0;
+        // Carbons get only a dot unless they carry a charge — otherwise the
+        // canvas turns into a wall of "C" labels for every backbone atom.
+        const dotOnly =
+            a.el === 'C' && !hasCharge && !isPending && !isHover && !a.sel;
+        if (dotOnly) {
             ctx.fillStyle = '#333';
             ctx.beginPath();
             ctx.arc(px, py, 2.5, 0, 2 * Math.PI);
@@ -256,16 +265,59 @@ function drawSketch(
             continue;
         }
         if (a.el !== 'C') {
+            // White backdrop punches a hole in any bond line passing through.
             ctx.fillStyle = 'white';
             ctx.fillRect(px - 9, py - 9, 18, 18);
         }
         ctx.fillStyle = ELEMENT_COLORS[a.el] ?? '#333';
-        if (a.el === 'C' && a.sel && !isPending && !isHover) {
+        if (a.el === 'C' && a.sel && !isPending && !isHover && !hasCharge) {
             ctx.beginPath();
             ctx.arc(px, py, 2.5, 0, 2 * Math.PI);
             ctx.fill();
         } else {
+            ctx.font = '13px sans-serif';
             ctx.fillText(a.el, px, py);
+            // H count: render "H" or "Hn" to the right of non-C labels. Skip
+            // for C even when shown for charge — carbons typically suppress
+            // their Hs to keep the structure readable.
+            if (a.el !== 'C' && typeof a.nh === 'number' && a.nh > 0) {
+                ctx.textAlign = 'left';
+                const labelWidth = ctx.measureText(a.el).width;
+                const hX = px + labelWidth / 2 + 1;
+                ctx.fillText('H', hX, py);
+                if (a.nh > 1) {
+                    ctx.font = '9px sans-serif';
+                    const hWidth = ctx.measureText('H').width;
+                    ctx.fillText(String(a.nh), hX + hWidth + 1, py + 4);
+                }
+                ctx.textAlign = 'center';
+                ctx.font = '13px sans-serif';
+            }
+            // Charge: superscript to the upper-right. "+" / "−" alone for ±1,
+            // otherwise "n+" / "n−". Unicode minus sign reads better than "-".
+            if (hasCharge) {
+                const q = a.q as number;
+                const sign = q > 0 ? '+' : '−';
+                const chargeText =
+                    Math.abs(q) === 1 ? sign : `${Math.abs(q)}${sign}`;
+                ctx.font = '9px sans-serif';
+                ctx.textAlign = 'left';
+                const labelWidth = ctx.measureText(a.el).width;
+                // Push past the H label if one is rendered.
+                let chargeX = px + labelWidth / 2 + 1;
+                if (a.el !== 'C' && typeof a.nh === 'number' && a.nh > 0) {
+                    ctx.font = '13px sans-serif';
+                    chargeX += ctx.measureText('H').width;
+                    if (a.nh > 1) {
+                        ctx.font = '9px sans-serif';
+                        chargeX += ctx.measureText(String(a.nh)).width + 1;
+                    }
+                    ctx.font = '9px sans-serif';
+                }
+                ctx.fillText(chargeText, chargeX, py - 4);
+                ctx.textAlign = 'center';
+                ctx.font = '13px sans-serif';
+            }
         }
     }
 

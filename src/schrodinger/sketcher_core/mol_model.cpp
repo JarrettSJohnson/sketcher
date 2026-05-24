@@ -66,6 +66,16 @@ void MolModel::doMutation(const std::function<void()>& mutate,
 
     RDKit::RWMol before(m_mol);
     mutate();
+    // Refresh the implicit-valence / H-count property cache so render
+    // description can read getTotalNumHs() without sanitizing the whole mol.
+    // strict=false tolerates intermediate hypervalent atoms the user might
+    // create while editing; on failure we just skip the refresh — render-
+    // side properties may be stale but nothing crashes.
+    try {
+        m_mol.updatePropertyCache(/*strict=*/false);
+    } catch (...) {
+        // Swallow: leaves the prior cache in place rather than aborting.
+    }
     RDKit::RWMol after(m_mol);
 
     auto redo = [this, after] {

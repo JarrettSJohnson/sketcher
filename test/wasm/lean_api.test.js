@@ -20,6 +20,32 @@ test.describe('lean WASM render description', () => {
         expect(rd.atoms.map(a => a.el)).toEqual(['C', 'C', 'O']);
     });
 
+    test('SMILES with charge and implicit Hs emits q / nh annotations', async ({ page }) => {
+        // Ammonium: one N atom, charge +1, four implicit hydrogens.
+        const rd = await page.evaluate(() => {
+            const json = window.Module.render_description_from_smiles('[NH4+]');
+            return JSON.parse(json);
+        });
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].el).toBe('N');
+        expect(rd.atoms[0].q).toBe(1);
+        expect(rd.atoms[0].nh).toBe(4);
+    });
+
+    test('aromatic SMILES sets arom flag on atoms and bonds', async ({ page }) => {
+        const rd = await page.evaluate(() => {
+            const json = window.Module.render_description_from_smiles('c1ccccc1');
+            return JSON.parse(json);
+        });
+        expect(rd.atoms).toHaveLength(6);
+        expect(rd.bonds).toHaveLength(6);
+        // Every atom and every bond should be aromatic.
+        expect(rd.atoms.every(a => a.arom === true)).toBe(true);
+        expect(rd.bonds.every(b => b.arom === true)).toBe(true);
+        // Aromatic carbons have one implicit H each.
+        expect(rd.atoms.every(a => a.nh === 1)).toBe(true);
+    });
+
     test('empty/invalid input does not crash', async ({ page }) => {
         const rd = await page.evaluate(() => {
             try {

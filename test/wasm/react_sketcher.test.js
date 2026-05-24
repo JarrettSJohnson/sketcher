@@ -324,4 +324,33 @@ test.describe('React Sketcher', () => {
         expect(rd.atoms.some((a) => a.sel)).toBe(false);
         expect(rd.bonds.some((b) => b.sel)).toBe(false);
     });
+
+    test('interactively added O atom carries chemistry annotations', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('element-O').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].el).toBe('O');
+        // Property cache refresh in doMutation makes implicit Hs visible
+        // without a separate sanitize call.
+        expect(rd.atoms[0].nh).toBe(2);
+        // Neutral atom: no charge field emitted.
+        expect(rd.atoms[0].q).toBeUndefined();
+        expect(rd.atoms[0].arom).toBeUndefined();
+
+        // Bonding the O to a fresh C reduces O's H count from 2 to 1.
+        await page.getByTestId('element-C').click();
+        await canvas.click({ position: { x: 320, y: 200 } });
+        await page.getByTestId('tool-bond').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await canvas.click({ position: { x: 320, y: 200 } });
+
+        const rd2 = await snapshot(page);
+        const oxygen = rd2.atoms.find((a) => a.el === 'O');
+        expect(oxygen.nh).toBe(1);
+    });
 });

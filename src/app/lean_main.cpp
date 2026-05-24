@@ -61,13 +61,39 @@ std::string mol_to_render_description(
 
     os << "{\"atoms\":[";
     for (unsigned int i = 0; i < mol.getNumAtoms(); ++i) {
+        const auto* atom = mol.getAtomWithIdx(i);
         const auto& p = conf.getAtomPos(i);
         if (i > 0) {
             os << ',';
         }
-        os << "{\"i\":" << i << ",\"el\":\""
-           << mol.getAtomWithIdx(i)->getSymbol() << "\",\"x\":" << p.x
-           << ",\"y\":" << p.y;
+        os << "{\"i\":" << i << ",\"el\":\"" << atom->getSymbol()
+           << "\",\"x\":" << p.x << ",\"y\":" << p.y;
+        // Chemistry annotations — emitted only when non-default to keep the
+        // JSON shape minimal for the common case (neutral C/H/O/N skeletons).
+        const int charge = atom->getFormalCharge();
+        if (charge != 0) {
+            os << ",\"q\":" << charge;
+        }
+        int nh = 0;
+        try {
+            // Total H = explicit + implicit. Implicit Hs require an up-to-date
+            // property cache, which doMutation refreshes for the interactive
+            // path and render_description_from_text refreshes for the SMILES
+            // path. Defaults to 0 if the cache is unavailable.
+            nh = atom->getTotalNumHs();
+        } catch (...) {
+            nh = 0;
+        }
+        if (nh != 0) {
+            os << ",\"nh\":" << nh;
+        }
+        const unsigned iso = atom->getIsotope();
+        if (iso != 0) {
+            os << ",\"iso\":" << iso;
+        }
+        if (atom->getIsAromatic()) {
+            os << ",\"arom\":true";
+        }
         if (model != nullptr && model->isAtomSelected(i)) {
             os << ",\"sel\":true";
         }
@@ -82,6 +108,9 @@ std::string mol_to_render_description(
         os << "{\"a\":" << b->getBeginAtomIdx()
            << ",\"b\":" << b->getEndAtomIdx()
            << ",\"o\":" << b->getBondTypeAsDouble();
+        if (b->getIsAromatic()) {
+            os << ",\"arom\":true";
+        }
         if (model != nullptr && model->isBondSelected(i)) {
             os << ",\"sel\":true";
         }
@@ -101,6 +130,14 @@ std::string render_description_from_text(const std::string& text,
     RDKit::RWMol rw(*mol);
     if (rw.getNumAtoms() > 0) {
         compute2DCoords(rw);
+        // Refresh implicit-valence cache so mol_to_render_description can
+        // read getTotalNumHs without sanitizing. strict=false tolerates
+        // hypervalent inputs the user might paste in.
+        try {
+            rw.updatePropertyCache(/*strict=*/false);
+        } catch (...) {
+            // Swallow: render will fall back to nh=0 for affected atoms.
+        }
     }
     return mol_to_render_description(rw);
 }

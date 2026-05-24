@@ -407,3 +407,24 @@ BOOST_AUTO_TEST_CASE(testMoveAtomUndoablePreservesSelection)
     BOOST_CHECK(m.isAtomSelected(1));
     BOOST_CHECK_EQUAL(sel_fires, 0);
 }
+
+BOOST_AUTO_TEST_CASE(testPropertyCacheRefreshExposesImplicitHs)
+{
+    // doMutation refreshes the implicit-valence cache so callers can read
+    // getTotalNumHs without sanitizing the whole mol. A bare O should
+    // show two hydrogens after the cache refresh.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("O", 0, 0);
+    const auto* atom = m.mol().getAtomWithIdx(0);
+    BOOST_CHECK_EQUAL(atom->getTotalNumHs(), 2);
+
+    m.addAtom("N", 1, 0);
+    const auto* nitrogen = m.mol().getAtomWithIdx(1);
+    BOOST_CHECK_EQUAL(nitrogen->getTotalNumHs(), 3);
+
+    // After bonding, the H count must update.
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getTotalNumHs(), 1);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getTotalNumHs(), 2);
+}
