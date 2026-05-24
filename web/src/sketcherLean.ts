@@ -37,6 +37,10 @@ export interface MolModelInstance {
     addHydrogens(): void;
     /** Strip explicit hydrogens back to implicit. Single undo step. */
     removeHydrogens(): void;
+    /** Perceive aromaticity — sets arom flag on atoms/bonds. Single undo step. */
+    aromatize(): void;
+    /** Kekulize aromatic bonds back to explicit SINGLE/DOUBLE alternation. Single undo step. */
+    kekulize(): void;
     undo(): void;
     redo(): void;
     numAtoms(): number;

@@ -567,6 +567,45 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
         expect(result.undoNh).toBe(3);
     });
 
+    test('kekulize on benzene clears aromatic flag and assigns SINGLE/DOUBLE alternation', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.loadFromSmiles('c1ccccc1');
+            const aromBefore = JSON.parse(m.description()).bonds.every((b) => b.arom === true);
+            m.kekulize();
+            const desc = JSON.parse(m.description());
+            const aromAfter = desc.bonds.filter((b) => b.arom === true).length;
+            const singleCount = desc.bonds.filter((b) => b.o === 1).length;
+            const doubleCount = desc.bonds.filter((b) => b.o === 2).length;
+            m.undo();
+            const aromUndo = JSON.parse(m.description()).bonds.every((b) => b.arom === true);
+            m.delete();
+            return { aromBefore, aromAfter, singleCount, doubleCount, aromUndo };
+        });
+        expect(result.aromBefore).toBe(true);
+        expect(result.aromAfter).toBe(0);
+        expect(result.singleCount).toBe(3);
+        expect(result.doubleCount).toBe(3);
+        // Undo restores the aromatic form.
+        expect(result.aromUndo).toBe(true);
+    });
+
+    test('aromatize on a Kekulé benzene sets the aromatic flag', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            // addRing(6, aromatic=true) builds explicit SINGLE/DOUBLE without
+            // perception, so we have a clean kekulé benzene to aromatize.
+            m.addRing(6, 0, 0, true);
+            const aromBefore = JSON.parse(m.description()).bonds.some((b) => b.arom === true);
+            m.aromatize();
+            const aromAfter = JSON.parse(m.description()).bonds.every((b) => b.arom === true);
+            m.delete();
+            return { aromBefore, aromAfter };
+        });
+        expect(result.aromBefore).toBe(false);
+        expect(result.aromAfter).toBe(true);
+    });
+
     test('addHydrogens then removeHydrogens round-trips through MolModel', async ({ page }) => {
         const result = await page.evaluate(() => {
             const m = new window.Module.MolModel();

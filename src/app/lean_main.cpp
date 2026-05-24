@@ -339,6 +339,14 @@ class MolModelJS
     {
         m_model.removeHydrogens();
     }
+    void aromatize()
+    {
+        m_model.aromatize();
+    }
+    void kekulize()
+    {
+        m_model.kekulize();
+    }
     void undo()
     {
         m_stack.undo();
@@ -514,6 +522,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("toMolBlock", &MolModelJS::toMolBlock)
         .function("addHydrogens", &MolModelJS::addHydrogens)
         .function("removeHydrogens", &MolModelJS::removeHydrogens)
+        .function("aromatize", &MolModelJS::aromatize)
+        .function("kekulize", &MolModelJS::kekulize)
         .function("undo", &MolModelJS::undo)
         .function("redo", &MolModelJS::redo)
         .function("numAtoms", &MolModelJS::numAtoms)

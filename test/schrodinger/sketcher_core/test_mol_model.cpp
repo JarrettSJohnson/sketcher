@@ -851,3 +851,95 @@ BOOST_AUTO_TEST_CASE(testRemoveHydrogensIsNoOpOnEmptyMol)
     BOOST_CHECK_EQUAL(m.numAtoms(), 0u);
     BOOST_CHECK_EQUAL(stack.count(), 0u);
 }
+
+BOOST_AUTO_TEST_CASE(testKekulizeBenzeneReplacesAromaticWithExplicitDoubles)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("c1ccccc1"); // arrives aromatic from the SMILES parser
+    // Sanity: every bond is aromatic up front.
+    for (unsigned int i = 0; i < m.numBonds(); ++i) {
+        BOOST_CHECK(m.mol().getBondWithIdx(i)->getIsAromatic());
+    }
+
+    m.kekulize();
+
+    // After kekulize: 3 SINGLE + 3 DOUBLE bonds, no aromatic flag.
+    unsigned int singles = 0, doubles = 0;
+    for (unsigned int i = 0; i < m.numBonds(); ++i) {
+        const auto* b = m.mol().getBondWithIdx(i);
+        BOOST_CHECK(!b->getIsAromatic());
+        if (b->getBondType() == RDKit::Bond::BondType::SINGLE) {
+            ++singles;
+        } else if (b->getBondType() == RDKit::Bond::BondType::DOUBLE) {
+            ++doubles;
+        }
+    }
+    BOOST_CHECK_EQUAL(singles, 3u);
+    BOOST_CHECK_EQUAL(doubles, 3u);
+
+    // Atom arom flag is also cleared.
+    for (unsigned int i = 0; i < m.numAtoms(); ++i) {
+        BOOST_CHECK(!m.mol().getAtomWithIdx(i)->getIsAromatic());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(testAromatizeBenzeneSetsAromaticFlag)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    // Start from a kekulized benzene laid out via addRing(aromatic=true),
+    // which builds explicit SINGLE/DOUBLE bonds without aromatic perception.
+    m.addRing(6, /*cx=*/0.0, /*cy=*/0.0, /*aromatic=*/true);
+    // Up front: no aromatic flags (addRing builds Kekulé form).
+    for (unsigned int i = 0; i < m.numBonds(); ++i) {
+        BOOST_CHECK(!m.mol().getBondWithIdx(i)->getIsAromatic());
+    }
+
+    m.aromatize();
+
+    // After aromatize: every bond + atom carries the aromatic flag.
+    for (unsigned int i = 0; i < m.numBonds(); ++i) {
+        BOOST_CHECK(m.mol().getBondWithIdx(i)->getIsAromatic());
+    }
+    for (unsigned int i = 0; i < m.numAtoms(); ++i) {
+        BOOST_CHECK(m.mol().getAtomWithIdx(i)->getIsAromatic());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(testAromatizeKekulizeRoundTripsThroughUndo)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("c1ccccc1");
+    const std::string before = m.toSmiles();
+
+    m.kekulize();
+    m.aromatize();
+    // Canonical SMILES is stable under aromatize-after-kekulize.
+    BOOST_CHECK_EQUAL(m.toSmiles(), before);
+
+    // Undo the aromatize → kekulé form; undo the kekulize → original aromatic.
+    stack.undo();
+    bool any_arom_after_undo_aromatize = false;
+    for (unsigned int i = 0; i < m.numBonds(); ++i) {
+        if (m.mol().getBondWithIdx(i)->getIsAromatic()) {
+            any_arom_after_undo_aromatize = true;
+            break;
+        }
+    }
+    BOOST_CHECK(!any_arom_after_undo_aromatize);
+
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.toSmiles(), before);
+}
+
+BOOST_AUTO_TEST_CASE(testAromatizeAndKekulizeAreNoOpOnEmptyMol)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.aromatize();
+    m.kekulize();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 0u);
+    BOOST_CHECK_EQUAL(stack.count(), 0u);
+}

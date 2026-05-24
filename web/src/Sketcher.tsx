@@ -946,6 +946,28 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setStatus(removed > 0 ? `removed ${removed} explicit H${removed === 1 ? '' : 's'}` : 'no removable Hs');
     };
 
+    const doAromatize = (): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        if (model.numAtoms() === 0) {
+            setStatus('nothing to aromatize — sketch something first');
+            return;
+        }
+        model.aromatize();
+        setStatus('aromatized');
+    };
+
+    const doKekulize = (): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        if (model.numAtoms() === 0) {
+            setStatus('nothing to kekulize — sketch something first');
+            return;
+        }
+        model.kekulize();
+        setStatus('kekulized');
+    };
+
     // Keyboard shortcuts match the Qt sketcher: Ctrl/Cmd+Z undo,
     // Ctrl/Cmd+Shift+Z or Ctrl+Y redo, Del/Backspace deletes the selection,
     // Ctrl/Cmd+A selects everything. We listen on window so the user doesn't
@@ -1123,6 +1145,20 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             onClick={doRemoveHydrogens}
                             testid='hydrogens-remove'
                             title='Strip explicit hydrogens back to implicit'
+                        />
+                    </Section>
+                    <Section label='Aromaticity'>
+                        <ActionButton
+                            label='Aromatize'
+                            onClick={doAromatize}
+                            testid='aromatize'
+                            title='Perceive aromaticity on rings'
+                        />
+                        <ActionButton
+                            label='Kekulize'
+                            onClick={doKekulize}
+                            testid='kekulize'
+                            title='Replace aromatic bonds with explicit single/double alternation'
                         />
                     </Section>
                     <Section label='Stereo'>

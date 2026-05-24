@@ -563,4 +563,31 @@ test.describe('React Sketcher', () => {
         const status = await page.getByTestId('sketcher-status').textContent();
         expect(status).toMatch(/nothing to expand/);
     });
+
+    test('Kekulize / Aromatize buttons toggle benzene aromaticity end-to-end', async ({ page }) => {
+        // Aromatic benzene from SMILES.
+        await page.getByTestId('smiles-input').fill('c1ccccc1');
+        await page.getByTestId('smiles-load').click();
+
+        let rd = await snapshot(page);
+        // All bonds start aromatic.
+        expect(rd.bonds.every((b) => b.arom === true)).toBe(true);
+
+        await page.getByTestId('kekulize').click();
+        rd = await snapshot(page);
+        // After kekulize: no arom flag, three single + three double bonds.
+        expect(rd.bonds.some((b) => b.arom === true)).toBe(false);
+        expect(rd.bonds.filter((b) => b.o === 1)).toHaveLength(3);
+        expect(rd.bonds.filter((b) => b.o === 2)).toHaveLength(3);
+
+        await page.getByTestId('aromatize').click();
+        rd = await snapshot(page);
+        // Aromatize re-sets the flag on every bond.
+        expect(rd.bonds.every((b) => b.arom === true)).toBe(true);
+
+        // Undo walks back to kekulé form.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.bonds.some((b) => b.arom === true)).toBe(false);
+    });
 });

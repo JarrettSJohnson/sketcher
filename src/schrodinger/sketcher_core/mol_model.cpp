@@ -24,6 +24,7 @@
 #include <GraphMol/Bond.h>
 #include <GraphMol/Chirality.h>
 #include <GraphMol/Conformer.h>
+#include <GraphMol/MolOps.h>
 
 #include "schrodinger/rdkit_extensions/convert.h"
 #include "schrodinger/rdkit_extensions/coord_utils.h"
@@ -409,6 +410,57 @@ void MolModel::removeHydrogens()
     }
     doMutation([this] { rdkit_extensions::removeHs(m_mol); },
                "Remove hydrogens");
+}
+
+void MolModel::aromatize()
+{
+    if (m_mol.getNumAtoms() == 0) {
+        return;
+    }
+    doMutation(
+        [this] {
+            // setAromaticity needs the implicit-valence cache populated;
+            // doMutation refreshes it after the lambda returns, but we
+            // need it *before* perception runs. strict=false tolerates
+            // hypervalent intermediates the user might construct.
+            try {
+                m_mol.updatePropertyCache(/*strict=*/false);
+            } catch (...) {
+                // perception will fail below; swallow there too.
+            }
+            try {
+                RDKit::MolOps::setAromaticity(m_mol);
+            } catch (...) {
+                // Leave mol unchanged on perception failure — the snapshot
+                // pre-image is still on the undo stack, so the user can
+                // continue editing.
+            }
+        },
+        "Aromatize");
+}
+
+void MolModel::kekulize()
+{
+    if (m_mol.getNumAtoms() == 0) {
+        return;
+    }
+    doMutation(
+        [this] {
+            try {
+                m_mol.updatePropertyCache(/*strict=*/false);
+            } catch (...) {
+            }
+            try {
+                // markAtomsBonds=true clears the aromatic flag on
+                // atoms/bonds in addition to assigning Kekulé bond orders,
+                // which is what users expect "kekulize" to do (otherwise
+                // a benzene re-aromatizes the next time something pokes it).
+                RDKit::MolOps::Kekulize(m_mol, /*markAtomsBonds=*/true);
+            } catch (...) {
+                // Unkekulizable mol (rare); leave as-is.
+            }
+        },
+        "Kekulize");
 }
 
 std::string MolModel::toMolBlock(bool v3000) const

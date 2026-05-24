@@ -167,6 +167,22 @@ class MolModel : public UndoableModel
      */
     void removeHydrogens();
 
+    /**
+     * Perceive aromaticity on the current mol — sets the aromatic flag on
+     * atoms and bonds wherever RDKit's default aromaticity model fires
+     * (Daylight-ish). Single undo step. No-op when the mol is empty. Swallow
+     * RDKit perception failures so a stray odd valence doesn't kill the edit.
+     */
+    void aromatize();
+
+    /**
+     * Kekulize the current mol — replaces aromatic bonds with explicit
+     * SINGLE/DOUBLE alternation and clears the aromatic flag. Counterpart to
+     * aromatize. Single undo step. Silent no-op if kekulization fails for
+     * the current structure (e.g. unkekulizable aromatic system).
+     */
+    void kekulize();
+
     // -- Selection --------------------------------------------------------
     // Selection is transient UI state, not undoable. Any mutation that may
     // reindex atoms/bonds clears it (matching the simplest correct policy
