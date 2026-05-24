@@ -93,9 +93,9 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
     test('build ethanol atom-by-atom and render description', async ({ page }) => {
         const description = await page.evaluate(() => {
             const m = new window.Module.MolModel();
-            m.addAtom('C');
-            m.addAtom('C');
-            m.addAtom('O');
+            m.addAtom('C', 0, 0);
+            m.addAtom('C', 1.5, 0);
+            m.addAtom('O', 3.0, 0);
             m.addBond(0, 1, 1); // single
             m.addBond(1, 2, 1);
             const json = m.description();
@@ -106,6 +106,27 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
         expect(description.bonds).toHaveLength(2);
         expect(description.atoms.map(a => a.el)).toEqual(['C', 'C', 'O']);
         expect(description.bonds.map(b => [b.a, b.b])).toEqual([[0, 1], [1, 2]]);
+        // The render description must surface the coords we set, not a
+        // freshly-computed layout.
+        expect(description.atoms.map(a => [a.x, a.y])).toEqual([
+            [0, 0], [1.5, 0], [3.0, 0],
+        ]);
+    });
+
+    test('coords survive undo/redo', async ({ page }) => {
+        const trace = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('C', 7, 11);
+            m.addAtom('O', -3, 4.25);
+            m.undo();
+            m.undo();
+            m.redo();
+            m.redo();
+            const json = JSON.parse(m.description());
+            m.delete();
+            return json.atoms.map(a => [a.el, a.x, a.y]);
+        });
+        expect(trace).toEqual([['C', 7, 11], ['O', -3, 4.25]]);
     });
 
     test('undo / redo round-trips through MolModel', async ({ page }) => {
@@ -113,15 +134,15 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
             const m = new window.Module.MolModel();
             const counts = [];
             const snap = () => counts.push([m.numAtoms(), m.numBonds()]);
-            snap();              // [0, 0]
-            m.addAtom('C'); snap();
-            m.addAtom('O'); snap();
-            m.addBond(0, 1, 2); // double
-            snap();              // [2, 1]
-            m.undo(); snap();    // [2, 0]
-            m.undo(); snap();    // [1, 0]
-            m.redo(); snap();    // [2, 0]
-            m.redo(); snap();    // [2, 1]
+            snap();                       // [0, 0]
+            m.addAtom('C', 0, 0); snap();
+            m.addAtom('O', 1.5, 0); snap();
+            m.addBond(0, 1, 2);           // double
+            snap();                       // [2, 1]
+            m.undo(); snap();             // [2, 0]
+            m.undo(); snap();             // [1, 0]
+            m.redo(); snap();             // [2, 0]
+            m.redo(); snap();             // [2, 1]
             m.delete();
             return counts;
         });
@@ -136,13 +157,13 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
             const m = new window.Module.MolModel();
             let fired = 0;
             const handle = window.Module.mol_model_subscribe(m, () => { ++fired; });
-            m.addAtom('C');
-            m.addAtom('N');
+            m.addAtom('C', 0, 0);
+            m.addAtom('N', 1.5, 0);
             m.addBond(0, 1, 1);
             m.undo();
             m.redo();
             window.Module.mol_model_unsubscribe(handle);
-            m.addAtom('O'); // post-unsubscribe — should NOT fire
+            m.addAtom('O', 3, 0); // post-unsubscribe — should NOT fire
             const final = fired;
             m.delete();
             return final;
@@ -154,9 +175,9 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
     test('removeAtom drops incident bonds and undo restores them', async ({ page }) => {
         const result = await page.evaluate(() => {
             const m = new window.Module.MolModel();
-            m.addAtom('C');
-            m.addAtom('C');
-            m.addAtom('O');
+            m.addAtom('C', 0, 0);
+            m.addAtom('C', 1.5, 0);
+            m.addAtom('O', 3.0, 0);
             m.addBond(0, 1, 1);
             m.addBond(1, 2, 1);
             const beforeRemove = [m.numAtoms(), m.numBonds()];

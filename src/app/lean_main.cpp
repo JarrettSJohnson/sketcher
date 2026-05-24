@@ -39,15 +39,15 @@ using schrodinger::rdkit_extensions::to_rdkit;
 
 /**
  * Serialize an RDKit mol to the JSON render description shape expected by
- * lean.html and Playwright. Computes 2D coords on the passed mol in place if
- * any atoms are present.
+ * lean.html and Playwright. The caller is responsible for ensuring `mol` has
+ * a conformer — typically by calling compute2DCoords first for parsed mols,
+ * or by relying on the model to maintain coords for interactive ones.
  */
-std::string mol_to_render_description(RDKit::RWMol& mol)
+std::string mol_to_render_description(const RDKit::RWMol& mol)
 {
     if (mol.getNumAtoms() == 0) {
         return R"({"atoms":[],"bonds":[]})";
     }
-    compute2DCoords(mol);
     const auto& conf = mol.getConformer();
 
     std::ostringstream os;
@@ -86,6 +86,9 @@ std::string render_description_from_text(const std::string& text,
         return R"({"atoms":[],"bonds":[]})";
     }
     RDKit::RWMol rw(*mol);
+    if (rw.getNumAtoms() > 0) {
+        compute2DCoords(rw);
+    }
     return mol_to_render_description(rw);
 }
 
@@ -188,7 +191,7 @@ void counter_unsubscribe(std::size_t handle)
 // UndoStack so JS can `new Module.MolModel()` without juggling lifetimes.
 //
 //   const m = new Module.MolModel();
-//   m.addAtom("C"); m.addAtom("O"); m.addBond(0, 1, 1.0);
+//   m.addAtom("C", 0, 0); m.addAtom("O", 1.5, 0); m.addBond(0, 1, 1);
 //   m.undo();
 //   const json = JSON.parse(m.description());
 
@@ -199,9 +202,9 @@ class MolModelJS
     {
     }
 
-    void addAtom(const std::string& element)
+    void addAtom(const std::string& element, double x, double y)
     {
-        m_model.addAtom(element);
+        m_model.addAtom(element, x, y);
     }
     void addBond(unsigned int begin, unsigned int end, int bond_type)
     {
@@ -239,8 +242,7 @@ class MolModelJS
 
     std::string description() const
     {
-        RDKit::RWMol copy(m_model.mol());
-        return mol_to_render_description(copy);
+        return mol_to_render_description(m_model.mol());
     }
 
     Signal<>& modelChangedSignal()

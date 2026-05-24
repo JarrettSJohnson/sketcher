@@ -32,19 +32,50 @@ BOOST_AUTO_TEST_CASE(testAddAtomGrowsTheMolecule)
 {
     UndoStack stack;
     MolModel m(&stack);
-    m.addAtom("C");
-    m.addAtom("O");
+    m.addAtom("C", 0.0, 0.0);
+    m.addAtom("O", 1.5, 0.0);
     BOOST_CHECK_EQUAL(m.numAtoms(), 2u);
     BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getSymbol(), "C");
     BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getSymbol(), "O");
+}
+
+BOOST_AUTO_TEST_CASE(testAddAtomStoresCoords)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 1.5, 2.5);
+    m.addAtom("O", -3.0, 4.25);
+
+    double x = 0, y = 0;
+    m.atomPos(0, x, y);
+    BOOST_CHECK_CLOSE(x, 1.5, 1e-6);
+    BOOST_CHECK_CLOSE(y, 2.5, 1e-6);
+    m.atomPos(1, x, y);
+    BOOST_CHECK_CLOSE(x, -3.0, 1e-6);
+    BOOST_CHECK_CLOSE(y, 4.25, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(testUndoRedoPreservesCoords)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 7.0, 11.0);
+    stack.undo();
+    BOOST_CHECK(m.isEmpty());
+    stack.redo();
+
+    double x = 0, y = 0;
+    m.atomPos(0, x, y);
+    BOOST_CHECK_CLOSE(x, 7.0, 1e-6);
+    BOOST_CHECK_CLOSE(y, 11.0, 1e-6);
 }
 
 BOOST_AUTO_TEST_CASE(testAddBondConnectsAtoms)
 {
     UndoStack stack;
     MolModel m(&stack);
-    m.addAtom("C");
-    m.addAtom("C");
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
     m.addBond(0, 1, RDKit::Bond::BondType::DOUBLE);
     BOOST_REQUIRE_EQUAL(m.numBonds(), 1u);
     const auto* b = m.mol().getBondWithIdx(0);
@@ -57,8 +88,8 @@ BOOST_AUTO_TEST_CASE(testUndoRedoRoundTripPreservesEverything)
 {
     UndoStack stack;
     MolModel m(&stack);
-    m.addAtom("C");
-    m.addAtom("C");
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
     m.addBond(0, 1);
 
     BOOST_CHECK_EQUAL(stack.count(), 3u);
@@ -86,9 +117,9 @@ BOOST_AUTO_TEST_CASE(testRemoveAtomAlsoRemovesIncidentBondsAndUndoRestoresThem)
 {
     UndoStack stack;
     MolModel m(&stack);
-    m.addAtom("C");
-    m.addAtom("C");
-    m.addAtom("O");
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addAtom("O", 3.0, 0);
     m.addBond(0, 1);
     m.addBond(1, 2);
     BOOST_REQUIRE_EQUAL(m.numBonds(), 2u);
@@ -108,8 +139,8 @@ BOOST_AUTO_TEST_CASE(testRemoveBondLeavesAtomsAlone)
 {
     UndoStack stack;
     MolModel m(&stack);
-    m.addAtom("C");
-    m.addAtom("C");
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
     m.addBond(0, 1);
     m.removeBond(0, 1);
 
@@ -124,8 +155,8 @@ BOOST_AUTO_TEST_CASE(testClearWipesAtomsAndIsUndoable)
 {
     UndoStack stack;
     MolModel m(&stack);
-    m.addAtom("C");
-    m.addAtom("N");
+    m.addAtom("C", 0, 0);
+    m.addAtom("N", 1.5, 0);
     m.addBond(0, 1);
     m.clear();
 
@@ -143,9 +174,9 @@ BOOST_AUTO_TEST_CASE(testModelChangedFiresOncePerCommandAndOncePerUndoRedo)
     int fired = 0;
     auto conn = m.modelChanged.connect([&] { ++fired; });
 
-    m.addAtom("C");
+    m.addAtom("C", 0, 0);
     BOOST_CHECK_EQUAL(fired, 1);
-    m.addAtom("C");
+    m.addAtom("C", 1.5, 0);
     BOOST_CHECK_EQUAL(fired, 2);
     m.addBond(0, 1);
     BOOST_CHECK_EQUAL(fired, 3);
@@ -162,8 +193,8 @@ BOOST_AUTO_TEST_CASE(testMacroGroupsMutationsIntoSingleUndoStep)
     MolModel m(&stack);
     {
         auto macro = m.createUndoMacro("Build ethane");
-        m.addAtom("C");
-        m.addAtom("C");
+        m.addAtom("C", 0, 0);
+        m.addAtom("C", 1.5, 0);
         m.addBond(0, 1);
     }
     BOOST_CHECK_EQUAL(stack.count(), 1u);

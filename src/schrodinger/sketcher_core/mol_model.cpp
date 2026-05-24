@@ -15,8 +15,10 @@
 #include <memory>
 #include <utility>
 
+#include <Geometry/point.h>
 #include <GraphMol/Atom.h>
 #include <GraphMol/Bond.h>
+#include <GraphMol/Conformer.h>
 
 #include "schrodinger/sketcher_core/undo_stack.h"
 
@@ -25,8 +27,26 @@ namespace schrodinger
 namespace sketcher_core
 {
 
+namespace
+{
+
+/**
+ * Attach a fresh 2D conformer to `mol` so atom positions can be tracked.
+ * RWMol::removeAtom updates conformers automatically; addAtom does not, so
+ * callers must grow the position vector themselves when appending.
+ */
+void install_empty_2d_conformer(RDKit::RWMol& mol)
+{
+    auto conf = std::make_unique<RDKit::Conformer>(0);
+    conf->set3D(false);
+    mol.addConformer(conf.release(), /*assignId=*/true);
+}
+
+} // namespace
+
 MolModel::MolModel(UndoStack* stack) : UndoableModel(stack)
 {
+    install_empty_2d_conformer(m_mol);
 }
 
 void MolModel::doMutation(const std::function<void()>& mutate,
@@ -47,15 +67,30 @@ void MolModel::doMutation(const std::function<void()>& mutate,
     doCommand(std::move(redo), std::move(undo), description);
 }
 
-void MolModel::addAtom(const std::string& element)
+void MolModel::addAtom(const std::string& element, double x, double y)
 {
     doMutation(
-        [this, element] {
+        [this, element, x, y] {
             auto atom = std::make_unique<RDKit::Atom>(element);
-            m_mol.addAtom(atom.release(), /*updateLabel=*/false,
-                          /*takeOwnership=*/true);
+            const auto idx = m_mol.addAtom(atom.release(),
+                                           /*updateLabel=*/false,
+                                           /*takeOwnership=*/true);
+            auto& conf = m_mol.getConformer();
+            auto& positions = conf.getPositions();
+            // Conformer doesn't auto-grow on addAtom — extend it here.
+            if (positions.size() < m_mol.getNumAtoms()) {
+                positions.resize(m_mol.getNumAtoms(), RDGeom::Point3D(0, 0, 0));
+            }
+            conf.setAtomPos(idx, RDGeom::Point3D(x, y, 0));
         },
         "Add atom");
+}
+
+void MolModel::atomPos(unsigned int idx, double& x, double& y) const
+{
+    const auto& p = m_mol.getConformer().getAtomPos(idx);
+    x = p.x;
+    y = p.y;
 }
 
 void MolModel::addBond(unsigned int begin_idx, unsigned int end_idx,
@@ -80,7 +115,12 @@ void MolModel::removeBond(unsigned int begin_idx, unsigned int end_idx)
 
 void MolModel::clear()
 {
-    doMutation([this] { m_mol = RDKit::RWMol(); }, "Clear");
+    doMutation(
+        [this] {
+            m_mol = RDKit::RWMol();
+            install_empty_2d_conformer(m_mol);
+        },
+        "Clear");
 }
 
 } // namespace sketcher_core

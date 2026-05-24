@@ -50,8 +50,11 @@ class MolModel : public UndoableModel
         return m_mol.getNumBonds();
     }
 
-    /** Append an atom by element symbol. */
-    void addAtom(const std::string& element);
+    /** Append an atom by element symbol at the given 2D position. */
+    void addAtom(const std::string& element, double x, double y);
+
+    /** 2D position of the atom at `idx` (z is always 0). */
+    void atomPos(unsigned int idx, double& x, double& y) const;
 
     /** Add a bond between two existing atom indices. */
     void addBond(unsigned int begin_idx, unsigned int end_idx,
