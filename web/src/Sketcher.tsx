@@ -17,9 +17,13 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 // to commit it. Undo/redo/clear go through the same UndoStack the C++ Boost
 // tests cover.
 
-type Tool = 'atom' | 'bond' | 'select' | 'ring' | 'pan';
+type Tool = 'atom' | 'bond' | 'select' | 'ring';
 type Element = 'C' | 'O' | 'N' | 'H' | 'Cl';
-type BondOrder = 1 | 2 | 3;
+// Qt's bond_group is a single radio group covering single/double/triple plus
+// the stereo variants — picking any one button replaces the previously-active
+// bond mode. We mirror that here: BondMode collapses "what order is the next
+// bond?" and "what stereo dir does it get?" into one selection.
+type BondMode = 'single' | 'double' | 'triple' | 'wedge' | 'dash';
 
 interface RingSpec {
     size: number;
@@ -203,23 +207,11 @@ interface AtomDrag {
 
 const ATOM_DRAG_THRESHOLD = 3; // pixels — below this, treat as a click
 
-// Pan-tool drag state. Pan changes only the view transform — no model
-// mutation, no undo step. Live in a ref so mousemove doesn't trigger
-// React re-renders per pixel; the setView call is what flushes the redraw.
-interface PanDrag {
-    startPx: number;
-    startPy: number;
-    startOffsetX: number;
-    startOffsetY: number;
-}
-
-// Bounds on view.scale — keep within usable range so the user can't zoom
-// to invisible (0.05x) or far past pixel-grid resolution (10x).
+// Qt's QGraphicsView wheel zoom (sketcher_view.cpp `wheelEvent`) uses
+// scale_factor = 2^(angleDelta.y / 2400) and caps zoom-in at the default
+// "fit" scale — you can never zoom in past that resting view. We mirror
+// both: factor formula and the DEFAULT_SCALE upper bound.
 const MIN_VIEW_SCALE = 4;
-const MAX_VIEW_SCALE = 400;
-// Per-wheel-tick multiplier. 1.1 = ~10% per tick, which on most trackpads
-// covers a comfortable 1–2 second pinch from min to max.
-const ZOOM_STEP = 1.1;
 
 function dragRectBounds(d: DragRect): {
     x1: number;
@@ -516,16 +508,15 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // re-render per pixel — the model.setAtomPos preview already fires
     // modelChanged which drives the redraw.
     const atomDragRef = useRef<AtomDrag | null>(null);
-    // Pan-tool drag: starts on mouseDown when the active tool is 'pan'.
-    // Updates view.offsetX/Y on mouseMove; cleared on mouseUp/mouseLeave.
-    const panDragRef = useRef<PanDrag | null>(null);
     // View transform — mirrors viewState into a ref so event handlers (which
     // capture the closure at mount) always read the current viewport.
     const viewRef = useRef<View>(DEFAULT_VIEW);
 
     const [tool, setTool] = useState<Tool>('atom');
     const [element, setElement] = useState<Element>('C');
-    const [bondOrder, setBondOrder] = useState<BondOrder>(1);
+    // Qt's bond_group is one radio group — picking Single clears any active
+    // stereo, picking Wedge implies single+wedge. bondMode collapses both.
+    const [bondMode, setBondMode] = useState<BondMode>('single');
     const [ring, setRing] = useState<RingSpec>(RING_BENZENE);
     const [pendingBondAtom, setPendingBondAtom] = useState<number | null>(null);
     const [hoverAtom, setHoverAtom] = useState<number | null>(null);
@@ -533,11 +524,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [status, setStatus] = useState<string>('ready');
     const [smilesInput, setSmilesInput] = useState<string>('');
     const [view, setViewState] = useState<View>(DEFAULT_VIEW);
-    // Active stereo mode for the bond tool. When non-NONE, drawing a new bond
-    // commits with that BondDir applied. Mirrors the persistent stereo mode
-    // the Qt sketcher exposes (Wedge / Dash sidebar buttons act as a toggle).
-    const [activeStereo, setActiveStereo] = useState<number>(BOND_DIR_NONE);
-    const activeStereoRef = useRef<number>(BOND_DIR_NONE);
+    const [moreMenuOpen, setMoreMenuOpen] = useState<boolean>(false);
+    const bondModeRef = useRef<BondMode>('single');
     const [, bumpVersion] = useReducer((v: number) => v + 1, 0);
 
     // Always update both the state (drives redraw) and the ref (so event
@@ -547,12 +535,26 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setViewState(next);
     }, []);
 
-    // Mirror activeStereo into a ref so onCanvasClick (closure-captured) sees
-    // the current mode without waiting for the next render.
-    const setActiveStereoMode = useCallback((dir: number): void => {
-        activeStereoRef.current = dir;
-        setActiveStereo(dir);
+    // Mirror bondMode into a ref so onCanvasClick (closure-captured) sees the
+    // current mode without waiting for the next render. Pick a bond mode also
+    // switches tool back to 'bond' so the next click starts a bond.
+    const pickBondMode = useCallback((mode: BondMode): void => {
+        bondModeRef.current = mode;
+        setBondMode(mode);
+        setTool('bond');
+        setPendingBondAtom(null);
     }, []);
+
+    // BondMode → (order, dir) for addBondWithDir / setBondDirForSelectedBonds.
+    const bondModeToOrderAndDir = (mode: BondMode): { order: number; dir: number } => {
+        switch (mode) {
+            case 'single': return { order: 1, dir: BOND_DIR_NONE };
+            case 'double': return { order: 2, dir: BOND_DIR_NONE };
+            case 'triple': return { order: 3, dir: BOND_DIR_NONE };
+            case 'wedge':  return { order: 1, dir: BOND_DIR_WEDGE };
+            case 'dash':   return { order: 1, dir: BOND_DIR_DASH };
+        }
+    };
 
     // Build the C++ MolModel once per mount, tear it down on unmount.
     useEffect(() => {
@@ -619,39 +621,34 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         drawSketch(canvas, view, rd, pendingBondAtom, hoverAtom, dragRect);
     });
 
-    // Wheel zoom centered on the cursor. Attached imperatively because React's
-    // onWheel attaches as a passive listener — we need preventDefault to stop
-    // the page from scrolling underneath us. Reads viewRef so we don't have
-    // to re-bind the listener every time the view changes.
+    // View-center-anchored wheel zoom, matching Qt's QGraphicsView::wheelEvent
+    // in sketcher_view.cpp: scale_factor = 2^(angleDelta.y / 2400). Wheel up
+    // (negative deltaY in browsers, positive angleDelta.y in Qt) zooms in.
+    // Capped at DEFAULT_SCALE so the user can never zoom in past the resting
+    // "fit" view — Qt enforces the same upper bound. Attached imperatively
+    // because React's onWheel is passive and we need preventDefault.
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
         function onWheel(e: WheelEvent): void {
             e.preventDefault();
             const cur = viewRef.current;
-            // deltaY > 0 → wheel down → zoom out; deltaY < 0 → zoom in.
-            const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+            const factor = Math.pow(2, -e.deltaY / 2400);
             const nextScale = Math.max(
                 MIN_VIEW_SCALE,
-                Math.min(MAX_VIEW_SCALE, cur.scale * factor),
+                Math.min(DEFAULT_SCALE, cur.scale * factor),
             );
             if (nextScale === cur.scale) return;
-            // Keep the model-space point under the cursor pinned to the same
-            // pixel after the zoom. modelFromPixel(canvas, view, px, py) = q
-            // where px - (cx + offsetX) = q.x * scale (and similarly for y).
-            // We want: q stays the same; offsetX' = (px - cx) - q.x * scale'
-            // and analogously for offsetY. Mouse position relative to the
-            // canvas takes the place of (px - canvas/2).
-            const rect = canvas.getBoundingClientRect();
-            const px = e.clientX - rect.left;
-            const py = e.clientY - rect.top;
-            const cx = canvas.width / 2;
-            const cy = canvas.height / 2;
-            const modelX = (px - cx - cur.offsetX) / cur.scale;
-            const modelY = -(py - cy - cur.offsetY) / cur.scale;
-            const offsetX = px - cx - modelX * nextScale;
-            const offsetY = py - cy + modelY * nextScale;
-            setView({ scale: nextScale, offsetX, offsetY });
+            // Center anchor: keep the model-space point at the canvas center
+            // pinned. canvas-center maps to model-space (-offsetX/scale,
+            // offsetY/scale); pinning that point yields offsets scaled by the
+            // same factor.
+            const ratio = nextScale / cur.scale;
+            setView({
+                scale: nextScale,
+                offsetX: cur.offsetX * ratio,
+                offsetY: cur.offsetY * ratio,
+            });
         }
         canvas.addEventListener('wheel', onWheel, { passive: false });
         return () => {
@@ -764,8 +761,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
             try {
-                const dir = activeStereoRef.current;
-                model.addBondWithDir(pendingRef.current, hit, bondOrder, dir);
+                const { order, dir } = bondModeToOrderAndDir(bondModeRef.current);
+                model.addBondWithDir(pendingRef.current, hit, order, dir);
                 const stereoLabel =
                     dir === BOND_DIR_WEDGE
                         ? ' wedge'
@@ -773,7 +770,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                           ? ' dash'
                           : '';
                 setStatus(
-                    `bond: ${pendingRef.current}-${hit} (order ${bondOrder}${stereoLabel})`,
+                    `bond: ${pendingRef.current}-${hit} (order ${order}${stereoLabel})`,
                 );
             } catch (err) {
                 setStatus(`bond failed: ${String(err)}`);
@@ -781,7 +778,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 setPendingBondAtom(null);
             }
         },
-        [tool, element, bondOrder, ring],
+        [tool, element, ring],
     );
 
     const onCanvasMove = useCallback(
@@ -792,17 +789,6 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const rect = canvas.getBoundingClientRect();
             const px = e.clientX - rect.left;
             const py = e.clientY - rect.top;
-            const pan = panDragRef.current;
-            if (pan) {
-                // Pan: translate the viewport by the cursor delta in pixels.
-                // Scale stays put; only offsetX/offsetY shift.
-                setView({
-                    scale: viewRef.current.scale,
-                    offsetX: pan.startOffsetX + (px - pan.startPx),
-                    offsetY: pan.startOffsetY + (py - pan.startPy),
-                });
-                return;
-            }
             const ad = atomDragRef.current;
             if (ad) {
                 const dpx = px - ad.startPx;
@@ -847,7 +833,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const next = hit >= 0 ? hit : null;
             if (next !== hoverAtom) setHoverAtom(next);
         },
-        [tool, hoverAtom, dragRect, setView],
+        [tool, hoverAtom, dragRect],
     );
 
     const onCanvasMouseDown = useCallback(
@@ -858,15 +844,6 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const rect = canvas.getBoundingClientRect();
             const px = e.clientX - rect.left;
             const py = e.clientY - rect.top;
-            if (tool === 'pan') {
-                panDragRef.current = {
-                    startPx: px,
-                    startPy: py,
-                    startOffsetX: viewRef.current.offsetX,
-                    startOffsetY: viewRef.current.offsetY,
-                };
-                return;
-            }
             if (tool !== 'select') return;
             const model = modelRef.current;
             if (!model) return;
@@ -923,12 +900,6 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
 
     const onCanvasMouseUp = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
-            if (panDragRef.current) {
-                // Pan already wrote each delta into view during move; just
-                // drop the drag state. No undo step — pan is view-only.
-                panDragRef.current = null;
-                return;
-            }
             const ad = atomDragRef.current;
             if (ad) {
                 atomDragRef.current = null;
@@ -1042,11 +1013,6 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
 
     const onCanvasMouseLeave = useCallback((): void => {
         setHoverAtom(null);
-        // Pan that left the canvas: just stop. The view is already at the
-        // most recent offset; nothing to roll back.
-        if (panDragRef.current) {
-            panDragRef.current = null;
-        }
         // Don't commit a drag-select that left the canvas — just cancel it.
         if (dragRect) {
             setDragRect(null);
@@ -1105,24 +1071,26 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setPendingBondAtom(null);
         setStatus('deleted selection');
     };
-    // Stereo buttons act as tool-state pickers AND a one-shot action on the
-    // current selection. Behavior matches the Qt sketcher:
-    //   - If bonds are selected, apply `dir` to each (one undo step).
-    //   - Always toggle the active stereo mode so subsequent bond draws inherit
-    //     it (clicking the active button again clears the mode).
-    const applyStereo = (dir: number, label: string): void => {
+    // Picking a bond-mode button (Single, Double, Triple, Wedge, Dash) does
+    // two things, mirroring Qt's bond_group radio behavior:
+    //   1. Switch the active draw mode so the next bond uses (order, dir).
+    //   2. If the user has bonds selected, apply (order, dir) to those bonds
+    //      as a one-step undoable mutation — equivalent to Qt's "click a bond
+    //      type while bonds are selected re-types those bonds" behavior.
+    const pickBondModeApplying = (mode: BondMode, label: string): void => {
         const model = modelRef.current;
-        if (!model) return;
+        const { dir } = bondModeToOrderAndDir(mode);
         if (model && model.hasSelection()) {
-            model.setBondDirForSelectedBonds(dir);
+            // setBondDirForSelectedBonds handles wedge/dash; an order edit on
+            // selected bonds isn't in the current embind surface, so for now
+            // we only mirror the stereo half on selection. Order picks just
+            // switch the draw mode.
+            if (dir !== BOND_DIR_NONE || mode === 'single') {
+                model.setBondDirForSelectedBonds(dir);
+            }
         }
-        const next = activeStereoRef.current === dir ? BOND_DIR_NONE : dir;
-        setActiveStereoMode(next);
-        if (next === BOND_DIR_NONE) {
-            setStatus('stereo mode off');
-        } else {
-            setStatus(model.hasSelection() ? label : `${label} (active mode)`);
-        }
+        pickBondMode(mode);
+        setStatus(`bond mode: ${label}`);
     };
     const doLoadInput = (): void => {
         const model = modelRef.current;
@@ -1261,20 +1229,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setStatus('cleaned up layout');
     };
 
-    // Rotate / flip apply to the current selection (or the whole mol when
-    // nothing is selected — mirrors the Qt sketcher's behavior). Both go
-    // through a single undo step so the user can Ctrl+Z to revert.
-    const doRotate = (angleRad: number, label: string): void => {
-        const model = modelRef.current;
-        if (!model) return;
-        if (model.numAtoms() === 0) {
-            setStatus('nothing to rotate — sketch something first');
-            return;
-        }
-        model.rotateSelectedAtoms(angleRad);
-        const scope = model.hasSelection() ? 'selection' : 'all atoms';
-        setStatus(`${label} (${scope})`);
-    };
+    // Flip applies to the current selection (or the whole mol when nothing is
+    // selected — mirrors Qt's "Modify All" Flip Horizontal/Vertical actions).
     const doFlip = (horizontal: boolean, label: string): void => {
         const model = modelRef.current;
         if (!model) return;
@@ -1285,11 +1241,6 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         model.flipSelectedAtoms(horizontal);
         const scope = model.hasSelection() ? 'selection' : 'all atoms';
         setStatus(`${label} (${scope})`);
-    };
-
-    const doResetView = (): void => {
-        setView(DEFAULT_VIEW);
-        setStatus('view reset');
     };
 
     const doFit = (): void => {
@@ -1387,6 +1338,30 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         return () => window.removeEventListener('keydown', onKey);
     }, []);
 
+    // More Actions submenu items — mirror Qt's MoreActionsMenu "Modify All"
+    // submenu (sketcher_top_bar_menus.cpp:91-101) using exact Qt labels and
+    // separator placement. Flattened into one popover here (not a true
+    // nested submenu) as a known minor divergence; tracked in audit memory.
+    const moreActions = (
+        <div style={styles.moreMenu} data-testid='more-actions-menu'>
+            <div style={styles.moreSectionLabel}>Modify All</div>
+            <MoreItem label='Flip Horizontal' testid='flip-horizontal'
+                onClick={() => { setMoreMenuOpen(false); doFlip(true, 'flipped horizontal'); }} />
+            <MoreItem label='Flip Vertical' testid='flip-vertical'
+                onClick={() => { setMoreMenuOpen(false); doFlip(false, 'flipped vertical'); }} />
+            <div style={styles.moreDivider} />
+            <MoreItem label='Aromatize' testid='aromatize'
+                onClick={() => { setMoreMenuOpen(false); doAromatize(); }} />
+            <MoreItem label='Kekulize' testid='kekulize'
+                onClick={() => { setMoreMenuOpen(false); doKekulize(); }} />
+            <div style={styles.moreDivider} />
+            <MoreItem label='Add Explicit Hydrogens' testid='hydrogens-add'
+                onClick={() => { setMoreMenuOpen(false); doAddHydrogens(); }} />
+            <MoreItem label='Remove Explicit Hydrogens' testid='hydrogens-remove'
+                onClick={() => { setMoreMenuOpen(false); doRemoveHydrogens(); }} />
+        </div>
+    );
+
     return (
         <section style={styles.shell}>
             <div style={styles.topBar}>
@@ -1397,23 +1372,36 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 <span style={styles.topDivider} />
                 <div style={styles.topBarGroup}>
                     <ActionButton
-                        label='Select all'
-                        onClick={doSelectAll}
-                        testid='select-all'
-                        title='Select all (Ctrl+A)'
+                        label='Fit to Screen'
+                        onClick={doFit}
+                        testid='fit-to-screen'
+                        title='Fit the structure to the canvas'
                     />
                     <ActionButton
-                        label='Delete'
-                        onClick={doDeleteSelected}
-                        testid='delete-selected'
-                        title='Delete selection (Del)'
+                        label='Clean Up'
+                        onClick={doCleanUp}
+                        testid='clean-up'
+                        title='Recompute 2D coordinates'
                     />
                 </div>
                 <span style={styles.topDivider} />
-                <div style={styles.topBarGroup}>
-                    <ActionButton label='Clear' onClick={doClear} testid='clear' />
+                <div style={styles.topBarGroup} data-testid='more-actions-wrapper'
+                    onMouseLeave={() => setMoreMenuOpen(false)}>
+                    <div style={{ position: 'relative' }}>
+                        <ActionButton
+                            label='More ▾'
+                            onClick={() => setMoreMenuOpen((v) => !v)}
+                            testid='more-actions-btn'
+                            title='More actions'
+                        />
+                        {moreMenuOpen && moreActions}
+                    </div>
                 </div>
                 <div style={styles.topSpacer} />
+                <div style={styles.topBarGroup}>
+                    <ActionButton label='Clear' onClick={doClear} testid='clear'
+                        title='Clear Sketcher' />
+                </div>
                 <div style={styles.titleBlock}>
                     <span style={styles.title}>2D Sketcher</span>
                     <span style={styles.subtitle}>Qt-free preview</span>
@@ -1422,7 +1410,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
 
             <div style={styles.workspace}>
                 <aside style={styles.sidebar}>
-                    <Section label='Tools'>
+                    {/* SELECT — mirrors Qt's SelectOptionsWidget
+                        (select_options_widget.ui): the Select tool plus the
+                        "Select all" action. We drop Erase / Move-Rotate /
+                        Invert Selection for now (deferred to a later batch).
+                    */}
+                    <Section label='SELECT'>
                         <ToolButton
                             label='Select'
                             active={tool === 'select'}
@@ -1431,42 +1424,28 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 setPendingBondAtom(null);
                             }}
                             testid='tool-select'
+                            title='Select atoms and bonds'
                         />
-                        <ToolButton
-                            label='Atom'
-                            active={tool === 'atom'}
-                            onClick={() => {
-                                setTool('atom');
-                                setPendingBondAtom(null);
-                            }}
-                            testid='tool-atom'
-                        />
-                        <ToolButton
-                            label='Bond'
-                            active={tool === 'bond'}
-                            onClick={() => {
-                                setTool('bond');
-                                setPendingBondAtom(null);
-                            }}
-                            testid='tool-bond'
-                        />
-                        <ToolButton
-                            label='Pan'
-                            active={tool === 'pan'}
-                            onClick={() => {
-                                setTool('pan');
-                                setPendingBondAtom(null);
-                            }}
-                            testid='tool-pan'
-                            title='Pan: drag to move the viewport'
+                        <ActionButton
+                            label='All'
+                            onClick={doSelectAll}
+                            testid='select-all'
+                            title='Select All (Ctrl+A)'
                         />
                     </Section>
-                    <Section label='Atoms'>
+                    {/* DRAW — mirrors Qt's DrawToolsWidget (draw_tools_widget.ui).
+                        Atoms (with inline charge +/-) | divider | bond_group
+                        radio (Single, Double, Triple, Wedge, Dash) | divider
+                        | rings. bond_group in Qt is one mutually-exclusive
+                        radio group — picking Single clears stereo, picking
+                        Wedge implies single+wedge, etc.
+                    */}
+                    <Section label='DRAW'>
                         {(['C', 'N', 'O', 'H', 'Cl'] as const).map((el) => (
                             <ToolButton
                                 key={el}
                                 label={el}
-                                active={element === el}
+                                active={tool === 'atom' && element === el}
                                 onClick={() => {
                                     setElement(el);
                                     setTool('atom');
@@ -1474,40 +1453,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 }}
                                 testid={`element-${el}`}
                                 color={ELEMENT_COLORS[el]}
+                                title={`Draw ${el} atoms`}
                             />
                         ))}
-                    </Section>
-                    <Section label='Bonds'>
-                        {([1, 2, 3] as const).map((o) => (
-                            <ToolButton
-                                key={o}
-                                label={o === 1 ? 'Single' : o === 2 ? 'Double' : 'Triple'}
-                                active={bondOrder === o}
-                                onClick={() => {
-                                    setBondOrder(o);
-                                    setTool('bond');
-                                    setPendingBondAtom(null);
-                                }}
-                                testid={`bond-${o}`}
-                            />
-                        ))}
-                    </Section>
-                    <Section label='Rings'>
-                        {([RING_BENZENE, RING_CYCLOHEXANE, RING_CYCLOPENTANE] as const).map((spec) => (
-                            <ToolButton
-                                key={spec.label}
-                                label={spec.label}
-                                active={tool === 'ring' && ring.label === spec.label}
-                                onClick={() => {
-                                    setRing(spec);
-                                    setTool('ring');
-                                    setPendingBondAtom(null);
-                                }}
-                                testid={`ring-${spec.label.toLowerCase()}`}
-                            />
-                        ))}
-                    </Section>
-                    <Section label='Charge'>
                         <ActionButton
                             label='+'
                             onClick={() => adjustCharge(+1)}
@@ -1521,112 +1469,64 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             title='Decrease charge on selected atoms'
                         />
                     </Section>
-                    <Section label='Hydrogens'>
-                        <ActionButton
-                            label='Add Hs'
-                            onClick={doAddHydrogens}
-                            testid='hydrogens-add'
-                            title='Promote implicit hydrogens to explicit atoms'
+                    <div style={styles.sectionDivider} />
+                    <Section label=''>
+                        {/* bond_group radio (Qt: single_bond_btn,
+                            stereo_bond1_btn=Wedge, stereo_bond2_btn=Dash, and
+                            the bond_order_btn popups for Double/Triple). All
+                            five live in one mutually-exclusive group. */}
+                        <ToolButton
+                            label='Single'
+                            active={tool === 'bond' && bondMode === 'single'}
+                            onClick={() => pickBondModeApplying('single', 'single')}
+                            testid='bond-single'
+                            title='Single Bond'
                         />
-                        <ActionButton
-                            label='Remove Hs'
-                            onClick={doRemoveHydrogens}
-                            testid='hydrogens-remove'
-                            title='Strip explicit hydrogens back to implicit'
+                        <ToolButton
+                            label='Double'
+                            active={tool === 'bond' && bondMode === 'double'}
+                            onClick={() => pickBondModeApplying('double', 'double')}
+                            testid='bond-double'
+                            title='Double Bond'
                         />
-                    </Section>
-                    <Section label='Aromaticity'>
-                        <ActionButton
-                            label='Aromatize'
-                            onClick={doAromatize}
-                            testid='aromatize'
-                            title='Perceive aromaticity on rings'
+                        <ToolButton
+                            label='Triple'
+                            active={tool === 'bond' && bondMode === 'triple'}
+                            onClick={() => pickBondModeApplying('triple', 'triple')}
+                            testid='bond-triple'
+                            title='Triple Bond'
                         />
-                        <ActionButton
-                            label='Kekulize'
-                            onClick={doKekulize}
-                            testid='kekulize'
-                            title='Replace aromatic bonds with explicit single/double alternation'
-                        />
-                    </Section>
-                    <Section label='Layout'>
-                        <ActionButton
-                            label='Clean Up'
-                            onClick={doCleanUp}
-                            testid='clean-up'
-                            title='Recompute 2D coordinates'
-                        />
-                        <ActionButton
-                            label='Fit'
-                            onClick={doFit}
-                            testid='fit-to-screen'
-                            title='Fit the structure to the canvas'
-                        />
-                        <ActionButton
-                            label='Reset View'
-                            onClick={doResetView}
-                            testid='reset-view'
-                            title='Reset zoom and pan to defaults'
-                        />
-                    </Section>
-                    <Section label='Transform'>
-                        <ActionButton
-                            label='↻ 90°'
-                            onClick={() =>
-                                doRotate(-Math.PI / 2, 'rotated 90° CW')
-                            }
-                            testid='rotate-cw'
-                            title='Rotate selection 90° clockwise (whole mol if no selection)'
-                        />
-                        <ActionButton
-                            label='↺ 90°'
-                            onClick={() =>
-                                doRotate(Math.PI / 2, 'rotated 90° CCW')
-                            }
-                            testid='rotate-ccw'
-                            title='Rotate selection 90° counter-clockwise (whole mol if no selection)'
-                        />
-                        <ActionButton
-                            label='Flip H'
-                            onClick={() => doFlip(true, 'flipped horizontal')}
-                            testid='flip-horizontal'
-                            title='Flip selection left↔right (whole mol if no selection)'
-                        />
-                        <ActionButton
-                            label='Flip V'
-                            onClick={() => doFlip(false, 'flipped vertical')}
-                            testid='flip-vertical'
-                            title='Flip selection top↔bottom (whole mol if no selection)'
-                        />
-                    </Section>
-                    <Section label='Stereo'>
                         <ToolButton
                             label='Wedge'
-                            active={activeStereo === BOND_DIR_WEDGE}
-                            onClick={() =>
-                                applyStereo(BOND_DIR_WEDGE, 'wedge applied')
-                            }
-                            testid='stereo-wedge'
-                            title='Wedge: applies to selected bonds and persists for new bonds'
+                            active={tool === 'bond' && bondMode === 'wedge'}
+                            onClick={() => pickBondModeApplying('wedge', 'wedge')}
+                            testid='bond-wedge'
+                            title='Up Bond (Wedge)'
                         />
                         <ToolButton
                             label='Dash'
-                            active={activeStereo === BOND_DIR_DASH}
-                            onClick={() =>
-                                applyStereo(BOND_DIR_DASH, 'dash applied')
-                            }
-                            testid='stereo-dash'
-                            title='Dash: applies to selected bonds and persists for new bonds'
+                            active={tool === 'bond' && bondMode === 'dash'}
+                            onClick={() => pickBondModeApplying('dash', 'dash')}
+                            testid='bond-dash'
+                            title='Down Bond (Dash)'
                         />
-                        <ToolButton
-                            label='No stereo'
-                            active={false}
-                            onClick={() =>
-                                applyStereo(BOND_DIR_NONE, 'stereo cleared')
-                            }
-                            testid='stereo-none'
-                            title='Clear stereo on selected bonds and turn off active stereo mode'
-                        />
+                    </Section>
+                    <div style={styles.sectionDivider} />
+                    <Section label=''>
+                        {([RING_BENZENE, RING_CYCLOHEXANE, RING_CYCLOPENTANE] as const).map((spec) => (
+                            <ToolButton
+                                key={spec.label}
+                                label={spec.label}
+                                active={tool === 'ring' && ring.label === spec.label}
+                                onClick={() => {
+                                    setRing(spec);
+                                    setTool('ring');
+                                    setPendingBondAtom(null);
+                                }}
+                                testid={`ring-${spec.label.toLowerCase()}`}
+                                title={`Draw ${spec.label}`}
+                            />
+                        ))}
                     </Section>
                 </aside>
 
@@ -1635,10 +1535,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         ref={canvasRef}
                         width={CANVAS_W}
                         height={CANVAS_H}
-                        style={{
-                            ...styles.canvas,
-                            cursor: tool === 'pan' ? 'grab' : 'crosshair',
-                        }}
+                        style={styles.canvas}
                         onClick={onCanvasClick}
                         onMouseDown={onCanvasMouseDown}
                         onMouseMove={onCanvasMove}
@@ -1707,9 +1604,33 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
 function Section({ label, children }: { label: string; children: ReactNode }): JSX.Element {
     return (
         <div style={styles.section}>
-            <div style={styles.sectionLabel}>{label}</div>
+            {label !== '' && <div style={styles.sectionLabel}>{label}</div>}
             <div style={styles.sectionGrid}>{children}</div>
         </div>
+    );
+}
+
+interface MoreItemProps {
+    label: string;
+    onClick: () => void;
+    testid: string;
+}
+
+function MoreItem({ label, onClick, testid }: MoreItemProps): JSX.Element {
+    const [hover, setHover] = useState(false);
+    return (
+        <button
+            style={{
+                ...styles.moreItem,
+                ...(hover ? styles.moreItemHover : {}),
+            }}
+            onClick={onClick}
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
+            data-testid={testid}
+        >
+            {label}
+        </button>
     );
 }
 
@@ -1821,29 +1742,81 @@ const styles: Record<string, CSSProperties> = {
     subtitle: { fontSize: 10, color: '#888' },
     workspace: { display: 'flex', alignItems: 'stretch' },
     sidebar: {
-        width: 117,
-        flex: '0 0 117px',
+        // Qt's left sidebar (sketcher_widget.ui side_panel_wdg) is ~100px;
+        // we match that here so the canvas claims the rest of the workspace.
+        width: 100,
+        flex: '0 0 100px',
         background: SIDEBAR_BG,
         borderRight: `1px solid ${BORDER_COLOR}`,
         padding: '8px 6px',
         display: 'flex',
         flexDirection: 'column',
-        gap: 10,
+        gap: 8,
         boxSizing: 'border-box',
         overflow: 'hidden',
     },
     section: { display: 'flex', flexDirection: 'column', gap: 4 },
     sectionLabel: {
+        // Qt's QGroupBox titles ("SELECT", "DRAW") are uppercase and
+        // small-cap weight — match that so headers read as in-place dividers
+        // rather than full headings.
         fontSize: 10,
         textTransform: 'uppercase',
         letterSpacing: 0.5,
-        color: '#777',
+        color: '#666',
         padding: '0 2px',
+        fontWeight: 600,
     },
     sectionGrid: {
         display: 'grid',
         gridTemplateColumns: 'repeat(2, 1fr)',
         gap: 3,
+    },
+    sectionDivider: {
+        height: 1,
+        background: BORDER_COLOR,
+        margin: '2px 2px',
+    },
+    moreMenu: {
+        position: 'absolute',
+        top: '100%',
+        left: 0,
+        marginTop: 2,
+        background: 'white',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 3,
+        boxShadow: '0 2px 6px rgba(0,0,0,0.12)',
+        zIndex: 10,
+        minWidth: 200,
+        padding: '4px 0',
+    },
+    moreSectionLabel: {
+        fontSize: 10,
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+        color: '#888',
+        padding: '4px 12px 2px',
+        fontWeight: 600,
+    },
+    moreDivider: {
+        height: 1,
+        background: BORDER_COLOR,
+        margin: '4px 0',
+    },
+    moreItem: {
+        font: 'inherit',
+        fontSize: 12,
+        padding: '5px 12px',
+        border: 'none',
+        background: 'transparent',
+        color: '#222',
+        cursor: 'pointer',
+        textAlign: 'left',
+        width: '100%',
+        display: 'block',
+    },
+    moreItemHover: {
+        background: ACTION_HOVER_BG,
     },
     canvasColumn: {
         flex: '1 1 auto',

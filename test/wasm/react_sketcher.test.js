@@ -60,8 +60,9 @@ test.describe('React Sketcher', () => {
         await canvas.click({ position: { x: 120, y: 180 } });
         await canvas.click({ position: { x: 260, y: 180 } });
 
-        await page.getByTestId('tool-bond').click();
-        await page.getByTestId('bond-2').click(); // double bond
+        // bond-double is part of Qt's bond_group radio — clicking it picks
+        // the Double bond mode and switches tool to 'bond' in one step.
+        await page.getByTestId('bond-double').click();
         await canvas.click({ position: { x: 120, y: 180 } });
         await canvas.click({ position: { x: 260, y: 180 } });
 
@@ -77,7 +78,7 @@ test.describe('React Sketcher', () => {
         const canvas = page.getByTestId('sketcher-canvas');
         await canvas.click({ position: { x: 100, y: 200 } });
         await canvas.click({ position: { x: 220, y: 200 } });
-        await page.getByTestId('tool-bond').click();
+        await page.getByTestId('bond-single').click();
         await canvas.click({ position: { x: 100, y: 200 } });
         await canvas.click({ position: { x: 220, y: 200 } });
 
@@ -142,7 +143,7 @@ test.describe('React Sketcher', () => {
         await canvas.click({ position: { x: 120, y: 180 } });
         await canvas.click({ position: { x: 260, y: 180 } });
         await canvas.click({ position: { x: 400, y: 180 } });
-        await page.getByTestId('tool-bond').click();
+        await page.getByTestId('bond-single').click();
         await canvas.click({ position: { x: 120, y: 180 } });
         await canvas.click({ position: { x: 260, y: 180 } });
         await canvas.click({ position: { x: 260, y: 180 } });
@@ -152,9 +153,11 @@ test.describe('React Sketcher', () => {
         expect([rd.atoms.length, rd.bonds.length]).toEqual([3, 2]);
 
         // Select middle atom and delete: drops the atom + both incident bonds.
+        // Qt only exposes Delete via the keyboard (no toolbar button), so we
+        // dispatch the key here too — mirrors how a Qt sketcher user deletes.
         await page.getByTestId('tool-select').click();
         await canvas.click({ position: { x: 260, y: 180 } });
-        await page.getByTestId('delete-selected').click();
+        await page.keyboard.press('Delete');
 
         rd = await snapshot(page);
         expect([rd.atoms.length, rd.bonds.length]).toEqual([2, 0]);
@@ -215,7 +218,7 @@ test.describe('React Sketcher', () => {
         const canvas = page.getByTestId('sketcher-canvas');
         await canvas.click({ position: { x: 120, y: 180 } });
         await canvas.click({ position: { x: 260, y: 180 } });
-        await page.getByTestId('tool-bond').click();
+        await page.getByTestId('bond-single').click();
         await canvas.click({ position: { x: 120, y: 180 } });
         await canvas.click({ position: { x: 260, y: 180 } });
 
@@ -361,7 +364,7 @@ test.describe('React Sketcher', () => {
         const canvas = page.getByTestId('sketcher-canvas');
         await canvas.click({ position: { x: 120, y: 180 } });
         await canvas.click({ position: { x: 260, y: 180 } });
-        await page.getByTestId('tool-bond').click();
+        await page.getByTestId('bond-single').click();
         await canvas.click({ position: { x: 120, y: 180 } });
         await canvas.click({ position: { x: 260, y: 180 } });
 
@@ -372,21 +375,22 @@ test.describe('React Sketcher', () => {
 
         // Any mutation (here: another atom add via the atom tool) clears
         // the selection — index-based selection isn't stable across edits.
-        await page.getByTestId('tool-atom').click();
+        // Picking element-C re-activates the atom tool with C selected.
+        await page.getByTestId('element-C').click();
         await canvas.click({ position: { x: 400, y: 200 } });
         rd = await snapshot(page);
         expect(rd.atoms.some((a) => a.sel)).toBe(false);
         expect(rd.bonds.some((b) => b.sel)).toBe(false);
     });
 
-    test('wedge / dash stereo buttons apply dir to selected bonds and undo', async ({
+    test('bond-wedge / bond-dash apply dir to selected bonds; bond-single clears it', async ({
         page,
     }) => {
         const canvas = page.getByTestId('sketcher-canvas');
         // Build a two-atom skeleton with one bond.
         await canvas.click({ position: { x: 160, y: 200 } });
         await canvas.click({ position: { x: 320, y: 200 } });
-        await page.getByTestId('tool-bond').click();
+        await page.getByTestId('bond-single').click();
         await canvas.click({ position: { x: 160, y: 200 } });
         await canvas.click({ position: { x: 320, y: 200 } });
 
@@ -398,13 +402,15 @@ test.describe('React Sketcher', () => {
         expect(rd.bonds[0].sel).toBe(true);
         expect(rd.bonds[0].dir).toBeUndefined();
 
-        await page.getByTestId('stereo-wedge').click();
+        // Picking Wedge while a bond is selected applies the dir (Qt's
+        // bond_group behavior: clicking any radio member while bonds are
+        // selected re-types those bonds).
+        await page.getByTestId('bond-wedge').click();
         rd = await snapshot(page);
         expect(rd.bonds[0].dir).toBe(1);
-        // Wedge is per-bond stereo; selection survives the stereo edit.
         expect(rd.bonds[0].sel).toBe(true);
 
-        await page.getByTestId('stereo-dash').click();
+        await page.getByTestId('bond-dash').click();
         rd = await snapshot(page);
         expect(rd.bonds[0].dir).toBe(2);
 
@@ -412,46 +418,42 @@ test.describe('React Sketcher', () => {
         rd = await snapshot(page);
         expect(rd.bonds[0].dir).toBe(1);
 
-        await page.getByTestId('stereo-none').click();
+        // Picking Single (still with the bond selected) clears the dir.
+        await page.getByTestId('bond-single').click();
         rd = await snapshot(page);
         expect(rd.bonds[0].dir).toBeUndefined();
     });
 
-    test('Transform buttons rotate and flip the selection as single undo steps', async ({
+    test('Flip Horizontal / Vertical (via More Actions menu) negate coords about centroid', async ({
         page,
     }) => {
-        // Load a benzene so we have a known structure to rotate without
-        // worrying about click-pixel-to-model conversion noise.
+        // Load a benzene so we have a known structure without worrying about
+        // click-pixel-to-model conversion noise.
         await page.getByTestId('smiles-input').fill('c1ccccc1');
         await page.getByTestId('smiles-load').click();
-        // Capture initial positions.
         const before = await snapshot(page);
-        // Sanity: load gave us 6 aromatic carbons.
         expect(before.atoms).toHaveLength(6);
 
-        // Rotate 90° CCW with no selection — should rotate every atom around
-        // the molecular centroid. Centroid for centered benzene ~= (0, 0)
-        // (the depictor centers structures), so each atom's new (x, y) ~=
-        // (-y_old, x_old) about (0,0).
-        await page.getByTestId('rotate-ccw').click();
-        const rotated = await snapshot(page);
-        // Sum of squared distances from origin is invariant under rotation
-        // (cheap rotation check that doesn't depend on the depictor's exact
-        // atom order or centroid placement).
-        const sumR2 = (atoms) =>
-            atoms.reduce((s, a) => s + a.x * a.x + a.y * a.y, 0);
         const sumXY = (atoms) =>
             atoms.reduce((s, a) => s + a.x + a.y, 0);
-        expect(sumR2(rotated.atoms)).toBeCloseTo(sumR2(before.atoms), 4);
-        // Coordinates must actually have changed (rotation isn't a no-op).
-        const samePos = rotated.atoms.every(
+
+        // Open the More Actions popover and pick Flip Horizontal — Qt's
+        // sketcher_top_bar_menus.cpp puts this under MoreActionsMenu →
+        // "Modify All" → "Flip Horizontal".
+        await page.getByTestId('more-actions-btn').click();
+        await page.getByTestId('flip-horizontal').click();
+        const flipped = await snapshot(page);
+        // sum of all X+Y is invariant under flip about centroid (each atom's
+        // displacement from centroid is negated, so the sum is preserved).
+        expect(sumXY(flipped.atoms)).toBeCloseTo(sumXY(before.atoms), 4);
+        // Coordinates actually changed.
+        const samePos = flipped.atoms.every(
             (a, i) =>
                 Math.abs(a.x - before.atoms[i].x) < 1e-9 &&
                 Math.abs(a.y - before.atoms[i].y) < 1e-9,
         );
         expect(samePos).toBe(false);
 
-        // Single undo restores the original layout.
         await page.getByTestId('undo').click();
         const undone = await snapshot(page);
         for (let i = 0; i < before.atoms.length; ++i) {
@@ -459,29 +461,22 @@ test.describe('React Sketcher', () => {
             expect(undone.atoms[i].y).toBeCloseTo(before.atoms[i].y, 6);
         }
 
-        // Flip H: each atom's X-coord must be negated about the centroid.
-        // For a centered benzene the centroid X ~= 0, so X flips sign.
-        await page.getByTestId('flip-horizontal').click();
-        const flipped = await snapshot(page);
-        // sum of all X+Y is invariant under flip about centroid (each atom's
-        // displacement from centroid is negated, so the sum is preserved).
-        expect(sumXY(flipped.atoms)).toBeCloseTo(sumXY(before.atoms), 4);
-        await page.getByTestId('undo').click();
-        const undoneFlip = await snapshot(page);
-        for (let i = 0; i < before.atoms.length; ++i) {
-            expect(undoneFlip.atoms[i].x).toBeCloseTo(before.atoms[i].x, 6);
-            expect(undoneFlip.atoms[i].y).toBeCloseTo(before.atoms[i].y, 6);
-        }
+        // Flip Vertical via the same menu path.
+        await page.getByTestId('more-actions-btn').click();
+        await page.getByTestId('flip-vertical').click();
+        const flippedV = await snapshot(page);
+        expect(sumXY(flippedV.atoms)).toBeCloseTo(sumXY(before.atoms), 4);
 
-        // Rotate-on-empty is a friendly no-op with a status message.
+        // Flip-on-empty is a friendly no-op with a status message.
         await page.getByTestId('clear').click();
-        await page.getByTestId('rotate-cw').click();
+        await page.getByTestId('more-actions-btn').click();
+        await page.getByTestId('flip-horizontal').click();
         await expect(page.getByTestId('sketcher-status')).toContainText(
-            'nothing to rotate',
+            'nothing to flip',
         );
     });
 
-    test('active stereo mode applies to newly-drawn bonds until toggled off', async ({
+    test('bond-wedge picks wedge draw mode; bond-single switches back to plain bonds', async ({
         page,
     }) => {
         const canvas = page.getByTestId('sketcher-canvas');
@@ -490,17 +485,15 @@ test.describe('React Sketcher', () => {
         await canvas.click({ position: { x: 280, y: 200 } });
         await canvas.click({ position: { x: 420, y: 200 } });
 
-        // Activate wedge with NO selection — should arm the active mode
-        // without erroring or applying to anything (mol has no bonds yet).
-        await page.getByTestId('stereo-wedge').click();
-        // Active mode visible via aria-pressed on the ToolButton.
-        await expect(page.getByTestId('stereo-wedge')).toHaveAttribute(
+        // Pick Wedge — switches tool to 'bond' and arms wedge as the draw
+        // mode. Visible via aria-pressed on the radio button.
+        await page.getByTestId('bond-wedge').click();
+        await expect(page.getByTestId('bond-wedge')).toHaveAttribute(
             'aria-pressed',
             'true',
         );
 
         // Draw the first bond — it should pick up the wedge automatically.
-        await page.getByTestId('tool-bond').click();
         await canvas.click({ position: { x: 140, y: 200 } });
         await canvas.click({ position: { x: 280, y: 200 } });
 
@@ -508,47 +501,37 @@ test.describe('React Sketcher', () => {
         expect(rd.bonds).toHaveLength(1);
         expect(rd.bonds[0].dir).toBe(1); // BEGINWEDGE
 
-        // Draw a second bond — wedge mode persists across creations.
+        // Draw a second bond — wedge mode persists across creations (the
+        // radio member stays "checked" until another bond_group button is
+        // picked, mirroring Qt's bond_group semantics).
         await canvas.click({ position: { x: 280, y: 200 } });
         await canvas.click({ position: { x: 420, y: 200 } });
         rd = await snapshot(page);
         expect(rd.bonds).toHaveLength(2);
         expect(rd.bonds[1].dir).toBe(1);
 
-        // Clicking the active mode again toggles it off.
-        await page.getByTestId('stereo-wedge').click();
-        await expect(page.getByTestId('stereo-wedge')).toHaveAttribute(
+        // Picking Single switches the active mode to plain single — its
+        // radio pressed-state turns on, Wedge's turns off.
+        await page.getByTestId('bond-single').click();
+        await expect(page.getByTestId('bond-single')).toHaveAttribute(
+            'aria-pressed',
+            'true',
+        );
+        await expect(page.getByTestId('bond-wedge')).toHaveAttribute(
             'aria-pressed',
             'false',
         );
 
-        // A fresh bond now goes in without a wedge — undo the second one
-        // first so we have endpoints to reconnect (delete-by-redraw isn't
-        // a thing in this skeleton).
+        // Fresh bond now draws without a wedge — peel back both bonds first
+        // so we have endpoints to reconnect.
         await page.getByTestId('undo').click();
-        await page.getByTestId('undo').click(); // also peel the first bond
+        await page.getByTestId('undo').click();
         rd = await snapshot(page);
         expect(rd.bonds).toHaveLength(0);
 
         await canvas.click({ position: { x: 140, y: 200 } });
         await canvas.click({ position: { x: 280, y: 200 } });
         rd = await snapshot(page);
-        expect(rd.bonds).toHaveLength(1);
-        expect(rd.bonds[0].dir).toBeUndefined();
-
-        // Single undo removes the wedged bond entirely (proves the add+dir
-        // collapse from addBondWithDir is intact end-to-end). Restore wedge
-        // mode and try once more to verify.
-        await page.getByTestId('stereo-wedge').click();
-        await canvas.click({ position: { x: 280, y: 200 } });
-        await canvas.click({ position: { x: 420, y: 200 } });
-        rd = await snapshot(page);
-        expect(rd.bonds).toHaveLength(2);
-        expect(rd.bonds[1].dir).toBe(1);
-
-        await page.getByTestId('undo').click();
-        rd = await snapshot(page);
-        // Wedged bond gone, the older un-wedged bond untouched.
         expect(rd.bonds).toHaveLength(1);
         expect(rd.bonds[0].dir).toBeUndefined();
     });
@@ -573,7 +556,7 @@ test.describe('React Sketcher', () => {
         // Bonding the O to a fresh C reduces O's H count from 2 to 1.
         await page.getByTestId('element-C').click();
         await canvas.click({ position: { x: 320, y: 200 } });
-        await page.getByTestId('tool-bond').click();
+        await page.getByTestId('bond-single').click();
         await canvas.click({ position: { x: 200, y: 200 } });
         await canvas.click({ position: { x: 320, y: 200 } });
 
@@ -720,16 +703,17 @@ test.describe('React Sketcher', () => {
         expect(rd.atoms[0].q).toBeUndefined();
     });
 
-    test('Add Hs / Remove Hs buttons promote and strip explicit hydrogens', async ({ page }) => {
-        // Load methanol via the SMILES input so we don't rely on canvas
-        // coordinates. After Add Hs the description should grow to 5 atoms
-        // (1 C + 1 O + 4 explicit Hs) and Remove Hs should walk it back.
+    test('Add / Remove Explicit Hydrogens (via More menu) promote and strip explicit Hs', async ({ page }) => {
+        // Qt's MoreActionsMenu → Modify All → "Add Explicit Hydrogens" / "Remove
+        // Explicit Hydrogens" (sketcher_top_bar_menus.cpp:98-101). We mirror
+        // both label and menu placement here.
         await page.getByTestId('smiles-input').fill('CO');
         await page.getByTestId('smiles-load').click();
 
         let rd = await snapshot(page);
         expect(rd.atoms).toHaveLength(2);
 
+        await page.getByTestId('more-actions-btn').click();
         await page.getByTestId('hydrogens-add').click();
         rd = await snapshot(page);
         // Methanol has 4 implicit Hs (3 on C + 1 on O) → 6 atoms total.
@@ -737,6 +721,7 @@ test.describe('React Sketcher', () => {
         const explicitH = rd.atoms.filter((a) => a.el === 'H').length;
         expect(explicitH).toBe(4);
 
+        await page.getByTestId('more-actions-btn').click();
         await page.getByTestId('hydrogens-remove').click();
         rd = await snapshot(page);
         expect(rd.atoms).toHaveLength(2);
@@ -749,33 +734,31 @@ test.describe('React Sketcher', () => {
 
     test('Add Hs on an empty sketch is a no-op with a friendly status', async ({ page }) => {
         await page.getByTestId('clear').click();
+        await page.getByTestId('more-actions-btn').click();
         await page.getByTestId('hydrogens-add').click();
         const status = await page.getByTestId('sketcher-status').textContent();
         expect(status).toMatch(/nothing to expand/);
     });
 
-    test('Kekulize / Aromatize buttons toggle benzene aromaticity end-to-end', async ({ page }) => {
-        // Aromatic benzene from SMILES.
+    test('Kekulize / Aromatize (via More menu) toggle benzene aromaticity end-to-end', async ({ page }) => {
         await page.getByTestId('smiles-input').fill('c1ccccc1');
         await page.getByTestId('smiles-load').click();
 
         let rd = await snapshot(page);
-        // All bonds start aromatic.
         expect(rd.bonds.every((b) => b.arom === true)).toBe(true);
 
+        await page.getByTestId('more-actions-btn').click();
         await page.getByTestId('kekulize').click();
         rd = await snapshot(page);
-        // After kekulize: no arom flag, three single + three double bonds.
         expect(rd.bonds.some((b) => b.arom === true)).toBe(false);
         expect(rd.bonds.filter((b) => b.o === 1)).toHaveLength(3);
         expect(rd.bonds.filter((b) => b.o === 2)).toHaveLength(3);
 
+        await page.getByTestId('more-actions-btn').click();
         await page.getByTestId('aromatize').click();
         rd = await snapshot(page);
-        // Aromatize re-sets the flag on every bond.
         expect(rd.bonds.every((b) => b.arom === true)).toBe(true);
 
-        // Undo walks back to kekulé form.
         await page.getByTestId('undo').click();
         rd = await snapshot(page);
         expect(rd.bonds.some((b) => b.arom === true)).toBe(false);
@@ -839,7 +822,7 @@ test.describe('React Sketcher', () => {
         await canvas.click({ position: { x: 120, y: 180 } });
         await canvas.click({ position: { x: 260, y: 180 } });
         await canvas.click({ position: { x: 400, y: 180 } });
-        await page.getByTestId('tool-bond').click();
+        await page.getByTestId('bond-single').click();
         await canvas.click({ position: { x: 120, y: 180 } });
         await canvas.click({ position: { x: 260, y: 180 } });
         await canvas.click({ position: { x: 260, y: 180 } });
@@ -876,156 +859,40 @@ test.describe('React Sketcher', () => {
         expect(undone.atoms[1].y).toBeCloseTo(before.atoms[1].y, 3);
     });
 
-    test('Wheel zooms toward the cursor: model-space point under cursor stays put', async ({
+    test('Wheel zoom is view-center-anchored and capped at DEFAULT_SCALE', async ({
         page,
     }) => {
         const canvas = page.getByTestId('sketcher-canvas');
-        // Drop one atom so we have a model-space point with a known pixel
-        // location. (270, 180) is canvas center → model (0, 0) under the
-        // default view (scale 40, no offset).
-        await canvas.click({ position: { x: 270, y: 180 } });
-
-        // Pick a cursor target away from the center so the pin-point test is
-        // meaningful (offsetX/Y must change to keep the point stationary).
-        const target = { x: 400, y: 120 };
-        const box = await canvas.boundingBox();
-
-        // Find what model-space point sits under (400, 120) before the zoom.
-        const before = await page.evaluate(({ px, py }) => {
-            const v = window.SketcherView.current;
-            return {
-                view: { scale: v.scale, offsetX: v.offsetX, offsetY: v.offsetY },
-                model: {
-                    x: (px - 540 / 2 - v.offsetX) / v.scale,
-                    y: -(py - 360 / 2 - v.offsetY) / v.scale,
-                },
-            };
-        }, { px: target.x, py: target.y });
-        expect(before.view.scale).toBeCloseTo(40, 3);
-
-        // Wheel up over the cursor target — should zoom in (scale grows).
-        await page.mouse.move(box.x + target.x, box.y + target.y);
-        await page.mouse.wheel(0, -100);
-
-        const after = await page.evaluate(({ px, py, modelX, modelY }) => {
-            const v = window.SketcherView.current;
-            const pxAfter = modelX * v.scale + 540 / 2 + v.offsetX;
-            const pyAfter = -modelY * v.scale + 360 / 2 + v.offsetY;
-            return {
-                scale: v.scale,
-                offsetX: v.offsetX,
-                offsetY: v.offsetY,
-                pxAfter,
-                pyAfter,
-            };
-        }, {
-            px: target.x,
-            py: target.y,
-            modelX: before.model.x,
-            modelY: before.model.y,
-        });
-        // Scale grew — wheel up = zoom in.
-        expect(after.scale).toBeGreaterThan(before.view.scale);
-        // The model point that was under the cursor is still under the cursor
-        // (within a sub-pixel tolerance). This is the whole point of cursor-
-        // centered zoom — content doesn't slide under your fingertip.
-        expect(after.pxAfter).toBeCloseTo(target.x, 1);
-        expect(after.pyAfter).toBeCloseTo(target.y, 1);
-
-        // Wheel down zooms back out — and the same model point still pins.
-        await page.mouse.wheel(0, 100);
-        const back = await page.evaluate(({ modelX, modelY }) => {
-            const v = window.SketcherView.current;
-            return {
-                scale: v.scale,
-                pxAt: modelX * v.scale + 540 / 2 + v.offsetX,
-                pyAt: -modelY * v.scale + 360 / 2 + v.offsetY,
-            };
-        }, { modelX: before.model.x, modelY: before.model.y });
-        expect(back.scale).toBeLessThan(after.scale);
-        expect(back.pxAt).toBeCloseTo(target.x, 1);
-        expect(back.pyAt).toBeCloseTo(target.y, 1);
-    });
-
-    test('Pan tool drags the viewport: offsetX/Y track the cursor delta', async ({
-        page,
-    }) => {
-        const canvas = page.getByTestId('sketcher-canvas');
-        // Place an atom at canvas center so we can verify it visually
-        // translates after the pan (atom model coords don't change — the
-        // viewport does — so the atom's pixel location shifts by the delta).
-        await canvas.click({ position: { x: 270, y: 180 } });
-        const atomBefore = (await snapshot(page)).atoms[0];
-
-        await page.getByTestId('tool-pan').click();
-        const view0 = await page.evaluate(() => ({
-            scale: window.SketcherView.current.scale,
-            offsetX: window.SketcherView.current.offsetX,
-            offsetY: window.SketcherView.current.offsetY,
-        }));
-
-        const box = await canvas.boundingBox();
-        await page.mouse.move(box.x + 270, box.y + 180);
-        await page.mouse.down();
-        await page.mouse.move(box.x + 320, box.y + 220, { steps: 6 });
-        await page.mouse.up();
-
-        const view1 = await page.evaluate(() => ({
-            scale: window.SketcherView.current.scale,
-            offsetX: window.SketcherView.current.offsetX,
-            offsetY: window.SketcherView.current.offsetY,
-        }));
-        // Scale unchanged — pan never zooms.
-        expect(view1.scale).toBeCloseTo(view0.scale, 6);
-        // Offset shifted by exactly the cursor delta (+50, +40).
-        expect(view1.offsetX - view0.offsetX).toBeCloseTo(50, 0);
-        expect(view1.offsetY - view0.offsetY).toBeCloseTo(40, 0);
-
-        // Atom coordinates are unchanged — pan is view-only.
-        const atomAfter = (await snapshot(page)).atoms[0];
-        expect(atomAfter.x).toBeCloseTo(atomBefore.x, 6);
-        expect(atomAfter.y).toBeCloseTo(atomBefore.y, 6);
-    });
-
-    test('Reset View restores DEFAULT_VIEW after pan and zoom', async ({
-        page,
-    }) => {
-        const canvas = page.getByTestId('sketcher-canvas');
-        // Hover before wheeling so the wheel event has the canvas as its
-        // target. Without an initial pointer event, Playwright's mouse.wheel
-        // doesn't always route to the right element.
+        // Hover the canvas first so wheel events route correctly under PW.
         await canvas.hover({ position: { x: 400, y: 120 } });
-        // Zoom in over an off-center point so both scale and offset change.
         const box = await canvas.boundingBox();
+
+        // First zoom OUT (positive deltaY) — at rest we're at DEFAULT_SCALE,
+        // which is also the zoom-in cap. Qt's QGraphicsView wheel zoom (see
+        // sketcher_view.cpp) uses factor = 2^(angleDelta.y / 2400) so a
+        // negative deltaY of -100 → factor ~ 2^(100/2400) ≈ 1.030.
         await page.mouse.move(box.x + 400, box.y + 120);
-        await page.mouse.wheel(0, -100);
-        await page.mouse.wheel(0, -100);
-
-        // Pan as well so offset deviates further from zero.
-        await page.getByTestId('tool-pan').click();
-        await page.mouse.move(box.x + 270, box.y + 180);
-        await page.mouse.down();
-        await page.mouse.move(box.x + 300, box.y + 230, { steps: 4 });
-        await page.mouse.up();
-
-        const dirty = await page.evaluate(() => ({
+        await page.mouse.wheel(0, 100); // zoom out
+        await page.mouse.wheel(0, 100);
+        const zoomedOut = await page.evaluate(() => ({
             scale: window.SketcherView.current.scale,
             offsetX: window.SketcherView.current.offsetX,
             offsetY: window.SketcherView.current.offsetY,
         }));
-        expect(dirty.scale).not.toBeCloseTo(40, 3);
-        // At least one of the offsets diverged from zero.
-        expect(Math.abs(dirty.offsetX) + Math.abs(dirty.offsetY)).toBeGreaterThan(1);
+        // Scale dropped below DEFAULT_SCALE (=40).
+        expect(zoomedOut.scale).toBeLessThan(40);
+        // Center anchor: offsets stay at zero because we started from
+        // (0, 0) offset — center-anchored zoom multiplies offset by ratio,
+        // and 0 * ratio = 0.
+        expect(zoomedOut.offsetX).toBeCloseTo(0, 3);
+        expect(zoomedOut.offsetY).toBeCloseTo(0, 3);
 
-        await page.getByTestId('reset-view').click();
-        const reset = await page.evaluate(() => ({
-            scale: window.SketcherView.current.scale,
-            offsetX: window.SketcherView.current.offsetX,
-            offsetY: window.SketcherView.current.offsetY,
-        }));
-        // Reset View returns to DEFAULT_VIEW exactly.
-        expect(reset.scale).toBeCloseTo(40, 6);
-        expect(reset.offsetX).toBeCloseTo(0, 6);
-        expect(reset.offsetY).toBeCloseTo(0, 6);
+        // Now zoom IN past the cap — sequence of wheel-ups should clamp at
+        // DEFAULT_SCALE, never above. Qt enforces the same upper bound.
+        for (let i = 0; i < 20; i++) {
+            await page.mouse.wheel(0, -100);
+        }
+        const cap = await page.evaluate(() => window.SketcherView.current.scale);
+        expect(cap).toBeCloseTo(40, 6); // exactly DEFAULT_SCALE
     });
 });
