@@ -842,23 +842,48 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         model.setBondDirForSelectedBonds(dir);
         setStatus(label);
     };
-    const doLoadSmiles = (): void => {
+    const doLoadInput = (): void => {
         const model = modelRef.current;
         if (!model) return;
-        const text = smilesInput.trim();
-        if (!text) {
-            setStatus('paste a SMILES string first');
+        // Pass the raw text through — MOL blocks start with an empty title
+        // line, so stripping leading whitespace breaks the 3-header-line
+        // contract SDMolSupplier expects.
+        if (!smilesInput.trim()) {
+            setStatus('paste a SMILES or MOL block first');
             return;
         }
         try {
-            model.loadFromSmiles(text);
+            // loadFromText auto-detects SMILES / MOL V2000 / MOL V3000 /
+            // SMARTS / InChI — one entry point covers every text format
+            // the user might paste.
+            model.loadFromText(smilesInput);
             setPendingBondAtom(null);
-            setStatus(`loaded SMILES (${model.numAtoms()} atoms)`);
+            const kind = smilesInput.includes('\n') ||
+                smilesInput.includes('V2000') ||
+                smilesInput.includes('V3000')
+                ? 'MOL'
+                : 'SMILES';
+            setStatus(`loaded ${kind} (${model.numAtoms()} atoms)`);
         } catch (err) {
-            // RDKit throws on malformed SMILES; surface the message in the
-            // status bar so the user can see what went wrong.
             const msg = err instanceof Error ? err.message : String(err);
-            setStatus(`SMILES failed: ${msg || 'invalid SMILES'}`);
+            setStatus(`load failed: ${msg || 'unrecognized format'}`);
+        }
+    };
+    const writeToClipboardWithFallback = async (
+        text: string,
+        kind: string,
+    ): Promise<void> => {
+        setSmilesInput(text);
+        try {
+            await navigator.clipboard.writeText(text);
+            // Status carries kind + short preview (full text would overflow).
+            const preview = text.length > 80 ? text.slice(0, 77) + '...' : text;
+            setStatus(`copied ${kind}: ${preview}`);
+        } catch {
+            // Clipboard write can fail in non-secure contexts / headless
+            // browsers. The input still shows the text so the user can
+            // copy manually.
+            setStatus(`${kind} in input field — copy manually`);
         }
     };
     const doCopySmiles = async (): Promise<void> => {
@@ -869,16 +894,19 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             setStatus('nothing to copy — sketch something first');
             return;
         }
-        setSmilesInput(smi);
-        try {
-            await navigator.clipboard.writeText(smi);
-            setStatus(`copied: ${smi}`);
-        } catch {
-            // Clipboard write can fail in non-secure contexts / headless
-            // browsers. The input field still shows the SMILES so the user
-            // can copy manually.
-            setStatus(`SMILES: ${smi}`);
+        await writeToClipboardWithFallback(smi, 'SMILES');
+    };
+    const doCopyMolBlock = async (): Promise<void> => {
+        const model = modelRef.current;
+        if (!model) return;
+        // V2000 is the more widely supported flavor for round-tripping into
+        // older tools; V3000 export can come later if users want it.
+        const mb = model.toMolBlock(false);
+        if (!mb) {
+            setStatus('nothing to copy — sketch something first');
+            return;
         }
+        await writeToClipboardWithFallback(mb, 'MOL');
     };
 
     const adjustCharge = (delta: number): void => {
@@ -1090,35 +1118,53 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         data-testid='sketcher-canvas'
                     />
                     <div style={styles.smilesBar}>
-                        <input
-                            type='text'
+                        <textarea
                             value={smilesInput}
                             onChange={(e) => setSmilesInput(e.target.value)}
                             onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
+                                // Cmd/Ctrl+Enter triggers Load; plain Enter
+                                // inserts a newline so multi-line MOL blocks
+                                // can be pasted naturally.
+                                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                                     e.preventDefault();
-                                    doLoadSmiles();
+                                    doLoadInput();
                                 }
                             }}
-                            placeholder='SMILES (e.g. c1ccccc1, CCO, [NH4+])'
-                            style={styles.smilesInput}
+                            placeholder='Paste SMILES (c1ccccc1) or MOL block — Cmd+Enter to Load'
+                            style={{
+                                ...styles.smilesInput,
+                                // Grow taller when content looks like a MOL block
+                                // (multi-line) so the user can see what they pasted.
+                                height: smilesInput.includes('\n') ? 96 : 26,
+                            }}
                             data-testid='smiles-input'
                             spellCheck={false}
+                            rows={smilesInput.includes('\n') ? 6 : 1}
                         />
-                        <ActionButton
-                            label='Load'
-                            onClick={doLoadSmiles}
-                            testid='smiles-load'
-                            title='Replace sketch with parsed SMILES (Enter)'
-                        />
-                        <ActionButton
-                            label='Copy SMILES'
-                            onClick={() => {
-                                void doCopySmiles();
-                            }}
-                            testid='smiles-copy'
-                            title='Write current sketch SMILES to clipboard'
-                        />
+                        <div style={styles.smilesButtons}>
+                            <ActionButton
+                                label='Load'
+                                onClick={doLoadInput}
+                                testid='smiles-load'
+                                title='Parse input (SMILES or MOL) into the sketch — Cmd+Enter'
+                            />
+                            <ActionButton
+                                label='Copy SMILES'
+                                onClick={() => {
+                                    void doCopySmiles();
+                                }}
+                                testid='smiles-copy'
+                                title='Write current sketch SMILES to clipboard'
+                            />
+                            <ActionButton
+                                label='Copy MOL'
+                                onClick={() => {
+                                    void doCopyMolBlock();
+                                }}
+                                testid='mol-copy'
+                                title='Write current sketch as a V2000 MOL block to clipboard'
+                            />
+                        </div>
                     </div>
                     <div style={styles.statusBox} data-testid='sketcher-status'>
                         {status}
@@ -1344,7 +1390,7 @@ const styles: Record<string, CSSProperties> = {
     smilesBar: {
         display: 'flex',
         gap: 6,
-        alignItems: 'center',
+        alignItems: 'flex-start',
         padding: '6px 8px',
         background: '#f7f7f7',
         borderTop: `1px solid ${BORDER_COLOR}`,
@@ -1358,5 +1404,15 @@ const styles: Record<string, CSSProperties> = {
         color: '#222',
         background: 'white',
         minWidth: 0,
+        resize: 'vertical',
+        // Inherit the cell's vertical-aligned baseline so the input and
+        // adjacent buttons line up when the textarea is single-line.
+        verticalAlign: 'top',
+    },
+    smilesButtons: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        flex: '0 0 auto',
     },
 };

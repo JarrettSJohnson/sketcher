@@ -27,8 +27,12 @@ export interface MolModelInstance {
     adjustChargeOnSelectedAtoms(delta: number): void;
     /** Replace mol with parsed SMILES. Throws if SMILES is malformed. */
     loadFromSmiles(smiles: string): void;
+    /** Replace mol with parsed text (auto-detects SMILES, MOL, etc.). Throws on failure. */
+    loadFromText(text: string): void;
     /** Canonical SMILES for the current mol; empty string if mol is empty. */
     toSmiles(): string;
+    /** MDL MOL block (V3000 if `v3000` else V2000); empty for empty mol. */
+    toMolBlock(v3000: boolean): string;
     undo(): void;
     redo(): void;
     numAtoms(): number;

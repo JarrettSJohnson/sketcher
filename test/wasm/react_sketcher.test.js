@@ -434,13 +434,16 @@ test.describe('React Sketcher', () => {
         await expect(input).toHaveValue('c1ccccc1');
     });
 
-    test('SMILES Load accepts Enter key and supports undo', async ({ page }) => {
+    test('SMILES Load accepts Cmd+Enter and supports undo', async ({ page }) => {
         const input = page.getByTestId('smiles-input');
         await input.fill('CCO');
-        await input.press('Enter');
+        // Cmd+Enter triggers Load; plain Enter would insert a newline (textarea
+        // semantics needed for multi-line MOL paste).
+        const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+        await input.press(`${modifier}+Enter`);
         let rd = await snapshot(page);
         expect(rd.atoms.map((a) => a.el)).toEqual(['C', 'C', 'O']);
-        // Single undo reverts the entire SMILES load.
+        // Single undo reverts the entire load.
         await page.getByTestId('undo').click();
         rd = await snapshot(page);
         expect(rd.atoms).toHaveLength(0);
@@ -457,9 +460,48 @@ test.describe('React Sketcher', () => {
         await page.getByTestId('smiles-input').fill('not a smiles!!!');
         await page.getByTestId('smiles-load').click();
         const status = await page.getByTestId('sketcher-status').textContent();
-        expect(status).toMatch(/SMILES failed/i);
+        expect(status).toMatch(/load failed/i);
         const after = await snapshot(page);
         expect(after.atoms).toHaveLength(1);
+    });
+
+    test('Copy MOL writes a V2000 block to the input field', async ({ page }) => {
+        const input = page.getByTestId('smiles-input');
+        await input.fill('CCO');
+        const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+        await input.press(`${modifier}+Enter`);
+
+        await page.getByTestId('mol-copy').click();
+        const value = await input.inputValue();
+        expect(value).toContain('V2000');
+        // Counts line: 3 atoms, 2 bonds.
+        expect(value).toContain('  3  2');
+    });
+
+    test('paste a MOL block then Load round-trips back to a sketch', async ({ page }) => {
+        // Build a benzene mol block out-of-band, paste it, hit Load, and
+        // verify the canvas now shows six aromatic atoms. MOL blocks start
+        // with an empty title line (a leading "\n") — naive trimming on the
+        // way in would corrupt the SDMolSupplier 3-header-line contract, so
+        // this test also guards against that regression.
+        const molBlock = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.loadFromSmiles('c1ccccc1');
+            const mb = m.toMolBlock(false);
+            m.delete();
+            return mb;
+        });
+        await page.getByTestId('clear').click();
+
+        const input = page.getByTestId('smiles-input');
+        await input.fill(molBlock);
+        await page.getByTestId('smiles-load').click();
+
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(6);
+        expect(rd.bonds).toHaveLength(6);
+        const status = await page.getByTestId('sketcher-status').textContent();
+        expect(status).toMatch(/loaded MOL/);
     });
 
     test('charge +/- buttons adjust selected-atom formal charge', async ({ page }) => {

@@ -323,6 +323,34 @@ void MolModel::adjustChargeOnSelectedAtoms(int delta)
               delta > 0 ? "Increase charge" : "Decrease charge");
 }
 
+namespace
+{
+
+/**
+ * Shared "absorb a parsed RWMol into our renderable conformer + wedges"
+ * helper used by every text-import entry point. Caller has already done the
+ * format-specific parse; this function normalizes the result.
+ */
+void prepare_loaded_mol(RDKit::RWMol& mol, bool needs_2d_coords)
+{
+    if (mol.getNumAtoms() == 0) {
+        return;
+    }
+    if (needs_2d_coords || mol.getNumConformers() == 0) {
+        rdkit_extensions::compute2DCoords(mol);
+    }
+    try {
+        // wedgeMolBonds reads atom-level CIP chirality and writes 2D bond
+        // dirs into the conformer-bound bonds, so chiral inputs render
+        // with stereo bars instead of flat lines. Swallow on failure —
+        // flat bonds are still readable.
+        RDKit::Chirality::wedgeMolBonds(mol, &mol.getConformer());
+    } catch (...) {
+    }
+}
+
+} // namespace
+
 void MolModel::loadFromSmiles(const std::string& smiles)
 {
     // to_rdkit throws std::invalid_argument for malformed SMILES. Let it
@@ -331,18 +359,22 @@ void MolModel::loadFromSmiles(const std::string& smiles)
     auto parsed = rdkit_extensions::to_rdkit(
         smiles, rdkit_extensions::Format::SMILES);
     RDKit::RWMol new_mol(*parsed);
-    if (new_mol.getNumAtoms() > 0) {
-        rdkit_extensions::compute2DCoords(new_mol);
-        // wedgeMolBonds reads atom-level CIP chirality and writes 2D bond
-        // dirs (BEGINWEDGE / BEGINDASH) into the conformer-bound bonds, so
-        // SMILES like [C@@H](F)(Cl)Br renders with stereo bars instead of
-        // flat lines. Swallow on failure — flat bonds are still readable.
-        try {
-            RDKit::Chirality::wedgeMolBonds(new_mol, &new_mol.getConformer());
-        } catch (...) {
-        }
-    }
+    // SMILES never carries coords — always compute fresh ones.
+    prepare_loaded_mol(new_mol, /*needs_2d_coords=*/true);
     doMutation([this, new_mol] { m_mol = new_mol; }, "Load SMILES");
+}
+
+void MolModel::loadFromText(const std::string& text)
+{
+    // AUTO_DETECT walks the format list (SMILES, MOL V3000/V2000, etc.) and
+    // returns the first successful parse. The lone exception that surfaces
+    // is std::invalid_argument when nothing parses.
+    auto parsed = rdkit_extensions::to_rdkit(text);
+    RDKit::RWMol new_mol(*parsed);
+    // MOL blocks carry their own conformer; we only need to compute when one
+    // isn't present (typical for SMILES/InChI inputs).
+    prepare_loaded_mol(new_mol, /*needs_2d_coords=*/false);
+    doMutation([this, new_mol] { m_mol = new_mol; }, "Load");
 }
 
 std::string MolModel::toSmiles() const
@@ -357,6 +389,20 @@ std::string MolModel::toSmiles() const
         // SMILES writers can throw on partly-built mols (e.g. unset
         // aromaticity flags after a degenerate edit). Return empty so the
         // UI shows "(no smiles)" instead of crashing.
+        return "";
+    }
+}
+
+std::string MolModel::toMolBlock(bool v3000) const
+{
+    if (m_mol.getNumAtoms() == 0) {
+        return "";
+    }
+    try {
+        const auto fmt = v3000 ? rdkit_extensions::Format::MDL_MOLV3000
+                               : rdkit_extensions::Format::MDL_MOLV2000;
+        return rdkit_extensions::to_string(m_mol, fmt);
+    } catch (...) {
         return "";
     }
 }

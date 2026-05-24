@@ -480,6 +480,60 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
         expect(out.after).toBe('CCO');
     });
 
+    test('toMolBlock emits a V2000 block; loadFromText round-trips it', async ({ page }) => {
+        const out = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            const empty = m.toMolBlock(false);
+            m.loadFromSmiles('CCO');
+            const v2000 = m.toMolBlock(false);
+            const v3000 = m.toMolBlock(true);
+
+            // Round-trip the V2000 block through loadFromText in a fresh model.
+            const m2 = new window.Module.MolModel();
+            m2.loadFromText(v2000);
+            const roundtripSmiles = m2.toSmiles();
+            const nAtoms = m2.numAtoms();
+            const nBonds = m2.numBonds();
+            m.delete();
+            m2.delete();
+            return { empty, v2000, v3000, roundtripSmiles, nAtoms, nBonds };
+        });
+        expect(out.empty).toBe('');
+        expect(out.v2000).toContain('V2000');
+        expect(out.v2000).toContain('  3  2'); // counts line
+        expect(out.v3000).toContain('V3000');
+        expect(out.v3000).toContain('M  V30 COUNTS 3 2');
+        expect(out.roundtripSmiles).toBe('CCO');
+        expect(out.nAtoms).toBe(3);
+        expect(out.nBonds).toBe(2);
+    });
+
+    test('loadFromText auto-detects SMILES vs MOL block', async ({ page }) => {
+        const out = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            // SMILES path through auto-detect.
+            m.loadFromText('c1ccncc1'); // pyridine
+            const smilesShape = {
+                n: m.numAtoms(),
+                smi: m.toSmiles(),
+            };
+            // MOL block path: feed the round-trip of a different molecule.
+            m.loadFromSmiles('CN');
+            const mb = m.toMolBlock(false);
+            m.loadFromText(mb);
+            const molShape = {
+                n: m.numAtoms(),
+                smi: m.toSmiles(),
+            };
+            m.delete();
+            return { smilesShape, molShape };
+        });
+        expect(out.smilesShape.n).toBe(6);
+        expect(out.smilesShape.smi).toBe('c1ccncc1');
+        expect(out.molShape.n).toBe(2);
+        expect(out.molShape.smi).toBe('CN');
+    });
+
     test('adjustChargeOnSelectedAtoms updates q and nh in render description', async ({ page }) => {
         const result = await page.evaluate(() => {
             const m = new window.Module.MolModel();

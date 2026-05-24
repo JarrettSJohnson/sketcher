@@ -319,9 +319,17 @@ class MolModelJS
     {
         m_model.loadFromSmiles(smiles);
     }
+    void loadFromText(const std::string& text)
+    {
+        m_model.loadFromText(text);
+    }
     std::string toSmiles() const
     {
         return m_model.toSmiles();
+    }
+    std::string toMolBlock(bool v3000) const
+    {
+        return m_model.toMolBlock(v3000);
     }
     void undo()
     {
@@ -493,7 +501,9 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("adjustChargeOnSelectedAtoms",
                   &MolModelJS::adjustChargeOnSelectedAtoms)
         .function("loadFromSmiles", &MolModelJS::loadFromSmiles)
+        .function("loadFromText", &MolModelJS::loadFromText)
         .function("toSmiles", &MolModelJS::toSmiles)
+        .function("toMolBlock", &MolModelJS::toMolBlock)
         .function("undo", &MolModelJS::undo)
         .function("redo", &MolModelJS::redo)
         .function("numAtoms", &MolModelJS::numAtoms)

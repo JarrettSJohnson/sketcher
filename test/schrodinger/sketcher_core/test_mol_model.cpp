@@ -691,3 +691,105 @@ BOOST_AUTO_TEST_CASE(testToSmilesIncludesFormalCharge)
     BOOST_CHECK(out.find("NH4+") != std::string::npos ||
                 out.find("N+") != std::string::npos);
 }
+
+BOOST_AUTO_TEST_CASE(testToMolBlockEmpty)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    BOOST_CHECK_EQUAL(m.toMolBlock(/*v3000=*/false), "");
+    BOOST_CHECK_EQUAL(m.toMolBlock(/*v3000=*/true), "");
+}
+
+BOOST_AUTO_TEST_CASE(testToMolBlockV2000HasMatchingCountsLine)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    const auto mb = m.toMolBlock(/*v3000=*/false);
+    // V2000 counts line is "  3  2  0  0  0  0  0  0  0  0999 V2000".
+    BOOST_CHECK(mb.find("V2000") != std::string::npos);
+    BOOST_CHECK(mb.find("  3  2") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(testToMolBlockV3000HasV3000Tag)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    const auto mb = m.toMolBlock(/*v3000=*/true);
+    BOOST_CHECK(mb.find("V3000") != std::string::npos);
+    BOOST_CHECK(mb.find("M  V30 COUNTS 3 2") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(testLoadFromTextRoundTripsMolBlock)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    const auto mb = m.toMolBlock(/*v3000=*/false);
+
+    UndoStack stack2;
+    MolModel m2(&stack2);
+    m2.loadFromText(mb);
+    BOOST_CHECK_EQUAL(m2.numAtoms(), 3u);
+    BOOST_CHECK_EQUAL(m2.numBonds(), 2u);
+    // Round-trip preserves canonical SMILES (the MOL block carries enough
+    // structure to recover the same canonical form).
+    BOOST_CHECK_EQUAL(m2.toSmiles(), m.toSmiles());
+}
+
+BOOST_AUTO_TEST_CASE(testLoadFromTextAlsoAcceptsSmiles)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    // AUTO_DETECT routes a SMILES-shaped string through the SMILES parser.
+    m.loadFromText("c1ccncc1"); // pyridine
+    BOOST_CHECK_EQUAL(m.numAtoms(), 6u);
+    BOOST_CHECK_EQUAL(m.numBonds(), 6u);
+    // Aromatic pyridine: one of the atoms is N.
+    bool found_n = false;
+    for (unsigned int i = 0; i < m.numAtoms(); ++i) {
+        if (m.mol().getAtomWithIdx(i)->getSymbol() == "N") {
+            found_n = true;
+            break;
+        }
+    }
+    BOOST_CHECK(found_n);
+}
+
+BOOST_AUTO_TEST_CASE(testLoadFromTextThrowsOnGarbage)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    BOOST_CHECK_THROW(m.loadFromText("definitely not a molecule"),
+                      std::invalid_argument);
+    BOOST_CHECK(m.isEmpty());
+    BOOST_CHECK_EQUAL(stack.count(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(testLoadFromTextPreservesMolBlockCoords)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    // Hand-crafted V2000 block: two atoms placed at (10, 20) and (15, 25)
+    // — way outside what compute2DCoords would generate, so we can detect
+    // whether the coords survived the load.
+    const std::string mb =
+        "test\n"
+        "     RDKit          2D\n"
+        "\n"
+        "  2  1  0  0  0  0  0  0  0  0999 V2000\n"
+        "   10.0000   20.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n"
+        "   15.0000   25.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n"
+        "  1  2  1  0\n"
+        "M  END\n";
+    m.loadFromText(mb);
+    BOOST_CHECK_EQUAL(m.numAtoms(), 2u);
+    double x = 0, y = 0;
+    m.atomPos(0, x, y);
+    BOOST_CHECK_CLOSE(x, 10.0, 1e-3);
+    BOOST_CHECK_CLOSE(y, 20.0, 1e-3);
+    m.atomPos(1, x, y);
+    BOOST_CHECK_CLOSE(x, 15.0, 1e-3);
+    BOOST_CHECK_CLOSE(y, 25.0, 1e-3);
+}

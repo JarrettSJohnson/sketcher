@@ -130,11 +130,28 @@ class MolModel : public UndoableModel
     void loadFromSmiles(const std::string& smiles);
 
     /**
+     * Replace the mol with the parsed text, auto-detecting the format
+     * (SMILES, MOL V2000/V3000, SMARTS, InChI, etc. — whatever to_rdkit's
+     * AUTO_DETECT supports). Computes 2D coords + wedges. For inputs that
+     * already carry coords (MOL blocks), coords are preserved as-is.
+     * Throws std::invalid_argument on unparseable input.
+     */
+    void loadFromText(const std::string& text);
+
+    /**
      * Serialize the current mol as a SMILES string. Returns an empty string
      * for an empty mol. RDKit writes non-Kekulé canonical SMILES by default;
      * stereo is preserved.
      */
     std::string toSmiles() const;
+
+    /**
+     * Serialize the current mol as an MDL MOL block. `v3000` selects the
+     * V3000 spec (no atom-count limit, richer query support); false picks
+     * V2000 for compatibility with older tools. Returns "" for an empty
+     * mol or on writer failure.
+     */
+    std::string toMolBlock(bool v3000) const;
 
     // -- Selection --------------------------------------------------------
     // Selection is transient UI state, not undoable. Any mutation that may
