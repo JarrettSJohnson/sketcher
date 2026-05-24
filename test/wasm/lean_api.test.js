@@ -566,4 +566,32 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
         expect(result.undoQ).toBeUndefined();
         expect(result.undoNh).toBe(3);
     });
+
+    test('addHydrogens then removeHydrogens round-trips through MolModel', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.loadFromSmiles('CCO');
+            const heavyAtoms = m.numAtoms();
+            m.addHydrogens();
+            const expanded = m.numAtoms();
+            // Render description should report each H as an atom in its own right.
+            const expandedDesc = JSON.parse(m.description());
+            const explicitH = expandedDesc.atoms.filter((a) => a.el === 'H').length;
+            m.removeHydrogens();
+            const contracted = m.numAtoms();
+            // Undo the remove → back to expanded; undo again → back to heavy-only.
+            m.undo();
+            const afterUndoRemove = m.numAtoms();
+            m.undo();
+            const afterUndoAdd = m.numAtoms();
+            m.delete();
+            return { heavyAtoms, expanded, explicitH, contracted, afterUndoRemove, afterUndoAdd };
+        });
+        expect(result.heavyAtoms).toBe(3);
+        expect(result.expanded).toBe(9); // CCO has 6 implicit Hs
+        expect(result.explicitH).toBe(6);
+        expect(result.contracted).toBe(3);
+        expect(result.afterUndoRemove).toBe(9);
+        expect(result.afterUndoAdd).toBe(3);
+    });
 });

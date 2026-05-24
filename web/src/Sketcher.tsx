@@ -920,6 +920,32 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setStatus(delta > 0 ? 'charge +1' : 'charge −1');
     };
 
+    const doAddHydrogens = (): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        if (model.numAtoms() === 0) {
+            setStatus('nothing to expand — sketch something first');
+            return;
+        }
+        const before = model.numAtoms();
+        model.addHydrogens();
+        const added = model.numAtoms() - before;
+        setStatus(added > 0 ? `added ${added} explicit H${added === 1 ? '' : 's'}` : 'all Hs already explicit');
+    };
+
+    const doRemoveHydrogens = (): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        if (model.numAtoms() === 0) {
+            setStatus('nothing to contract — sketch something first');
+            return;
+        }
+        const before = model.numAtoms();
+        model.removeHydrogens();
+        const removed = before - model.numAtoms();
+        setStatus(removed > 0 ? `removed ${removed} explicit H${removed === 1 ? '' : 's'}` : 'no removable Hs');
+    };
+
     // Keyboard shortcuts match the Qt sketcher: Ctrl/Cmd+Z undo,
     // Ctrl/Cmd+Shift+Z or Ctrl+Y redo, Del/Backspace deletes the selection,
     // Ctrl/Cmd+A selects everything. We listen on window so the user doesn't
@@ -1083,6 +1109,20 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             onClick={() => adjustCharge(-1)}
                             testid='charge-minus'
                             title='Decrease charge on selected atoms'
+                        />
+                    </Section>
+                    <Section label='Hydrogens'>
+                        <ActionButton
+                            label='Add Hs'
+                            onClick={doAddHydrogens}
+                            testid='hydrogens-add'
+                            title='Promote implicit hydrogens to explicit atoms'
+                        />
+                        <ActionButton
+                            label='Remove Hs'
+                            onClick={doRemoveHydrogens}
+                            testid='hydrogens-remove'
+                            title='Strip explicit hydrogens back to implicit'
                         />
                     </Section>
                     <Section label='Stereo'>

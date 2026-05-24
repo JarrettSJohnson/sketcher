@@ -27,6 +27,7 @@
 
 #include "schrodinger/rdkit_extensions/convert.h"
 #include "schrodinger/rdkit_extensions/coord_utils.h"
+#include "schrodinger/rdkit_extensions/molops.h"
 #include "schrodinger/sketcher_core/undo_stack.h"
 
 namespace schrodinger
@@ -391,6 +392,23 @@ std::string MolModel::toSmiles() const
         // UI shows "(no smiles)" instead of crashing.
         return "";
     }
+}
+
+void MolModel::addHydrogens()
+{
+    if (m_mol.getNumAtoms() == 0) {
+        return;
+    }
+    doMutation([this] { rdkit_extensions::addHs(m_mol); }, "Add hydrogens");
+}
+
+void MolModel::removeHydrogens()
+{
+    if (m_mol.getNumAtoms() == 0) {
+        return;
+    }
+    doMutation([this] { rdkit_extensions::removeHs(m_mol); },
+               "Remove hydrogens");
 }
 
 std::string MolModel::toMolBlock(bool v3000) const

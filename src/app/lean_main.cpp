@@ -331,6 +331,14 @@ class MolModelJS
     {
         return m_model.toMolBlock(v3000);
     }
+    void addHydrogens()
+    {
+        m_model.addHydrogens();
+    }
+    void removeHydrogens()
+    {
+        m_model.removeHydrogens();
+    }
     void undo()
     {
         m_stack.undo();
@@ -504,6 +512,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("loadFromText", &MolModelJS::loadFromText)
         .function("toSmiles", &MolModelJS::toSmiles)
         .function("toMolBlock", &MolModelJS::toMolBlock)
+        .function("addHydrogens", &MolModelJS::addHydrogens)
+        .function("removeHydrogens", &MolModelJS::removeHydrogens)
         .function("undo", &MolModelJS::undo)
         .function("redo", &MolModelJS::redo)
         .function("numAtoms", &MolModelJS::numAtoms)

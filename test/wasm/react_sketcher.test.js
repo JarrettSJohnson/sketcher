@@ -529,4 +529,38 @@ test.describe('React Sketcher', () => {
         rd = await snapshot(page);
         expect(rd.atoms[0].q).toBeUndefined();
     });
+
+    test('Add Hs / Remove Hs buttons promote and strip explicit hydrogens', async ({ page }) => {
+        // Load methanol via the SMILES input so we don't rely on canvas
+        // coordinates. After Add Hs the description should grow to 5 atoms
+        // (1 C + 1 O + 4 explicit Hs) and Remove Hs should walk it back.
+        await page.getByTestId('smiles-input').fill('CO');
+        await page.getByTestId('smiles-load').click();
+
+        let rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+
+        await page.getByTestId('hydrogens-add').click();
+        rd = await snapshot(page);
+        // Methanol has 4 implicit Hs (3 on C + 1 on O) → 6 atoms total.
+        expect(rd.atoms).toHaveLength(6);
+        const explicitH = rd.atoms.filter((a) => a.el === 'H').length;
+        expect(explicitH).toBe(4);
+
+        await page.getByTestId('hydrogens-remove').click();
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+
+        // Undo restores explicit Hs (single undo step per toggle).
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(6);
+    });
+
+    test('Add Hs on an empty sketch is a no-op with a friendly status', async ({ page }) => {
+        await page.getByTestId('clear').click();
+        await page.getByTestId('hydrogens-add').click();
+        const status = await page.getByTestId('sketcher-status').textContent();
+        expect(status).toMatch(/nothing to expand/);
+    });
 });

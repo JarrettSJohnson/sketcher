@@ -793,3 +793,61 @@ BOOST_AUTO_TEST_CASE(testLoadFromTextPreservesMolBlockCoords)
     BOOST_CHECK_CLOSE(x, 15.0, 1e-3);
     BOOST_CHECK_CLOSE(y, 25.0, 1e-3);
 }
+
+BOOST_AUTO_TEST_CASE(testAddHydrogensPromotesImplicitToExplicit)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("C"); // methane — one heavy atom + four implicit Hs
+    BOOST_CHECK_EQUAL(m.numAtoms(), 1u);
+
+    m.addHydrogens();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 5u);
+    BOOST_CHECK_EQUAL(m.numBonds(), 4u);
+    // Every new atom is an H, bonded back to the carbon.
+    unsigned int h_count = 0;
+    for (unsigned int i = 0; i < m.numAtoms(); ++i) {
+        if (m.mol().getAtomWithIdx(i)->getSymbol() == "H") {
+            ++h_count;
+        }
+    }
+    BOOST_CHECK_EQUAL(h_count, 4u);
+
+    // Undo restores the implicit-H form.
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(testRemoveHydrogensRoundTripsAddHydrogens)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO"); // ethanol: 3 heavies, 6 implicit Hs
+    BOOST_CHECK_EQUAL(m.numAtoms(), 3u);
+
+    m.addHydrogens();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 9u); // 3 heavies + 6 Hs
+
+    m.removeHydrogens();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 3u);
+    BOOST_CHECK_EQUAL(m.toSmiles(), "CCO");
+}
+
+BOOST_AUTO_TEST_CASE(testAddHydrogensIsNoOpOnEmptyMol)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addHydrogens();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 0u);
+    // No-op should not push an undo command.
+    BOOST_CHECK_EQUAL(stack.count(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(testRemoveHydrogensIsNoOpOnEmptyMol)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.removeHydrogens();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 0u);
+    BOOST_CHECK_EQUAL(stack.count(), 0u);
+}

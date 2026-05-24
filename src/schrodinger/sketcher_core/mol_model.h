@@ -153,6 +153,20 @@ class MolModel : public UndoableModel
      */
     std::string toMolBlock(bool v3000) const;
 
+    /**
+     * Promote every implicit hydrogen to an explicit atom with a generated
+     * 2D position. Single undo step. No-op when the mol is empty; safe to
+     * call repeatedly (a fully-explicit mol just stays that way).
+     */
+    void addHydrogens();
+
+    /**
+     * Strip explicit hydrogens back to implicit. Counterpart to addHydrogens.
+     * Hs that carry isotopes / charges / unusual valence are preserved (per
+     * rdkit_extensions::removeHs's "common standard"). Single undo step.
+     */
+    void removeHydrogens();
+
     // -- Selection --------------------------------------------------------
     // Selection is transient UI state, not undoable. Any mutation that may
     // reindex atoms/bonds clears it (matching the simplest correct policy

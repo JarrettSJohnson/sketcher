@@ -33,6 +33,10 @@ export interface MolModelInstance {
     toSmiles(): string;
     /** MDL MOL block (V3000 if `v3000` else V2000); empty for empty mol. */
     toMolBlock(v3000: boolean): string;
+    /** Promote every implicit hydrogen to an explicit atom. Single undo step. */
+    addHydrogens(): void;
+    /** Strip explicit hydrogens back to implicit. Single undo step. */
+    removeHydrogens(): void;
     undo(): void;
     redo(): void;
     numAtoms(): number;
