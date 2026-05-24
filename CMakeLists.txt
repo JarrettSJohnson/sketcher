@@ -347,15 +347,17 @@ endif() # NOT SKETCHER_LEAN_ONLY
 # Links only rdkit_extensions + RDKit core; no Qt, no SketcherWidget,
 # no ASYNCIFY. Produces sketcher_lean_app/SketcherLean.{wasm,js} + index.html.
 if(EMSCRIPTEN)
+  # Qt-free sketcher_core sources, reused by the lean app and the lean tests.
+  # Inlined into consumers for now — promote to its own library once another
+  # target outside the lean app needs them.
+  set(SKETCHER_CORE_SOURCES
+      src/schrodinger/sketcher_core/undo_stack.cpp
+      src/schrodinger/sketcher_core/undoable_model.cpp
+      src/schrodinger/sketcher_core/mol_model.cpp)
+
   set(LEAN_APP_TARGET sketcher_lean)
-  add_executable(
-    ${LEAN_APP_TARGET}
-    src/app/lean_main.cpp
-    # Phase 0 spike: Qt-free model primitives (sketcher_core/). Inlined into
-    # the lean executable for now — promote to its own library once a second
-    # consumer arrives.
-    src/schrodinger/sketcher_core/undo_stack.cpp
-    src/schrodinger/sketcher_core/undoable_model.cpp)
+  add_executable(${LEAN_APP_TARGET} src/app/lean_main.cpp
+                                    ${SKETCHER_CORE_SOURCES})
   setup_target(${LEAN_APP_TARGET})
   set_target_properties(
     ${LEAN_APP_TARGET}
@@ -392,16 +394,19 @@ if(SKETCHER_LEAN_ONLY AND EMSCRIPTEN)
   set(LEAN_TEST_SOURCES
       test/schrodinger/sketcher_core/test_signal.cpp
       test/schrodinger/sketcher_core/test_undo_stack.cpp
-      test/schrodinger/sketcher_core/test_undoable_model.cpp)
+      test/schrodinger/sketcher_core/test_undoable_model.cpp
+      test/schrodinger/sketcher_core/test_mol_model.cpp)
   foreach(TEST_SOURCE ${LEAN_TEST_SOURCES})
     cmake_path(GET TEST_SOURCE STEM TEST_STEM)
     set(TEST_TARGET "sketcher_core-${TEST_STEM}")
-    add_executable(${TEST_TARGET}
-                   ${TEST_SOURCE}
-                   src/schrodinger/sketcher_core/undo_stack.cpp
-                   src/schrodinger/sketcher_core/undoable_model.cpp)
+    add_executable(${TEST_TARGET} ${TEST_SOURCE} ${SKETCHER_CORE_SOURCES})
     setup_target(${TEST_TARGET})
-    target_link_libraries(${TEST_TARGET} PRIVATE Boost::unit_test_framework)
+    # MolModel pulls in RDKit; the other sketcher_core tests don't, but linking
+    # rdkit_extensions for all of them keeps the cmake loop simple and the
+    # cost is negligible in a wasm test build.
+    target_link_libraries(
+      ${TEST_TARGET} PRIVATE Boost::unit_test_framework
+                             ${RDKIT_EXTENSIONS_TARGET})
     set_target_properties(
       ${TEST_TARGET}
       PROPERTIES RUNTIME_OUTPUT_DIRECTORY

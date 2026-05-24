@@ -88,3 +88,87 @@ test.describe('Phase 0 Qt-free Counter via embind', () => {
         expect(result).toEqual([2, 10]);
     });
 });
+
+test.describe('Phase 0 Qt-free MolModel via embind', () => {
+    test('build ethanol atom-by-atom and render description', async ({ page }) => {
+        const description = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('C');
+            m.addAtom('C');
+            m.addAtom('O');
+            m.addBond(0, 1, 1); // single
+            m.addBond(1, 2, 1);
+            const json = m.description();
+            m.delete();
+            return JSON.parse(json);
+        });
+        expect(description.atoms).toHaveLength(3);
+        expect(description.bonds).toHaveLength(2);
+        expect(description.atoms.map(a => a.el)).toEqual(['C', 'C', 'O']);
+        expect(description.bonds.map(b => [b.a, b.b])).toEqual([[0, 1], [1, 2]]);
+    });
+
+    test('undo / redo round-trips through MolModel', async ({ page }) => {
+        const trace = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            const counts = [];
+            const snap = () => counts.push([m.numAtoms(), m.numBonds()]);
+            snap();              // [0, 0]
+            m.addAtom('C'); snap();
+            m.addAtom('O'); snap();
+            m.addBond(0, 1, 2); // double
+            snap();              // [2, 1]
+            m.undo(); snap();    // [2, 0]
+            m.undo(); snap();    // [1, 0]
+            m.redo(); snap();    // [2, 0]
+            m.redo(); snap();    // [2, 1]
+            m.delete();
+            return counts;
+        });
+        expect(trace).toEqual([
+            [0, 0], [1, 0], [2, 0], [2, 1],
+            [2, 0], [1, 0], [2, 0], [2, 1],
+        ]);
+    });
+
+    test('modelChanged signal fires for mutations and undo/redo', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            let fired = 0;
+            const handle = window.Module.mol_model_subscribe(m, () => { ++fired; });
+            m.addAtom('C');
+            m.addAtom('N');
+            m.addBond(0, 1, 1);
+            m.undo();
+            m.redo();
+            window.Module.mol_model_unsubscribe(handle);
+            m.addAtom('O'); // post-unsubscribe — should NOT fire
+            const final = fired;
+            m.delete();
+            return final;
+        });
+        // 3 mutations + 1 undo + 1 redo = 5 emissions; post-unsubscribe addAtom is silent.
+        expect(result).toBe(5);
+    });
+
+    test('removeAtom drops incident bonds and undo restores them', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('C');
+            m.addAtom('C');
+            m.addAtom('O');
+            m.addBond(0, 1, 1);
+            m.addBond(1, 2, 1);
+            const beforeRemove = [m.numAtoms(), m.numBonds()];
+            m.removeAtom(1); // drops both bonds
+            const afterRemove = [m.numAtoms(), m.numBonds()];
+            m.undo(); // restores atom + bonds
+            const afterUndo = [m.numAtoms(), m.numBonds()];
+            m.delete();
+            return { beforeRemove, afterRemove, afterUndo };
+        });
+        expect(result.beforeRemove).toEqual([3, 2]);
+        expect(result.afterRemove).toEqual([2, 0]);
+        expect(result.afterUndo).toEqual([3, 2]);
+    });
+});

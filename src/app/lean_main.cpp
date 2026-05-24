@@ -25,6 +25,7 @@
 #include "schrodinger/rdkit_extensions/coord_utils.h"
 #include "schrodinger/rdkit_extensions/file_format.h"
 
+#include "schrodinger/sketcher_core/mol_model.h"
 #include "schrodinger/sketcher_core/observer.h"
 #include "schrodinger/sketcher_core/undo_stack.h"
 #include "schrodinger/sketcher_core/undoable_model.h"
@@ -36,33 +37,36 @@ using schrodinger::rdkit_extensions::compute2DCoords;
 using schrodinger::rdkit_extensions::Format;
 using schrodinger::rdkit_extensions::to_rdkit;
 
-std::string render_description_from_text(const std::string& text,
-                                         const Format format)
+/**
+ * Serialize an RDKit mol to the JSON render description shape expected by
+ * lean.html and Playwright. Computes 2D coords on the passed mol in place if
+ * any atoms are present.
+ */
+std::string mol_to_render_description(RDKit::RWMol& mol)
 {
-    auto mol = to_rdkit(text, format);
-    if (!mol || mol->getNumAtoms() == 0) {
+    if (mol.getNumAtoms() == 0) {
         return R"({"atoms":[],"bonds":[]})";
     }
-    compute2DCoords(*mol);
-    const auto& conf = mol->getConformer();
+    compute2DCoords(mol);
+    const auto& conf = mol.getConformer();
 
     std::ostringstream os;
     os.precision(4);
     os << std::fixed;
 
     os << "{\"atoms\":[";
-    for (unsigned int i = 0; i < mol->getNumAtoms(); ++i) {
+    for (unsigned int i = 0; i < mol.getNumAtoms(); ++i) {
         const auto& p = conf.getAtomPos(i);
         if (i > 0) {
             os << ',';
         }
         os << "{\"i\":" << i << ",\"el\":\""
-           << mol->getAtomWithIdx(i)->getSymbol() << "\",\"x\":" << p.x
+           << mol.getAtomWithIdx(i)->getSymbol() << "\",\"x\":" << p.x
            << ",\"y\":" << p.y << '}';
     }
     os << "],\"bonds\":[";
-    for (unsigned int i = 0; i < mol->getNumBonds(); ++i) {
-        const auto* b = mol->getBondWithIdx(i);
+    for (unsigned int i = 0; i < mol.getNumBonds(); ++i) {
+        const auto* b = mol.getBondWithIdx(i);
         if (i > 0) {
             os << ',';
         }
@@ -72,6 +76,17 @@ std::string render_description_from_text(const std::string& text,
     }
     os << "]}";
     return os.str();
+}
+
+std::string render_description_from_text(const std::string& text,
+                                         const Format format)
+{
+    auto mol = to_rdkit(text, format);
+    if (!mol) {
+        return R"({"atoms":[],"bonds":[]})";
+    }
+    RDKit::RWMol rw(*mol);
+    return mol_to_render_description(rw);
 }
 
 std::string render_description_from_smiles(const std::string& smiles)
@@ -92,6 +107,7 @@ std::string render_description_from_smiles(const std::string& smiles)
 // Replaces a hypothetical QObject + Q_SIGNAL + QUndoStack triplet.
 
 using schrodinger::sketcher_core::Connection;
+using schrodinger::sketcher_core::MolModel;
 using schrodinger::sketcher_core::Signal;
 using schrodinger::sketcher_core::UndoableModel;
 using schrodinger::sketcher_core::UndoStack;
@@ -167,6 +183,101 @@ void counter_unsubscribe(std::size_t handle)
     connections().handles.erase(handle);
 }
 
+// -- Phase 0 spike: Qt-free MolModel -------------------------------------
+// Thin browser-facing wrapper around sketcher_core::MolModel. Owns its own
+// UndoStack so JS can `new Module.MolModel()` without juggling lifetimes.
+//
+//   const m = new Module.MolModel();
+//   m.addAtom("C"); m.addAtom("O"); m.addBond(0, 1, 1.0);
+//   m.undo();
+//   const json = JSON.parse(m.description());
+
+class MolModelJS
+{
+  public:
+    MolModelJS() : m_model(&m_stack)
+    {
+    }
+
+    void addAtom(const std::string& element)
+    {
+        m_model.addAtom(element);
+    }
+    void addBond(unsigned int begin, unsigned int end, int bond_type)
+    {
+        m_model.addBond(begin, end,
+                        static_cast<RDKit::Bond::BondType>(bond_type));
+    }
+    void removeAtom(unsigned int idx)
+    {
+        m_model.removeAtom(idx);
+    }
+    void removeBond(unsigned int begin, unsigned int end)
+    {
+        m_model.removeBond(begin, end);
+    }
+    void clear()
+    {
+        m_model.clear();
+    }
+    void undo()
+    {
+        m_stack.undo();
+    }
+    void redo()
+    {
+        m_stack.redo();
+    }
+    unsigned int numAtoms() const
+    {
+        return m_model.numAtoms();
+    }
+    unsigned int numBonds() const
+    {
+        return m_model.numBonds();
+    }
+
+    std::string description() const
+    {
+        RDKit::RWMol copy(m_model.mol());
+        return mol_to_render_description(copy);
+    }
+
+    Signal<>& modelChangedSignal()
+    {
+        return m_model.modelChanged;
+    }
+
+  private:
+    UndoStack m_stack;
+    MolModel m_model;
+};
+
+struct MolModelConnections {
+    std::size_t next_id = 1;
+    std::unordered_map<std::size_t, Connection> handles;
+};
+
+MolModelConnections& mol_model_connections()
+{
+    static MolModelConnections inst;
+    return inst;
+}
+
+std::size_t mol_model_subscribe(MolModelJS& m, emscripten::val callback)
+{
+    auto id = mol_model_connections().next_id++;
+    mol_model_connections().handles.emplace(
+        id,
+        m.modelChangedSignal().connect([callback]() mutable { callback(); }));
+    return id;
+}
+
+void mol_model_unsubscribe(std::size_t handle)
+{
+    mol_model_connections().handles.erase(handle);
+}
+
 } // namespace
 
 EMSCRIPTEN_BINDINGS(sketcher_lean)
@@ -195,6 +306,22 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("redo", &Counter::redoLast);
     emscripten::function("counter_subscribe", &counter_subscribe);
     emscripten::function("counter_unsubscribe", &counter_unsubscribe);
+
+    // Phase 0 spike: Qt-free MolModel
+    emscripten::class_<MolModelJS>("MolModel")
+        .constructor<>()
+        .function("addAtom", &MolModelJS::addAtom)
+        .function("addBond", &MolModelJS::addBond)
+        .function("removeAtom", &MolModelJS::removeAtom)
+        .function("removeBond", &MolModelJS::removeBond)
+        .function("clear", &MolModelJS::clear)
+        .function("undo", &MolModelJS::undo)
+        .function("redo", &MolModelJS::redo)
+        .function("numAtoms", &MolModelJS::numAtoms)
+        .function("numBonds", &MolModelJS::numBonds)
+        .function("description", &MolModelJS::description);
+    emscripten::function("mol_model_subscribe", &mol_model_subscribe);
+    emscripten::function("mol_model_unsubscribe", &mol_model_unsubscribe);
 }
 
 int main()
