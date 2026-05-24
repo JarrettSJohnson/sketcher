@@ -265,6 +265,42 @@ void MolModel::setBondDirForSelectedBonds(RDKit::Bond::BondDir dir)
     }
 }
 
+void MolModel::setBondTypeUndoable(unsigned int begin_idx,
+                                   unsigned int end_idx,
+                                   RDKit::Bond::BondType type)
+{
+    // getBondBetweenAtoms invariant-checks both indices, so guard first.
+    if (begin_idx >= m_mol.getNumAtoms() || end_idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    auto* bond = m_mol.getBondBetweenAtoms(begin_idx, end_idx);
+    if (bond == nullptr) {
+        return;
+    }
+    const auto old_type = bond->getBondType();
+    if (old_type == type) {
+        return;
+    }
+    const unsigned int bond_idx = bond->getIdx();
+    auto refresh_cache = [this] {
+        try {
+            m_mol.updatePropertyCache(/*strict=*/false);
+        } catch (...) {
+        }
+    };
+    auto redo = [this, bond_idx, type, refresh_cache] {
+        m_mol.getBondWithIdx(bond_idx)->setBondType(type);
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    auto undo = [this, bond_idx, old_type, refresh_cache] {
+        m_mol.getBondWithIdx(bond_idx)->setBondType(old_type);
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    doCommand(std::move(redo), std::move(undo), "Change bond order");
+}
+
 void MolModel::addRing(unsigned int size, double cx, double cy, bool aromatic)
 {
     if (size < 3) {

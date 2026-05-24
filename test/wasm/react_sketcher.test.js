@@ -1020,14 +1020,14 @@ test.describe('React Sketcher', () => {
         page,
     }) => {
         // Several Qt-side widgets are present for visual fidelity but not yet
-        // ported (Erase, atom_query popup, periodic_table, bond_query,
-        // atom_chain, R-group, attachment point, reaction, monomeric mode,
+        // ported (atom_query popup, periodic_table, bond_query, atom_chain,
+        // R-group, attachment point, reaction, monomeric mode,
         // import/export/settings/help). All of them route through
         // comingSoon() → setStatus(...) so users can tell the button is
-        // intentional rather than broken. (Move/Rotate was wired in Batch 3.)
+        // intentional rather than broken. (Move/Rotate wired in Batch 3,
+        // Erase wired in Batch 5.)
         const status = page.getByTestId('sketcher-status');
         const stubs = [
-            ['tool-erase', /Erase tool/],
             ['atom-query', /Atom query/],
             ['periodic-table', /Periodic table/],
             ['bond-query', /Bond query/],
@@ -1357,5 +1357,211 @@ test.describe('React Sketcher', () => {
         await expect(input).toHaveValue('CC');
         const rd = await snapshot(page);
         expect(rd.atoms).toHaveLength(2);
+    });
+
+    test('erase tool: click atom removes atom + incident bonds in one undo', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+
+        let rd = await snapshot(page);
+        expect([rd.atoms.length, rd.bonds.length]).toEqual([3, 2]);
+
+        // Erase the middle atom: it and both incident bonds vanish.
+        await page.getByTestId('tool-erase').click();
+        await expect(page.getByTestId('tool-erase')).toHaveAttribute(
+            'aria-pressed',
+            'true',
+        );
+        await canvas.click({ position: { x: 260, y: 180 } });
+        rd = await snapshot(page);
+        expect([rd.atoms.length, rd.bonds.length]).toEqual([2, 0]);
+
+        // Single undo restores the atom + both bonds.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect([rd.atoms.length, rd.bonds.length]).toEqual([3, 2]);
+    });
+
+    test('erase tool: click double bond decrements to single before removing', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Two atoms, double bond between them.
+        await canvas.click({ position: { x: 160, y: 200 } });
+        await canvas.click({ position: { x: 320, y: 200 } });
+        await page.getByTestId('bond-double').click();
+        await canvas.click({ position: { x: 160, y: 200 } });
+        await canvas.click({ position: { x: 320, y: 200 } });
+
+        let rd = await snapshot(page);
+        expect(rd.bonds[0]).toMatchObject({ a: 0, b: 1, o: 2 });
+
+        await page.getByTestId('tool-erase').click();
+        // First click: double → single (atoms intact).
+        await canvas.click({ position: { x: 240, y: 200 } });
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+        expect(rd.bonds[0]).toMatchObject({ a: 0, b: 1, o: 1 });
+
+        // Second click on the (now single) bond removes it.
+        await canvas.click({ position: { x: 240, y: 200 } });
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+        expect(rd.bonds).toHaveLength(0);
+    });
+
+    test('erase tool: rubber-band region erases everything inside as one undo', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+
+        let rd = await snapshot(page);
+        expect([rd.atoms.length, rd.bonds.length]).toEqual([3, 2]);
+
+        await page.getByTestId('tool-erase').click();
+        // Drag a rectangle that encloses the first two atoms.
+        const box = await canvas.boundingBox();
+        await page.mouse.move(box.x + 60, box.y + 100);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 200, box.y + 130, { steps: 4 });
+        await page.mouse.move(box.x + 320, box.y + 260, { steps: 6 });
+        await page.mouse.up();
+
+        rd = await snapshot(page);
+        // Atoms 0+1 and the bond between them go; atom 2 survives but its
+        // incident bond is gone too (atom 1 removed).
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.bonds).toHaveLength(0);
+
+        // Undo restores everything as a single step.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect([rd.atoms.length, rd.bonds.length]).toEqual([3, 2]);
+    });
+
+    test('rotate handle: drag the handle rotates the whole molecule about its centroid', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        let rd = await snapshot(page);
+
+        // Place two atoms symmetric about the canvas centre so the centroid
+        // (and therefore the rotate pivot) lands exactly at canvas (270, 180)
+        // — that's where the SketcherView resting offset puts the origin.
+        // Canvas size is 540×360 and default scale is 40 px/Å, so atoms
+        // placed at pixel (170, 180) and (370, 180) are at model (±2.5, 0).
+        await canvas.click({ position: { x: 170, y: 180 } });
+        await canvas.click({ position: { x: 370, y: 180 } });
+
+        rd = await snapshot(page);
+        const orig = rd.atoms.map((a) => ({ x: a.x, y: a.y }));
+        // Sanity-check the symmetric placement before we depend on it.
+        expect(Math.abs(orig[0].x + orig[1].x)).toBeLessThan(0.05);
+        expect(Math.abs(orig[0].y - orig[1].y)).toBeLessThan(0.05);
+
+        await page.getByTestId('tool-move-rotate').click();
+        const box = await canvas.boundingBox();
+
+        // Pivot is (270, 180) in canvas coords; handle 130 px to the right.
+        const cx = 270;
+        const cy = 180;
+        const handleX = cx + 130;
+        const handleY = cy;
+
+        // Grab handle, drag 90° CCW (in pixel space) around pivot — handle
+        // ends straight up. Pixel-CCW = model-CW, so an atom starting on
+        // the +x side of the pivot (right) ends up below (model -y).
+        await page.mouse.move(box.x + handleX, box.y + handleY);
+        await page.mouse.down();
+        await page.mouse.move(box.x + cx + 92, box.y + cy - 92, { steps: 4 });
+        await page.mouse.move(box.x + cx, box.y + cy - 130, { steps: 4 });
+        await page.mouse.up();
+
+        rd = await snapshot(page);
+        // Distance between atoms is preserved.
+        const d0 = Math.hypot(
+            orig[0].x - orig[1].x,
+            orig[0].y - orig[1].y,
+        );
+        const d1 = Math.hypot(
+            rd.atoms[0].x - rd.atoms[1].x,
+            rd.atoms[0].y - rd.atoms[1].y,
+        );
+        expect(Math.abs(d1 - d0)).toBeLessThan(0.1);
+        // Original pair was horizontal (|dy0| ≈ 0); rotated pair should be
+        // close to vertical — i.e., the x-spread collapses to near zero.
+        expect(Math.abs(rd.atoms[0].x - rd.atoms[1].x)).toBeLessThan(1.0);
+        expect(Math.abs(rd.atoms[0].y - rd.atoms[1].y)).toBeGreaterThan(3.0);
+
+        // Single undo restores the original positions.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        for (let i = 0; i < orig.length; ++i) {
+            expect(Math.abs(rd.atoms[i].x - orig[i].x)).toBeLessThan(1e-6);
+            expect(Math.abs(rd.atoms[i].y - orig[i].y)).toBeLessThan(1e-6);
+        }
+    });
+
+    test('rotate handle: hidden when fewer than 2 atoms qualify for rotation', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 270, y: 180 } });
+
+        await page.getByTestId('tool-move-rotate').click();
+        const box = await canvas.boundingBox();
+        // With a single atom, no handle should be drawn. Pressing where the
+        // handle would have been is empty canvas — Qt's "select atoms first"
+        // status fires.
+        const status = page.getByTestId('sketcher-status');
+        await page.mouse.move(box.x + 270 + 130, box.y + 180);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 200, box.y + 60, { steps: 4 });
+        await page.mouse.up();
+        await expect(status).toContainText(/select atoms first/);
+    });
+
+    test('erase tool: empty rubber-band preserves the prior selection', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+
+        // Seed a selection via the Select tool, then switch to Erase.
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        let rd = await snapshot(page);
+        expect(rd.atoms[0].sel).toBe(true);
+
+        await page.getByTestId('tool-erase').click();
+        // Drag in an empty region — no atoms enclosed, nothing should change.
+        const box = await canvas.boundingBox();
+        await page.mouse.move(box.x + 500, box.y + 40);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 560, box.y + 80, { steps: 4 });
+        await page.mouse.up();
+
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+        // Prior selection survives the empty erase-rect.
+        expect(rd.atoms.map((a) => !!a.sel)).toEqual([true, false]);
     });
 });

@@ -129,6 +129,17 @@ class MolModel : public UndoableModel
     void setBondDirForSelectedBonds(RDKit::Bond::BondDir dir);
 
     /**
+     * Change the bond order of the bond between `begin_idx` and `end_idx`
+     * to `type`. Used by the Erase tool to decrement triple→double→single
+     * before deleting (Qt `EraseSceneTool::onLeftButtonClick`). Preserves
+     * selection (no reindexing). Refreshes the implicit-H cache so labels
+     * update with the new valence. No-op if the bond is missing or the
+     * type already matches.
+     */
+    void setBondTypeUndoable(unsigned int begin_idx, unsigned int end_idx,
+                             RDKit::Bond::BondType type);
+
+    /**
      * Insert a planar regular polygon of `size` carbon atoms centered at
      * (cx, cy). When `aromatic` is true (and `size` is even), bonds alternate
      * SINGLE / DOUBLE in Kekulé form so benzene renders the classic three-

@@ -44,6 +44,13 @@ export interface MolModelInstance {
     /** dir is RDKit::Bond::BondDir as int: 0=NONE, 1=BEGINWEDGE, 2=BEGINDASH. */
     setBondDirUndoable(begin: number, end: number, dir: number): void;
     setBondDirForSelectedBonds(dir: number): void;
+    /**
+     * Change bond order on an existing bond. `type` is RDKit::Bond::BondType
+     * as int (1=SINGLE, 2=DOUBLE, 3=TRIPLE, 12=AROMATIC). Used by Erase to
+     * decrement triple→double→single. Preserves selection. No-op if the
+     * bond doesn't exist or the type already matches.
+     */
+    setBondTypeUndoable(begin: number, end: number, type: number): void;
     addRing(size: number, cx: number, cy: number, aromatic: boolean): void;
     /**
      * Rotate selected atoms (or all atoms when nothing is selected) by

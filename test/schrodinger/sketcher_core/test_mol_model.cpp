@@ -485,6 +485,52 @@ BOOST_AUTO_TEST_CASE(testSetBondDirForSelectedBondsAppliesAsSingleUndoStep)
                       RDKit::Bond::BondDir::NONE);
 }
 
+BOOST_AUTO_TEST_CASE(testSetBondTypeUndoableRoundTripsAndPreservesSelection)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    m.addBond(0, 1, RDKit::Bond::TRIPLE);
+    // Select the bond before the type edit; selection must survive.
+    m.setBondSelected(0, true);
+
+    m.setBondTypeUndoable(0, 1, RDKit::Bond::DOUBLE);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondType(),
+                      RDKit::Bond::DOUBLE);
+    BOOST_CHECK(m.isBondSelected(0));
+
+    m.setBondTypeUndoable(0, 1, RDKit::Bond::SINGLE);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondType(),
+                      RDKit::Bond::SINGLE);
+    BOOST_CHECK(m.isBondSelected(0));
+
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondType(),
+                      RDKit::Bond::DOUBLE);
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondType(),
+                      RDKit::Bond::TRIPLE);
+}
+
+BOOST_AUTO_TEST_CASE(testSetBondTypeNoOpsWhenBondMissingOrUnchanged)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    m.addBond(0, 1, RDKit::Bond::DOUBLE);
+    const auto count_before = stack.count();
+
+    // Same type → no command pushed.
+    m.setBondTypeUndoable(0, 1, RDKit::Bond::DOUBLE);
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+
+    // Nonexistent bond → no command pushed.
+    m.setBondTypeUndoable(0, 5, RDKit::Bond::SINGLE);
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+}
+
 BOOST_AUTO_TEST_CASE(testAddBondWithDirAppliesDirAtomicallyAsOneUndoStep)
 {
     UndoStack stack;

@@ -16,7 +16,7 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 // to commit it. Undo/redo/clear go through the same UndoStack the C++ Boost
 // tests cover.
 
-type Tool = 'atom' | 'bond' | 'select' | 'move-rotate' | 'ring';
+type Tool = 'atom' | 'bond' | 'select' | 'move-rotate' | 'erase' | 'ring';
 // SetAtomWidget.ui ships C/H/N/O/P/S/F/Cl/Si on the atomistic panel.
 type Element = 'C' | 'H' | 'N' | 'O' | 'P' | 'S' | 'F' | 'Cl' | 'Si';
 // Qt's bond_group is a single radio group covering single/double/triple plus
@@ -91,6 +91,15 @@ const CANVAS_H = 360;
 const DEFAULT_SCALE = 40; // pixels per RDKit model unit
 const ATOM_HIT_RADIUS = 18; // pixels for click hit-test
 const BOND_HIT_RADIUS = 6; // pixels perpendicular to bond line
+// Qt RotationItem constants (constants.h:297-301): orange handle, 12-px
+// handle radius, 8-px pivot radius, 130 scene-units arm. Scene units in
+// the Qt sketcher are roughly pixels at the resting zoom, so we treat
+// them as pixels here too.
+const ROTATION_HANDLE_RADIUS = 12;
+const ROTATION_PIVOT_RADIUS = 8;
+const ROTATION_ARM_LENGTH = 130;
+const ROTATION_HANDLE_COLOR = '#ff9b00';
+const ROTATION_HANDLE_PEN = 3;
 const BLANK_DESC: RenderDesc = { atoms: [], bonds: [] };
 
 // View transform. (scale = pixels per model unit; offsetX/offsetY shift the
@@ -206,6 +215,10 @@ interface DragRect {
     curPx: number;
     curPy: number;
     additive: boolean;
+    // 'select' = rubber-band select; 'erase' = rubber-band erase (Qt
+    // EraseSceneTool reuses RectSelectSceneTool's rubber-band but commits
+    // a delete on the contents instead of selecting them).
+    mode: 'select' | 'erase';
 }
 
 interface AtomDrag {
@@ -225,6 +238,36 @@ interface AtomDrag {
 }
 
 const ATOM_DRAG_THRESHOLD = 3; // pixels — below this, treat as a click
+
+interface RotateDrag {
+    // Pivot in model coords — the geometric center of rotation. All `atoms`
+    // rotate about this point. Pixel projection (pivotPx,pivotPy) is captured
+    // at drag start so a pan during the drag wouldn't shift the rotation
+    // center mid-gesture.
+    pivotX: number;
+    pivotY: number;
+    pivotPx: number;
+    pivotPy: number;
+    // Atoms being rotated. fromX/fromY are model coords at drag start.
+    atoms: { idx: number; fromX: number; fromY: number }[];
+    // Initial cursor angle (radians) from the pivot at mouse-press, used as
+    // the zero reference so the first sample doesn't snap the structure.
+    startAngleRad: number;
+    moved: boolean;
+}
+
+interface RotationHandle {
+    pivotPx: number;
+    pivotPy: number;
+    handlePx: number;
+    handlePy: number;
+}
+
+function distanceSq(ax: number, ay: number, bx: number, by: number): number {
+    const dx = ax - bx;
+    const dy = ay - by;
+    return dx * dx + dy * dy;
+}
 
 // Qt's QGraphicsView wheel zoom (sketcher_view.cpp `wheelEvent`) uses
 // scale_factor = 2^(angleDelta.y / 2400) and caps zoom-in at the default
@@ -253,6 +296,7 @@ function drawSketch(
     pendingAtomIdx: number | null,
     hoverAtomIdx: number | null,
     dragRect: DragRect | null,
+    rotationHandle: RotationHandle | null,
 ): void {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -498,13 +542,45 @@ function drawSketch(
 
     if (dragRect) {
         const { x1, y1, x2, y2 } = dragRectBounds(dragRect);
-        ctx.fillStyle = 'rgba(119, 156, 89, 0.12)';
+        const isErase = dragRect.mode === 'erase';
+        ctx.fillStyle = isErase
+            ? 'rgba(200, 70, 70, 0.10)'
+            : 'rgba(119, 156, 89, 0.12)';
         ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
-        ctx.strokeStyle = ACCENT_GREEN;
+        ctx.strokeStyle = isErase ? '#c84646' : ACCENT_GREEN;
         ctx.lineWidth = 1;
         ctx.setLineDash([4, 3]);
         ctx.strokeRect(x1 + 0.5, y1 + 0.5, x2 - x1 - 1, y2 - y1 - 1);
         ctx.setLineDash([]);
+    }
+
+    // Rotation handle (Qt rotation_item.cpp:18-34). Pivot dot, arm line,
+    // handle dot — all orange, 3-px pen.
+    if (rotationHandle) {
+        const { pivotPx, pivotPy, handlePx, handlePy } = rotationHandle;
+        ctx.strokeStyle = ROTATION_HANDLE_COLOR;
+        ctx.fillStyle = ROTATION_HANDLE_COLOR;
+        ctx.lineWidth = ROTATION_HANDLE_PEN;
+        // Arm line from edge of pivot dot to edge of handle dot.
+        const dx = handlePx - pivotPx;
+        const dy = handlePy - pivotPy;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len;
+        const uy = dy / len;
+        ctx.beginPath();
+        ctx.moveTo(pivotPx + ux * ROTATION_PIVOT_RADIUS,
+                   pivotPy + uy * ROTATION_PIVOT_RADIUS);
+        ctx.lineTo(handlePx - ux * ROTATION_HANDLE_RADIUS,
+                   handlePy - uy * ROTATION_HANDLE_RADIUS);
+        ctx.stroke();
+        // Pivot dot.
+        ctx.beginPath();
+        ctx.arc(pivotPx, pivotPy, ROTATION_PIVOT_RADIUS, 0, 2 * Math.PI);
+        ctx.fill();
+        // Handle dot (the grabbable knob).
+        ctx.beginPath();
+        ctx.arc(handlePx, handlePy, ROTATION_HANDLE_RADIUS, 0, 2 * Math.PI);
+        ctx.fill();
     }
 }
 
@@ -527,6 +603,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // re-render per pixel — the model.setAtomPos preview already fires
     // modelChanged which drives the redraw.
     const atomDragRef = useRef<AtomDrag | null>(null);
+    // Rotate-gesture state — same lifecycle as atomDragRef: high-frequency
+    // mousemove preview, single committed undo on mouseup, cancellable on
+    // mouseleave. Mutually exclusive with atomDragRef at any given time.
+    const rotateDragRef = useRef<RotateDrag | null>(null);
     // View transform — mirrors viewState into a ref so event handlers (which
     // capture the closure at mount) always read the current viewport.
     const viewRef = useRef<View>(DEFAULT_VIEW);
@@ -625,6 +705,47 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         };
     }, [Module]);
 
+    // Compute the rotation handle (pivot + handle endpoint) for the
+    // Move/Rotate tool. Returns null when the handle shouldn't be shown:
+    // wrong tool, empty mol, single-atom selection (rotation has no
+    // meaning), or single-atom mol with nothing selected.
+    //
+    // Pivot rules (Qt standard_scene_tool_base.cpp findPivotPointForRotation,
+    // simplified — we skip the single-crossing-bond special case):
+    //   no selection → centroid of all atoms
+    //   selection    → centroid of selected atoms
+    //
+    // Arm always points to the right (Qt rotation_item.cpp:50 — angle 0
+    // initially; Qt resets to 0 on every updateRotationItem).
+    const computeRotationHandle = useCallback(
+        (rd: RenderDesc): RotationHandle | null => {
+            if (tool !== 'move-rotate') return null;
+            const canvas = canvasRef.current;
+            if (!canvas) return null;
+            if (rd.atoms.length === 0) return null;
+            const selected = rd.atoms.filter((a) => a.sel === true);
+            const target = selected.length > 0 ? selected : rd.atoms;
+            // Qt: handle only when >1 atom in the rotated set.
+            if (target.length < 2) return null;
+            let cx = 0, cy = 0;
+            for (const a of target) {
+                cx += a.x;
+                cy += a.y;
+            }
+            cx /= target.length;
+            cy /= target.length;
+            const pivot = pixelFromModel(canvas, viewRef.current, cx, cy);
+            return {
+                pivotPx: pivot.px,
+                pivotPy: pivot.py,
+                // Arm at angle 0: handle to the right of pivot, 130 px out.
+                handlePx: pivot.px + ROTATION_ARM_LENGTH,
+                handlePy: pivot.py,
+            };
+        },
+        [tool],
+    );
+
     // Redraw whenever React re-renders. The render description comes from
     // MolModel, which is the source of truth.
     useEffect(() => {
@@ -637,7 +758,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         } catch {
             rd = BLANK_DESC;
         }
-        drawSketch(canvas, view, rd, pendingBondAtom, hoverAtom, dragRect);
+        const rotationHandle = computeRotationHandle(rd);
+        drawSketch(
+            canvas,
+            view,
+            rd,
+            pendingBondAtom,
+            hoverAtom,
+            dragRect,
+            rotationHandle,
+        );
     });
 
     // View-center-anchored wheel zoom, matching Qt's QGraphicsView::wheelEvent
@@ -762,6 +892,39 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
 
+            if (tool === 'erase') {
+                // Qt EraseSceneTool::onLeftButtonClick
+                // (tool/select_erase_scene_tool.cpp:256-275):
+                //  - click atom → remove it (and incident bonds)
+                //  - click multi-bond → decrement order (TRIPLE→DOUBLE,
+                //    DOUBLE→SINGLE) — does NOT delete the bond
+                //  - click single bond → remove it
+                //  - click empty → no-op (drag-erase handles regions)
+                if (hit >= 0) {
+                    model.removeAtom(hit);
+                    setStatus(`erased atom #${hit}`);
+                    return;
+                }
+                const bondHit = nearestBondIndex(
+                    canvas, viewRef.current, rd, px, py,
+                );
+                if (bondHit < 0) {
+                    return;
+                }
+                const b = rd.bonds[bondHit];
+                if (b.o === 3) {
+                    model.setBondTypeUndoable(b.a, b.b, 2 /*DOUBLE*/);
+                    setStatus(`bond #${bondHit}: triple → double`);
+                } else if (b.o === 2) {
+                    model.setBondTypeUndoable(b.a, b.b, 1 /*SINGLE*/);
+                    setStatus(`bond #${bondHit}: double → single`);
+                } else {
+                    model.removeBond(b.a, b.b);
+                    setStatus(`erased bond #${bondHit}`);
+                }
+                return;
+            }
+
             if (tool === 'atom') {
                 if (hit >= 0) {
                     setStatus(
@@ -835,6 +998,30 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const rect = canvas.getBoundingClientRect();
             const px = e.clientX - rect.left;
             const py = e.clientY - rect.top;
+            const rd_rot = rotateDragRef.current;
+            if (rd_rot) {
+                const curAngle = Math.atan2(py - rd_rot.pivotPy,
+                                            px - rd_rot.pivotPx);
+                // Pixel-space y grows downward; model-space y grows upward
+                // (modelFromPixel:142). So a CCW gesture in pixels is a CW
+                // rotation in model space — negate the delta so the visible
+                // structure tracks the visible handle.
+                const delta = -(curAngle - rd_rot.startAngleRad);
+                if (!rd_rot.moved && Math.abs(delta) < 0.005) {
+                    return; // hairline movement — treat as still pressed
+                }
+                rd_rot.moved = true;
+                const cosT = Math.cos(delta);
+                const sinT = Math.sin(delta);
+                for (const a of rd_rot.atoms) {
+                    const dx = a.fromX - rd_rot.pivotX;
+                    const dy = a.fromY - rd_rot.pivotY;
+                    const nx = rd_rot.pivotX + dx * cosT - dy * sinT;
+                    const ny = rd_rot.pivotY + dx * sinT + dy * cosT;
+                    model.setAtomPos(a.idx, nx, ny);
+                }
+                return;
+            }
             const ad = atomDragRef.current;
             if (ad) {
                 const dpx = px - ad.startPx;
@@ -894,15 +1081,49 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             if (!model) return;
 
             if (tool === 'move-rotate') {
-                // Qt move_rotate_scene_tool.cpp:107-114 — drag-translate only
-                // fires if the mouse press lands inside the selection bbox.
-                // Drag outside the bbox or with nothing selected is a visual
-                // no-op (we surface a status message instead of silent fail).
+                // Qt move_rotate_scene_tool.cpp:95-121 — at mousedown:
+                //   1) inside rotation handle → ROTATE
+                //   2) inside selection bbox  → TRANSLATE
+                //   3) else                   → no-op (status hint)
+                // Rotation works on the selected set when there is one and
+                // the entire molecule otherwise; translation requires a
+                // selection (Qt's setObjectsToMove is gated on the bbox-
+                // contains check, which is empty for empty selection).
                 let rd: RenderDesc = BLANK_DESC;
                 try {
                     rd = JSON.parse(model.description()) as RenderDesc;
                 } catch {
                     rd = BLANK_DESC;
+                }
+                // Rotation handle check first — same priority as Qt.
+                const rh = computeRotationHandle(rd);
+                if (rh != null) {
+                    const inHandle = distanceSq(px, py, rh.handlePx, rh.handlePy)
+                        <= ROTATION_HANDLE_RADIUS * ROTATION_HANDLE_RADIUS;
+                    if (inHandle) {
+                        const selected = rd.atoms.filter((a) => a.sel === true);
+                        const target = selected.length > 0 ? selected : rd.atoms;
+                        const pivotModel = modelFromPixel(
+                            canvas, viewRef.current, rh.pivotPx, rh.pivotPy,
+                        );
+                        rotateDragRef.current = {
+                            pivotX: pivotModel.x,
+                            pivotY: pivotModel.y,
+                            pivotPx: rh.pivotPx,
+                            pivotPy: rh.pivotPy,
+                            atoms: target.map((a) => ({
+                                idx: a.i,
+                                fromX: a.x,
+                                fromY: a.y,
+                            })),
+                            startAngleRad: Math.atan2(
+                                py - rh.pivotPy,
+                                px - rh.pivotPx,
+                            ),
+                            moved: false,
+                        };
+                        return;
+                    }
                 }
                 const selected = rd.atoms.filter((a) => a.sel === true);
                 if (selected.length === 0) {
@@ -949,7 +1170,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
 
-            if (tool !== 'select') return;
+            if (tool !== 'select' && tool !== 'erase') return;
 
             let rd: RenderDesc = BLANK_DESC;
             try {
@@ -960,8 +1181,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             // Qt's select tool does NOT drag-move atoms — it only rubber-band
             // selects. Drag-move lives on the Move/Rotate tool. So we let
             // mousedown on an atom/bond fall through to onClick (which applies
-            // the modifier-based select), and only start a rubber-band when
-            // mousedown lands on empty canvas.
+            // the modifier-based select / the erase action), and only start a
+            // rubber-band when mousedown lands on empty canvas.
             if (nearestAtomIndex(canvas, viewRef.current, rd.atoms, px, py) >= 0) return;
             if (nearestBondIndex(canvas, viewRef.current, rd, px, py) >= 0) return;
 
@@ -971,6 +1192,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 curPx: px,
                 curPy: py,
                 additive: e.shiftKey,
+                mode: tool === 'erase' ? 'erase' : 'select',
             });
         },
         [tool],
@@ -978,6 +1200,47 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
 
     const onCanvasMouseUp = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
+            const rd_rot = rotateDragRef.current;
+            if (rd_rot) {
+                rotateDragRef.current = null;
+                if (!rd_rot.moved) {
+                    // Click without drag on the rotate handle — no commit.
+                    return;
+                }
+                const canvas = canvasRef.current;
+                const model = modelRef.current;
+                if (!canvas || !model) return;
+                const rect = canvas.getBoundingClientRect();
+                const px = e.clientX - rect.left;
+                const py = e.clientY - rect.top;
+                const curAngle = Math.atan2(py - rd_rot.pivotPy,
+                                            px - rd_rot.pivotPx);
+                // See preview branch: model-y is flipped from pixel-y, so
+                // the visible CCW gesture is a model-space CW rotation.
+                const delta = -(curAngle - rd_rot.startAngleRad);
+                const cosT = Math.cos(delta);
+                const sinT = Math.sin(delta);
+                const toXs: number[] = [];
+                const toYs: number[] = [];
+                for (const a of rd_rot.atoms) {
+                    const dx = a.fromX - rd_rot.pivotX;
+                    const dy = a.fromY - rd_rot.pivotY;
+                    toXs.push(rd_rot.pivotX + dx * cosT - dy * sinT);
+                    toYs.push(rd_rot.pivotY + dx * sinT + dy * cosT);
+                }
+                model.moveAtomsUndoable(
+                    rd_rot.atoms.map((a) => a.idx),
+                    rd_rot.atoms.map((a) => a.fromX),
+                    rd_rot.atoms.map((a) => a.fromY),
+                    toXs,
+                    toYs,
+                );
+                suppressNextClickRef.current = true;
+                const deg = (delta * 180 / Math.PI).toFixed(1);
+                setStatus(`rotated ${rd_rot.atoms.length} atom` +
+                    `${rd_rot.atoms.length === 1 ? '' : 's'} by ${deg}°`);
+                return;
+            }
             const ad = atomDragRef.current;
             if (ad) {
                 atomDragRef.current = null;
@@ -1052,7 +1315,23 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             } catch {
                 rd = BLANK_DESC;
             }
-            if (!dragRect.additive) {
+            const isErase = dragRect.mode === 'erase';
+            // Erase reuses the rubber-band machinery (per Qt EraseSceneTool
+            // extending RectSelectSceneTool). We stage the contained items
+            // into the selection set and then call deleteSelected so the
+            // whole drag is one undo step. Preserve any pre-existing
+            // selection by snapshotting it first.
+            let priorAtomSel: number[] = [];
+            let priorBondSel: number[] = [];
+            if (isErase) {
+                for (let i = 0; i < rd.atoms.length; ++i) {
+                    if (model.isAtomSelected(i)) priorAtomSel.push(i);
+                }
+                for (let i = 0; i < rd.bonds.length; ++i) {
+                    if (model.isBondSelected(i)) priorBondSel.push(i);
+                }
+                model.clearSelection();
+            } else if (!dragRect.additive) {
                 model.clearSelection();
             }
             let nSelected = 0;
@@ -1079,11 +1358,28 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     ++nBondsSelected;
                 }
             }
-            setStatus(
-                `rectangle: ${nSelected} atom${nSelected === 1 ? '' : 's'}, ` +
-                    `${nBondsSelected} bond${nBondsSelected === 1 ? '' : 's'}` +
-                    (dragRect.additive ? ' (added)' : ''),
-            );
+            if (isErase) {
+                if (nSelected + nBondsSelected === 0) {
+                    // Nothing in the rect — restore the prior selection so
+                    // an empty drag doesn't silently nuke it.
+                    for (const i of priorAtomSel) model.setAtomSelected(i, true);
+                    for (const i of priorBondSel) model.setBondSelected(i, true);
+                    setStatus('erase: rectangle was empty');
+                } else {
+                    model.deleteSelected();
+                    setStatus(
+                        `erased ${nSelected} atom${nSelected === 1 ? '' : 's'}` +
+                            ` and ${nBondsSelected} bond` +
+                            `${nBondsSelected === 1 ? '' : 's'}`,
+                    );
+                }
+            } else {
+                setStatus(
+                    `rectangle: ${nSelected} atom${nSelected === 1 ? '' : 's'}, ` +
+                        `${nBondsSelected} bond${nBondsSelected === 1 ? '' : 's'}` +
+                        (dragRect.additive ? ' (added)' : ''),
+                );
+            }
             void e; // silence unused-param lint without changing the signature
         },
         [dragRect],
@@ -1094,6 +1390,22 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         // Don't commit a drag-select that left the canvas — just cancel it.
         if (dragRect) {
             setDragRect(null);
+        }
+        // Cancel a rotate-drag that left the canvas: restore every dragged
+        // atom's original position so the preview doesn't leave the
+        // structure half-rotated.
+        const rd_rot = rotateDragRef.current;
+        if (rd_rot) {
+            rotateDragRef.current = null;
+            if (rd_rot.moved) {
+                const m = modelRef.current;
+                if (m) {
+                    for (const a of rd_rot.atoms) {
+                        m.setAtomPos(a.idx, a.fromX, a.fromY);
+                    }
+                }
+                setStatus(`rotation cancelled (${rd_rot.atoms.length} atoms)`);
+            }
         }
         // Cancel an atom-drag that left the canvas: restore every dragged
         // atom's original position so the preview doesn't leave anything
@@ -1663,6 +1975,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     <div style={{
                         ...styles.selectSection,
                         ...(tool === 'select' || tool === 'move-rotate'
+                            || tool === 'erase'
                             ? styles.selectSectionActive
                             : {}),
                     }}>
@@ -1687,8 +2000,13 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 }} />
                             <IconButton icon='mode_erase'
                                 testid='tool-erase'
-                                title='Erase'
-                                onClick={() => comingSoon('Erase tool')} />
+                                title='Erase — click to remove an atom or bond, drag to erase a region'
+                                active={tool === 'erase'}
+                                onClick={() => {
+                                    setTool('erase');
+                                    setPendingBondAtom(null);
+                                    setStatus('erase mode');
+                                }} />
                         </div>
                         <div style={styles.row3}>
                             <TextLinkButton label='All' testid='select-all'
@@ -1845,7 +2163,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         height={CANVAS_H}
                         style={{
                             ...styles.canvas,
-                            cursor: tool === 'move-rotate' ? 'move' : 'crosshair',
+                            cursor: tool === 'move-rotate' ? 'move'
+                                : tool === 'erase' ? 'not-allowed'
+                                : 'crosshair',
                         }}
                         onClick={onCanvasClick}
                         onMouseDown={onCanvasMouseDown}
