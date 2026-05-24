@@ -7,6 +7,7 @@
 
 #define BOOST_TEST_MODULE sketcher_core_mol_model
 
+#include <cmath>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
@@ -503,4 +504,114 @@ BOOST_AUTO_TEST_CASE(testPropertyCacheRefreshExposesImplicitHs)
     m.addBond(0, 1, RDKit::Bond::SINGLE);
     BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getTotalNumHs(), 1);
     BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getTotalNumHs(), 2);
+}
+
+BOOST_AUTO_TEST_CASE(testAddRingBenzeneInsertsKekuleHexagon)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addRing(6, 0.0, 0.0, /*aromatic=*/true);
+    BOOST_CHECK_EQUAL(m.numAtoms(), 6u);
+    BOOST_CHECK_EQUAL(m.numBonds(), 6u);
+    // Alternating single/double in Kekulé form: bond indices 0,2,4 single;
+    // 1,3,5 double. addRing emits bonds in ring order so the index order is
+    // deterministic.
+    int singles = 0, doubles = 0;
+    for (unsigned int i = 0; i < m.numBonds(); ++i) {
+        const auto bt = m.mol().getBondWithIdx(i)->getBondType();
+        if (bt == RDKit::Bond::BondType::SINGLE) ++singles;
+        else if (bt == RDKit::Bond::BondType::DOUBLE) ++doubles;
+    }
+    BOOST_CHECK_EQUAL(singles, 3);
+    BOOST_CHECK_EQUAL(doubles, 3);
+    // Vertices live on a circle of bond-length-derived radius (1.5 / (2 sin
+    // pi/6) = 1.5). Each atom should be ~1.5 from the center.
+    for (unsigned int i = 0; i < 6; ++i) {
+        double x = 0, y = 0;
+        m.atomPos(i, x, y);
+        BOOST_CHECK_CLOSE(std::sqrt(x * x + y * y), 1.5, 0.5);
+    }
+    // Undo collapses the whole ring in one step.
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 0u);
+    BOOST_CHECK_EQUAL(m.numBonds(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(testAddRingCyclohexaneIsAllSingleBonds)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addRing(6, 5.0, -2.0, /*aromatic=*/false);
+    BOOST_CHECK_EQUAL(m.numBonds(), 6u);
+    for (unsigned int i = 0; i < m.numBonds(); ++i) {
+        BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(i)->getBondType(),
+                          RDKit::Bond::BondType::SINGLE);
+    }
+    // Center honored — average atom position close to requested center.
+    double cx = 0, cy = 0;
+    for (unsigned int i = 0; i < 6; ++i) {
+        double x = 0, y = 0;
+        m.atomPos(i, x, y);
+        cx += x;
+        cy += y;
+    }
+    cx /= 6;
+    cy /= 6;
+    BOOST_CHECK_SMALL(cx - 5.0, 1e-6);
+    BOOST_CHECK_SMALL(cy - (-2.0), 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(testAddRingNoOpWhenSizeTooSmall)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    const auto count = stack.count();
+    m.addRing(2, 0, 0, false);
+    BOOST_CHECK_EQUAL(m.numAtoms(), 0u);
+    BOOST_CHECK_EQUAL(stack.count(), count);
+}
+
+BOOST_AUTO_TEST_CASE(testAdjustChargeOnSelectedAtomsAppliesDeltaAndIsUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("N", 0, 0);
+    m.addAtom("O", 1, 0);
+    m.addAtom("C", 2, 0);
+    m.setAtomSelected(0, true);
+    m.setAtomSelected(1, true);
+
+    m.adjustChargeOnSelectedAtoms(+1);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getFormalCharge(), 1);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getFormalCharge(), 1);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(2)->getFormalCharge(), 0);
+
+    // Selection survives — charge edits don't reindex.
+    BOOST_CHECK(m.isAtomSelected(0));
+    BOOST_CHECK(m.isAtomSelected(1));
+
+    // Re-redo via undo+redo doesn't compound (charge stays +1, not +2).
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getFormalCharge(), 0);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getFormalCharge(), 0);
+    stack.redo();
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getFormalCharge(), 1);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getFormalCharge(), 1);
+
+    // Negative delta walks back through neutral into anion territory.
+    m.adjustChargeOnSelectedAtoms(-2);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getFormalCharge(), -1);
+}
+
+BOOST_AUTO_TEST_CASE(testAdjustChargeNoOpWhenNothingSelectedOrDeltaZero)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("N", 0, 0);
+    const auto count_before = stack.count();
+    m.adjustChargeOnSelectedAtoms(+1); // nothing selected
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    m.setAtomSelected(0, true);
+    m.adjustChargeOnSelectedAtoms(0); // delta=0
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
 }

@@ -391,4 +391,67 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
         expect(result.afterMacroUndo).toEqual([1, undefined]);
         expect(result.afterFirstUndo).toEqual([undefined, undefined]);
     });
+
+    test('addRing(6, aromatic) inserts a Kekulé benzene as one undo step', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addRing(6, 0.0, 0.0, true);
+            const desc = JSON.parse(m.description());
+            const orders = desc.bonds.map((b) => b.o);
+            // Bond orders alternate 1,2,1,2,1,2 because addRing emits Kekulé.
+            const single = orders.filter((o) => o === 1).length;
+            const double = orders.filter((o) => o === 2).length;
+            // One undo collapses the whole ring.
+            m.undo();
+            const afterUndo = JSON.parse(m.description());
+            m.delete();
+            return {
+                nAtoms: desc.atoms.length,
+                nBonds: desc.bonds.length,
+                single,
+                double,
+                undoAtoms: afterUndo.atoms.length,
+                undoBonds: afterUndo.bonds.length,
+            };
+        });
+        expect(result.nAtoms).toBe(6);
+        expect(result.nBonds).toBe(6);
+        expect(result.single).toBe(3);
+        expect(result.double).toBe(3);
+        expect(result.undoAtoms).toBe(0);
+        expect(result.undoBonds).toBe(0);
+    });
+
+    test('adjustChargeOnSelectedAtoms updates q and nh in render description', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('N', 0, 0);
+            m.addAtom('O', 1, 0);
+            m.setAtomSelected(0, true);
+            m.adjustChargeOnSelectedAtoms(+1);
+            const desc = JSON.parse(m.description());
+            // Selection survives so the user can keep stacking charge edits.
+            const stillSelected = m.isAtomSelected(0);
+            m.undo();
+            const undoDesc = JSON.parse(m.description());
+            m.delete();
+            return {
+                qN: desc.atoms[0].q,
+                nhN: desc.atoms[0].nh,
+                qO: desc.atoms[1].q,
+                stillSelected,
+                undoQ: undoDesc.atoms[0].q,
+                undoNh: undoDesc.atoms[0].nh,
+            };
+        });
+        expect(result.qN).toBe(1);
+        // [NH3+] has 4 implicit Hs in RDKit's valence model (N+ is tetravalent).
+        expect(result.nhN).toBe(4);
+        // Unselected O carries no charge annotation (undefined when 0).
+        expect(result.qO).toBeUndefined();
+        expect(result.stillSelected).toBe(true);
+        // Undo restores neutral N (q field omitted) with 3 implicit Hs.
+        expect(result.undoQ).toBeUndefined();
+        expect(result.undoNh).toBe(3);
+    });
 });

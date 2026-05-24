@@ -23,6 +23,8 @@ export interface MolModelInstance {
     /** dir is RDKit::Bond::BondDir as int: 0=NONE, 1=BEGINWEDGE, 2=BEGINDASH. */
     setBondDirUndoable(begin: number, end: number, dir: number): void;
     setBondDirForSelectedBonds(dir: number): void;
+    addRing(size: number, cx: number, cy: number, aromatic: boolean): void;
+    adjustChargeOnSelectedAtoms(delta: number): void;
     undo(): void;
     redo(): void;
     numAtoms(): number;

@@ -391,4 +391,56 @@ test.describe('React Sketcher', () => {
         const oxygen = rd2.atoms.find((a) => a.el === 'O');
         expect(oxygen.nh).toBe(1);
     });
+
+    test('benzene ring tool drops a Kekulé hexagon on click', async ({ page }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('ring-benzene').click();
+        await canvas.click({ position: { x: 260, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(6);
+        expect(rd.bonds).toHaveLength(6);
+        // Kekulé form: three double bonds and three single bonds.
+        const doubles = rd.bonds.filter((b) => b.o === 2).length;
+        expect(doubles).toBe(3);
+        // Undo collapses the whole ring at once.
+        await page.getByTestId('undo').click();
+        const empty = await snapshot(page);
+        expect(empty.atoms).toHaveLength(0);
+    });
+
+    test('cyclohexane ring tool drops all-single-bond hexagon', async ({ page }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('ring-cyclohexane').click();
+        await canvas.click({ position: { x: 260, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(6);
+        const doubles = rd.bonds.filter((b) => b.o === 2).length;
+        expect(doubles).toBe(0);
+    });
+
+    test('charge +/- buttons adjust selected-atom formal charge', async ({ page }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('element-N').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+
+        await page.getByTestId('charge-plus').click();
+        let rd = await snapshot(page);
+        expect(rd.atoms[0].q).toBe(1);
+        // N+ tetravalent → 4 implicit Hs (NH4+ shape).
+        expect(rd.atoms[0].nh).toBe(4);
+
+        await page.getByTestId('charge-minus').click();
+        await page.getByTestId('charge-minus').click();
+        rd = await snapshot(page);
+        expect(rd.atoms[0].q).toBe(-1);
+
+        // Undo walks all three charge edits back to neutral.
+        await page.getByTestId('undo').click();
+        await page.getByTestId('undo').click();
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms[0].q).toBeUndefined();
+    });
 });

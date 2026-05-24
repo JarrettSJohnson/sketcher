@@ -104,6 +104,23 @@ class MolModel : public UndoableModel
      */
     void setBondDirForSelectedBonds(RDKit::Bond::BondDir dir);
 
+    /**
+     * Insert a planar regular polygon of `size` carbon atoms centered at
+     * (cx, cy). When `aromatic` is true (and `size` is even), bonds alternate
+     * SINGLE / DOUBLE in Kekulé form so benzene renders the classic three-
+     * double-bond pattern. Otherwise all bonds are SINGLE (cyclohexane etc.).
+     * No-op if `size < 3`. Single undo step.
+     */
+    void addRing(unsigned int size, double cx, double cy, bool aromatic);
+
+    /**
+     * Add `delta` to the formal charge of every selected atom in a single
+     * undoable command. Preserves the selection (charge edits don't reindex).
+     * Refreshes the implicit-H cache so render description picks up the new
+     * H counts. No-op if no atoms are selected.
+     */
+    void adjustChargeOnSelectedAtoms(int delta);
+
     // -- Selection --------------------------------------------------------
     // Selection is transient UI state, not undoable. Any mutation that may
     // reindex atoms/bonds clears it (matching the simplest correct policy

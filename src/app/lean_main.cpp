@@ -307,6 +307,14 @@ class MolModelJS
         m_model.setBondDirForSelectedBonds(
             static_cast<RDKit::Bond::BondDir>(dir));
     }
+    void addRing(unsigned int size, double cx, double cy, bool aromatic)
+    {
+        m_model.addRing(size, cx, cy, aromatic);
+    }
+    void adjustChargeOnSelectedAtoms(int delta)
+    {
+        m_model.adjustChargeOnSelectedAtoms(delta);
+    }
     void undo()
     {
         m_stack.undo();
@@ -473,6 +481,9 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("setBondDirUndoable", &MolModelJS::setBondDirUndoable)
         .function("setBondDirForSelectedBonds",
                   &MolModelJS::setBondDirForSelectedBonds)
+        .function("addRing", &MolModelJS::addRing)
+        .function("adjustChargeOnSelectedAtoms",
+                  &MolModelJS::adjustChargeOnSelectedAtoms)
         .function("undo", &MolModelJS::undo)
         .function("redo", &MolModelJS::redo)
         .function("numAtoms", &MolModelJS::numAtoms)

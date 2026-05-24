@@ -13,6 +13,7 @@
 #include "schrodinger/sketcher_core/mol_model.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -220,6 +221,103 @@ void MolModel::setBondDirForSelectedBonds(RDKit::Bond::BondDir dir)
         const auto* b = m_mol.getBondWithIdx(idx);
         setBondDirUndoable(b->getBeginAtomIdx(), b->getEndAtomIdx(), dir);
     }
+}
+
+void MolModel::addRing(unsigned int size, double cx, double cy, bool aromatic)
+{
+    if (size < 3) {
+        return;
+    }
+    // Bond length matches the rest of the sketcher's 1.5-unit default so a
+    // freshly inserted ring sits at the same scale as user-drawn bonds.
+    // For a regular N-gon, the chord length is 2*r*sin(pi/N); solve for r so
+    // adjacent vertices are 1.5 units apart.
+    const double bond_len = 1.5;
+    const double radius = bond_len / (2.0 * std::sin(M_PI / size));
+    doMutation(
+        [this, size, cx, cy, aromatic, radius] {
+            const unsigned int first_idx = m_mol.getNumAtoms();
+            auto& conf = m_mol.getConformer();
+            for (unsigned int i = 0; i < size; ++i) {
+                // -pi/2 phase puts the first vertex at the top of the ring,
+                // matching the typical aromatic-ring rendering convention.
+                const double angle =
+                    2.0 * M_PI * static_cast<double>(i) / static_cast<double>(size) -
+                    M_PI_2;
+                const double x = cx + radius * std::cos(angle);
+                const double y = cy + radius * std::sin(angle);
+                auto atom = std::make_unique<RDKit::Atom>("C");
+                const auto idx = m_mol.addAtom(atom.release(),
+                                               /*updateLabel=*/false,
+                                               /*takeOwnership=*/true);
+                auto& positions = conf.getPositions();
+                if (positions.size() < m_mol.getNumAtoms()) {
+                    positions.resize(m_mol.getNumAtoms(),
+                                     RDGeom::Point3D(0, 0, 0));
+                }
+                conf.setAtomPos(idx, RDGeom::Point3D(x, y, 0));
+            }
+            for (unsigned int i = 0; i < size; ++i) {
+                const unsigned int a = first_idx + i;
+                const unsigned int b = first_idx + ((i + 1) % size);
+                // Kekulé alternation: odd-index ring positions get the double
+                // bond. Caller is responsible for passing aromatic=true only
+                // for even sizes; for odd sizes we fall back to all-single
+                // since a clean Kekulé doesn't exist.
+                const bool make_double = aromatic && (size % 2 == 0) &&
+                                         (i % 2 == 1);
+                const auto bt = make_double ? RDKit::Bond::BondType::DOUBLE
+                                            : RDKit::Bond::BondType::SINGLE;
+                m_mol.addBond(a, b, bt);
+            }
+        },
+        aromatic ? "Add aromatic ring" : "Add ring");
+}
+
+void MolModel::adjustChargeOnSelectedAtoms(int delta)
+{
+    if (m_selected_atoms.empty() || delta == 0) {
+        return;
+    }
+    // Capture (idx, old_charge) up front so redo can reset to old+delta
+    // (not "current + delta", which would compound on re-redo) and undo can
+    // restore exactly. Snapshot the selection too so the closures don't
+    // depend on the live m_selected_atoms set, which could be mutated by
+    // intervening operations between redos.
+    std::vector<std::pair<unsigned int, int>> previous;
+    previous.reserve(m_selected_atoms.size());
+    for (auto idx : m_selected_atoms) {
+        if (idx >= m_mol.getNumAtoms()) {
+            continue;
+        }
+        previous.emplace_back(idx,
+                              m_mol.getAtomWithIdx(idx)->getFormalCharge());
+    }
+    if (previous.empty()) {
+        return;
+    }
+    auto refresh_cache = [this] {
+        try {
+            m_mol.updatePropertyCache(/*strict=*/false);
+        } catch (...) {
+        }
+    };
+    auto redo = [this, previous, delta, refresh_cache] {
+        for (const auto& [idx, old_q] : previous) {
+            m_mol.getAtomWithIdx(idx)->setFormalCharge(old_q + delta);
+        }
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    auto undo = [this, previous, refresh_cache] {
+        for (const auto& [idx, old_q] : previous) {
+            m_mol.getAtomWithIdx(idx)->setFormalCharge(old_q);
+        }
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    doCommand(std::move(redo), std::move(undo),
+              delta > 0 ? "Increase charge" : "Decrease charge");
 }
 
 // -- Selection ------------------------------------------------------------

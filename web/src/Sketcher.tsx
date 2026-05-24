@@ -17,9 +17,18 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 // to commit it. Undo/redo/clear go through the same UndoStack the C++ Boost
 // tests cover.
 
-type Tool = 'atom' | 'bond' | 'select';
+type Tool = 'atom' | 'bond' | 'select' | 'ring';
 type Element = 'C' | 'O' | 'N' | 'H' | 'Cl';
 type BondOrder = 1 | 2 | 3;
+
+interface RingSpec {
+    size: number;
+    aromatic: boolean;
+    label: string;
+}
+const RING_BENZENE: RingSpec = { size: 6, aromatic: true, label: 'Benzene' };
+const RING_CYCLOHEXANE: RingSpec = { size: 6, aromatic: false, label: 'Cyclohexane' };
+const RING_CYCLOPENTANE: RingSpec = { size: 5, aromatic: false, label: 'Cyclopentane' };
 
 // Palette mirrors the original Qt sketcher's QSS so the React port doesn't
 // drift into a different look. Sage-green accent is the primary interactive
@@ -410,6 +419,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [tool, setTool] = useState<Tool>('atom');
     const [element, setElement] = useState<Element>('C');
     const [bondOrder, setBondOrder] = useState<BondOrder>(1);
+    const [ring, setRing] = useState<RingSpec>(RING_BENZENE);
     const [pendingBondAtom, setPendingBondAtom] = useState<number | null>(null);
     const [hoverAtom, setHoverAtom] = useState<number | null>(null);
     const [dragRect, setDragRect] = useState<DragRect | null>(null);
@@ -546,6 +556,19 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
 
+            if (tool === 'ring') {
+                // Click anywhere — empty canvas or atom — drops a fresh ring
+                // centered on the click. Mirrors the Qt sketcher's ring-tool
+                // behavior (the new ring isn't fused with any existing atom in
+                // this skeleton; that's a future enhancement).
+                const { x, y } = modelFromPixel(canvas, px, py);
+                model.addRing(ring.size, x, y, ring.aromatic);
+                setStatus(
+                    `${ring.label.toLowerCase()} at (${x.toFixed(2)}, ${y.toFixed(2)})`,
+                );
+                return;
+            }
+
             // Bond tool.
             if (hit < 0) {
                 setStatus('click on an atom to start a bond');
@@ -575,7 +598,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 setPendingBondAtom(null);
             }
         },
-        [tool, element, bondOrder],
+        [tool, element, bondOrder, ring],
     );
 
     const onCanvasMove = useCallback(
@@ -818,6 +841,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         model.setBondDirForSelectedBonds(dir);
         setStatus(label);
     };
+    const adjustCharge = (delta: number): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        if (!model.hasSelection()) {
+            setStatus('select atoms first to change their charge');
+            return;
+        }
+        model.adjustChargeOnSelectedAtoms(delta);
+        setStatus(delta > 0 ? 'charge +1' : 'charge −1');
+    };
 
     // Keyboard shortcuts match the Qt sketcher: Ctrl/Cmd+Z undo,
     // Ctrl/Cmd+Shift+Z or Ctrl+Y redo, Del/Backspace deletes the selection,
@@ -954,6 +987,35 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 testid={`bond-${o}`}
                             />
                         ))}
+                    </Section>
+                    <Section label='Rings'>
+                        {([RING_BENZENE, RING_CYCLOHEXANE, RING_CYCLOPENTANE] as const).map((spec) => (
+                            <ToolButton
+                                key={spec.label}
+                                label={spec.label}
+                                active={tool === 'ring' && ring.label === spec.label}
+                                onClick={() => {
+                                    setRing(spec);
+                                    setTool('ring');
+                                    setPendingBondAtom(null);
+                                }}
+                                testid={`ring-${spec.label.toLowerCase()}`}
+                            />
+                        ))}
+                    </Section>
+                    <Section label='Charge'>
+                        <ActionButton
+                            label='+'
+                            onClick={() => adjustCharge(+1)}
+                            testid='charge-plus'
+                            title='Increase charge on selected atoms'
+                        />
+                        <ActionButton
+                            label='−'
+                            onClick={() => adjustCharge(-1)}
+                            testid='charge-minus'
+                            title='Decrease charge on selected atoms'
+                        />
                     </Section>
                     <Section label='Stereo'>
                         <ActionButton
@@ -1121,6 +1183,8 @@ const styles: Record<string, CSSProperties> = {
         display: 'flex',
         flexDirection: 'column',
         gap: 10,
+        boxSizing: 'border-box',
+        overflow: 'hidden',
     },
     section: { display: 'flex', flexDirection: 'column', gap: 4 },
     sectionLabel: {
@@ -1144,8 +1208,16 @@ const styles: Record<string, CSSProperties> = {
     toolBtn: {
         font: 'inherit',
         fontSize: 12,
-        padding: '5px 6px',
+        padding: '5px 4px',
         minHeight: 28,
+        // minWidth:0 + overflow rules let the button shrink into its grid
+        // cell. Without these, long labels like "Cyclohexane" overflow and
+        // the visible button center can land on top of the adjacent canvas,
+        // which then intercepts pointer events on the button.
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
         border: `1px solid ${BORDER_COLOR}`,
         background: 'white',
         color: '#222',
@@ -1182,7 +1254,13 @@ const styles: Record<string, CSSProperties> = {
         background: 'white',
         display: 'block',
         cursor: 'crosshair',
-        flex: '1 1 auto',
+        // Explicit dimensions prevent the flex parent from stretching the
+        // canvas over the sidebar (the canvas is a replaced element whose
+        // intrinsic size comes from its width/height attributes, but flex
+        // can still grow it past those values).
+        width: CANVAS_W,
+        height: CANVAS_H,
+        flex: '0 0 auto',
     },
     statusBox: {
         font: '11px Menlo, Consolas, monospace',
