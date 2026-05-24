@@ -645,6 +645,55 @@ test.describe('React Sketcher', () => {
         expect(rd.bonds.some((b) => b.arom === true)).toBe(false);
     });
 
+    test('Fit re-centers the structure: bbox-centroid maps to canvas-center', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Place three atoms off in one corner of the canvas — they end up at
+        // model coords near the top-left in model space (positive y, negative
+        // x for the canvas-center origin).
+        await canvas.click({ position: { x: 80, y: 80 } });
+        await canvas.click({ position: { x: 150, y: 80 } });
+        await canvas.click({ position: { x: 220, y: 80 } });
+
+        // Default view: scale=40, offset=(0,0). The bbox centroid in model
+        // space lands at the average of those click pixels, projected
+        // through DEFAULT view — clearly off-center.
+        const viewBefore = await page.evaluate(() => ({
+            scale: window.SketcherView.current.scale,
+            offsetX: window.SketcherView.current.offsetX,
+            offsetY: window.SketcherView.current.offsetY,
+        }));
+        expect(viewBefore.scale).toBeCloseTo(40, 3);
+        expect(viewBefore.offsetX).toBe(0);
+        expect(viewBefore.offsetY).toBe(0);
+
+        await page.getByTestId('fit-to-screen').click();
+
+        // After Fit, the view transform must map the bbox centroid to the
+        // canvas center. Verify by recomputing pixelFromModel on the centroid
+        // and asserting it lands at (CANVAS_W/2, CANVAS_H/2) = (270, 180).
+        const result = await page.evaluate(() => {
+            const v = window.SketcherView.current;
+            const desc = JSON.parse(window.SketcherModel.description());
+            let cx = 0, cy = 0;
+            const minX = Math.min(...desc.atoms.map((a) => a.x));
+            const maxX = Math.max(...desc.atoms.map((a) => a.x));
+            const minY = Math.min(...desc.atoms.map((a) => a.y));
+            const maxY = Math.max(...desc.atoms.map((a) => a.y));
+            cx = (minX + maxX) / 2;
+            cy = (minY + maxY) / 2;
+            const px = cx * v.scale + 540 / 2 + v.offsetX;
+            const py = -cy * v.scale + 360 / 2 + v.offsetY;
+            return { scale: v.scale, px, py };
+        });
+        // Scale changed away from the default — Fit picked a new scale.
+        expect(result.scale).not.toBeCloseTo(40, 3);
+        // bbox centroid now lands at canvas center.
+        expect(result.px).toBeCloseTo(270, 3);
+        expect(result.py).toBeCloseTo(180, 3);
+    });
+
     test('Clean Up recomputes 2D coords and is a single undo step', async ({
         page,
     }) => {

@@ -69,10 +69,22 @@ interface RenderDesc {
 
 const CANVAS_W = 540;
 const CANVAS_H = 360;
-const SCALE = 40; // pixels per RDKit model unit
+const DEFAULT_SCALE = 40; // pixels per RDKit model unit
 const ATOM_HIT_RADIUS = 18; // pixels for click hit-test
 const BOND_HIT_RADIUS = 6; // pixels perpendicular to bond line
 const BLANK_DESC: RenderDesc = { atoms: [], bonds: [] };
+
+// View transform. (scale = pixels per model unit; offsetX/offsetY shift the
+// origin away from canvas center, in pixels.) modelFromPixel + pixelFromModel
+// are pure functions of (canvas, view) so passing a fresh `View` object is
+// enough to repaint the canvas at a new viewport.
+interface View {
+    scale: number;
+    offsetX: number;
+    offsetY: number;
+}
+
+const DEFAULT_VIEW: View = { scale: DEFAULT_SCALE, offsetX: 0, offsetY: 0 };
 
 // Element colors approximate the CPK conventions the original uses.
 // Chlorine is the deeper green used in the Qt build — pure #0c0 fights
@@ -87,26 +99,32 @@ const ELEMENT_COLORS: Record<string, string> = {
 
 function modelFromPixel(
     canvas: HTMLCanvasElement,
+    view: View,
     pixelX: number,
     pixelY: number,
 ): { x: number; y: number } {
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
-    return { x: (pixelX - cx) / SCALE, y: -(pixelY - cy) / SCALE };
+    const cx = canvas.width / 2 + view.offsetX;
+    const cy = canvas.height / 2 + view.offsetY;
+    return {
+        x: (pixelX - cx) / view.scale,
+        y: -(pixelY - cy) / view.scale,
+    };
 }
 
 function pixelFromModel(
     canvas: HTMLCanvasElement,
+    view: View,
     x: number,
     y: number,
 ): { px: number; py: number } {
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
-    return { px: x * SCALE + cx, py: -y * SCALE + cy };
+    const cx = canvas.width / 2 + view.offsetX;
+    const cy = canvas.height / 2 + view.offsetY;
+    return { px: x * view.scale + cx, py: -y * view.scale + cy };
 }
 
 function nearestAtomIndex(
     canvas: HTMLCanvasElement,
+    view: View,
     atoms: AtomDesc[],
     pixelX: number,
     pixelY: number,
@@ -114,7 +132,7 @@ function nearestAtomIndex(
     let bestIdx = -1;
     let bestDist = ATOM_HIT_RADIUS;
     for (const a of atoms) {
-        const { px, py } = pixelFromModel(canvas, a.x, a.y);
+        const { px, py } = pixelFromModel(canvas, view, a.x, a.y);
         const d = Math.hypot(px - pixelX, py - pixelY);
         if (d < bestDist) {
             bestIdx = a.i;
@@ -128,6 +146,7 @@ function nearestAtomIndex(
 // or -1 when no bond is within BOND_HIT_RADIUS. Used by the select tool.
 function nearestBondIndex(
     canvas: HTMLCanvasElement,
+    view: View,
     rd: RenderDesc,
     pixelX: number,
     pixelY: number,
@@ -139,8 +158,8 @@ function nearestBondIndex(
         const a1 = rd.atoms[b.a];
         const a2 = rd.atoms[b.b];
         if (!a1 || !a2) continue;
-        const p1 = pixelFromModel(canvas, a1.x, a1.y);
-        const p2 = pixelFromModel(canvas, a2.x, a2.y);
+        const p1 = pixelFromModel(canvas, view, a1.x, a1.y);
+        const p2 = pixelFromModel(canvas, view, a2.x, a2.y);
         const dx = p2.px - p1.px;
         const dy = p2.py - p1.py;
         const len2 = dx * dx + dy * dy;
@@ -200,6 +219,7 @@ function dragRectBounds(d: DragRect): {
 
 function drawSketch(
     canvas: HTMLCanvasElement,
+    view: View,
     rd: RenderDesc,
     pendingAtomIdx: number | null,
     hoverAtomIdx: number | null,
@@ -227,12 +247,12 @@ function drawSketch(
         centroidX /= rd.atoms.length;
         centroidY /= rd.atoms.length;
     }
-    const centroidPx = pixelFromModel(canvas, centroidX, centroidY);
+    const centroidPx = pixelFromModel(canvas, view, centroidX, centroidY);
 
     for (let i = 0; i < rd.bonds.length; ++i) {
         const b = rd.bonds[i];
-        const p1 = pixelFromModel(canvas, rd.atoms[b.a].x, rd.atoms[b.a].y);
-        const p2 = pixelFromModel(canvas, rd.atoms[b.b].x, rd.atoms[b.b].y);
+        const p1 = pixelFromModel(canvas, view, rd.atoms[b.a].x, rd.atoms[b.a].y);
+        const p2 = pixelFromModel(canvas, view, rd.atoms[b.b].x, rd.atoms[b.b].y);
         if (b.sel) {
             // Wide sage highlight underneath the bond strokes — matches the
             // selection halo color used for atoms below.
@@ -357,7 +377,7 @@ function drawSketch(
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     for (const a of rd.atoms) {
-        const { px, py } = pixelFromModel(canvas, a.x, a.y);
+        const { px, py } = pixelFromModel(canvas, view, a.x, a.y);
         const isPending = pendingAtomIdx === a.i;
         const isHover = hoverAtomIdx === a.i;
         if (a.sel) {
@@ -478,6 +498,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // re-render per pixel — the model.setAtomPos preview already fires
     // modelChanged which drives the redraw.
     const atomDragRef = useRef<AtomDrag | null>(null);
+    // View transform — mirrors viewState into a ref so event handlers (which
+    // capture the closure at mount) always read the current viewport.
+    const viewRef = useRef<View>(DEFAULT_VIEW);
 
     const [tool, setTool] = useState<Tool>('atom');
     const [element, setElement] = useState<Element>('C');
@@ -488,7 +511,15 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [dragRect, setDragRect] = useState<DragRect | null>(null);
     const [status, setStatus] = useState<string>('ready');
     const [smilesInput, setSmilesInput] = useState<string>('');
+    const [view, setViewState] = useState<View>(DEFAULT_VIEW);
     const [, bumpVersion] = useReducer((v: number) => v + 1, 0);
+
+    // Always update both the state (drives redraw) and the ref (so event
+    // handlers see the new viewport without waiting for a re-render).
+    const setView = useCallback((next: View): void => {
+        viewRef.current = next;
+        setViewState(next);
+    }, []);
 
     // Build the C++ MolModel once per mount, tear it down on unmount.
     useEffect(() => {
@@ -511,6 +542,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         (
             window as unknown as { SketcherModel?: MolModelInstance }
         ).SketcherModel = model;
+        // Expose the live view ref so PW tests can inspect the current
+        // viewport without us having to publish each individual scale/offset
+        // change to React state.
+        (
+            window as unknown as { SketcherView?: { current: View } }
+        ).SketcherView = viewRef;
         bumpVersion();
         return () => {
             if (subscriptionRef.current !== null) {
@@ -529,6 +566,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             }
             delete (window as unknown as { SketcherModel?: MolModelInstance })
                 .SketcherModel;
+            delete (window as unknown as { SketcherView?: { current: View } })
+                .SketcherView;
         };
     }, [Module]);
 
@@ -544,7 +583,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         } catch {
             rd = BLANK_DESC;
         }
-        drawSketch(canvas, rd, pendingBondAtom, hoverAtom, dragRect);
+        drawSketch(canvas, view, rd, pendingBondAtom, hoverAtom, dragRect);
     });
 
     // Keep a ref in sync so the cleanup callback (which doesn't re-create on
@@ -575,7 +614,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             } catch {
                 rd = BLANK_DESC;
             }
-            const hit = nearestAtomIndex(canvas, rd.atoms, px, py);
+            const hit = nearestAtomIndex(canvas, viewRef.current, rd.atoms, px, py);
 
             if (tool === 'select') {
                 if (hit >= 0) {
@@ -586,7 +625,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     );
                     return;
                 }
-                const bondHit = nearestBondIndex(canvas, rd, px, py);
+                const bondHit = nearestBondIndex(canvas, viewRef.current, rd, px, py);
                 if (bondHit >= 0) {
                     const wasSelected = model.isBondSelected(bondHit);
                     model.setBondSelected(bondHit, !wasSelected);
@@ -614,7 +653,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     );
                     return;
                 }
-                const { x, y } = modelFromPixel(canvas, px, py);
+                const { x, y } = modelFromPixel(canvas, viewRef.current, px, py);
                 model.addAtom(element, x, y);
                 setStatus(`added ${element} at (${x.toFixed(2)}, ${y.toFixed(2)})`);
                 return;
@@ -625,7 +664,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 // centered on the click. Mirrors the Qt sketcher's ring-tool
                 // behavior (the new ring isn't fused with any existing atom in
                 // this skeleton; that's a future enhancement).
-                const { x, y } = modelFromPixel(canvas, px, py);
+                const { x, y } = modelFromPixel(canvas, viewRef.current, px, py);
                 model.addRing(ring.size, x, y, ring.aromatic);
                 setStatus(
                     `${ring.label.toLowerCase()} at (${x.toFixed(2)}, ${y.toFixed(2)})`,
@@ -688,6 +727,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 // For a single-atom drag this collapses to the simple case.
                 const { x: grabbedToX, y: grabbedToY } = modelFromPixel(
                     canvas,
+                    viewRef.current,
                     px,
                     py,
                 );
@@ -712,7 +752,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             } catch {
                 atoms = [];
             }
-            const hit = nearestAtomIndex(canvas, atoms, px, py);
+            const hit = nearestAtomIndex(canvas, viewRef.current, atoms, px, py);
             const next = hit >= 0 ? hit : null;
             if (next !== hoverAtom) setHoverAtom(next);
         },
@@ -736,7 +776,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             } catch {
                 rd = BLANK_DESC;
             }
-            const atomHit = nearestAtomIndex(canvas, rd.atoms, px, py);
+            const atomHit = nearestAtomIndex(canvas, viewRef.current, rd.atoms, px, py);
             if (atomHit >= 0) {
                 // Press on an atom: prepare a drag-to-move. If the user just
                 // releases without crossing the threshold, the click handler
@@ -767,7 +807,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
             // Press on a bond: let onClick handle the bond toggle.
-            if (nearestBondIndex(canvas, rd, px, py) >= 0) return;
+            if (nearestBondIndex(canvas, viewRef.current, rd, px, py) >= 0) return;
 
             setDragRect({
                 startPx: px,
@@ -797,6 +837,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 const py = e.clientY - rect.top;
                 const { x: grabbedToX, y: grabbedToY } = modelFromPixel(
                     canvas,
+                    viewRef.current,
                     px,
                     py,
                 );
@@ -861,7 +902,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             let nSelected = 0;
             const atomInRect = new Array<boolean>(rd.atoms.length).fill(false);
             for (const a of rd.atoms) {
-                const { px, py } = pixelFromModel(canvas, a.x, a.y);
+                const { px, py } = pixelFromModel(canvas, viewRef.current, a.x, a.y);
                 if (px >= x1 && px <= x2 && py >= y1 && py <= y2) {
                     atomInRect[a.i] = true;
                     if (!model.isAtomSelected(a.i)) {
@@ -1099,6 +1140,60 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setStatus('cleaned up layout');
     };
 
+    const doFit = (): void => {
+        const model = modelRef.current;
+        const canvas = canvasRef.current;
+        if (!model || !canvas) return;
+        if (model.numAtoms() === 0) {
+            setView(DEFAULT_VIEW);
+            setStatus('view reset (empty sketch)');
+            return;
+        }
+        let rd: RenderDesc = BLANK_DESC;
+        try {
+            rd = JSON.parse(model.description()) as RenderDesc;
+        } catch {
+            rd = BLANK_DESC;
+        }
+        if (rd.atoms.length === 0) {
+            setView(DEFAULT_VIEW);
+            return;
+        }
+        let minX = rd.atoms[0].x;
+        let maxX = rd.atoms[0].x;
+        let minY = rd.atoms[0].y;
+        let maxY = rd.atoms[0].y;
+        for (const a of rd.atoms) {
+            if (a.x < minX) minX = a.x;
+            if (a.x > maxX) maxX = a.x;
+            if (a.y < minY) minY = a.y;
+            if (a.y > maxY) maxY = a.y;
+        }
+        // Pick a scale so the bbox fits with ~10% margin on each side; leave
+        // extra padding on the canvas Y axis for labels (H counts hang below
+        // an atom by a few px). Single-atom mol falls back to DEFAULT_SCALE.
+        const bboxW = Math.max(maxX - minX, 1e-6);
+        const bboxH = Math.max(maxY - minY, 1e-6);
+        const marginPx = 40;
+        const usableW = Math.max(canvas.width - 2 * marginPx, 1);
+        const usableH = Math.max(canvas.height - 2 * marginPx, 1);
+        const fitScale =
+            rd.atoms.length === 1
+                ? DEFAULT_SCALE
+                : Math.min(usableW / bboxW, usableH / bboxH);
+        // Clamp so single-bond or tiny mols don't blow up past a usable size.
+        const scale = Math.min(fitScale, DEFAULT_SCALE * 2);
+        // Center the bbox in the canvas. modelFromPixel maps:
+        //   canvas_center + offset → bbox center in model space → 0,
+        // so offset = scale * bboxCenter (but Y flipped for screen coords).
+        const cxModel = (minX + maxX) / 2;
+        const cyModel = (minY + maxY) / 2;
+        const offsetX = -cxModel * scale;
+        const offsetY = cyModel * scale;
+        setView({ scale, offsetX, offsetY });
+        setStatus(`fit ${rd.atoms.length} atoms to canvas`);
+    };
+
     // Keyboard shortcuts match the Qt sketcher: Ctrl/Cmd+Z undo,
     // Ctrl/Cmd+Shift+Z or Ctrl+Y redo, Del/Backspace deletes the selection,
     // Ctrl/Cmd+A selects everything. We listen on window so the user doesn't
@@ -1298,6 +1393,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             onClick={doCleanUp}
                             testid='clean-up'
                             title='Recompute 2D coordinates'
+                        />
+                        <ActionButton
+                            label='Fit'
+                            onClick={doFit}
+                            testid='fit-to-screen'
+                            title='Fit the structure to the canvas'
                         />
                     </Section>
                     <Section label='Stereo'>
