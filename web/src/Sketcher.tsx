@@ -17,7 +17,7 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 // to commit it. Undo/redo/clear go through the same UndoStack the C++ Boost
 // tests cover.
 
-type Tool = 'atom' | 'bond' | 'select' | 'ring';
+type Tool = 'atom' | 'bond' | 'select' | 'ring' | 'pan';
 type Element = 'C' | 'O' | 'N' | 'H' | 'Cl';
 type BondOrder = 1 | 2 | 3;
 
@@ -202,6 +202,24 @@ interface AtomDrag {
 }
 
 const ATOM_DRAG_THRESHOLD = 3; // pixels — below this, treat as a click
+
+// Pan-tool drag state. Pan changes only the view transform — no model
+// mutation, no undo step. Live in a ref so mousemove doesn't trigger
+// React re-renders per pixel; the setView call is what flushes the redraw.
+interface PanDrag {
+    startPx: number;
+    startPy: number;
+    startOffsetX: number;
+    startOffsetY: number;
+}
+
+// Bounds on view.scale — keep within usable range so the user can't zoom
+// to invisible (0.05x) or far past pixel-grid resolution (10x).
+const MIN_VIEW_SCALE = 4;
+const MAX_VIEW_SCALE = 400;
+// Per-wheel-tick multiplier. 1.1 = ~10% per tick, which on most trackpads
+// covers a comfortable 1–2 second pinch from min to max.
+const ZOOM_STEP = 1.1;
 
 function dragRectBounds(d: DragRect): {
     x1: number;
@@ -498,6 +516,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // re-render per pixel — the model.setAtomPos preview already fires
     // modelChanged which drives the redraw.
     const atomDragRef = useRef<AtomDrag | null>(null);
+    // Pan-tool drag: starts on mouseDown when the active tool is 'pan'.
+    // Updates view.offsetX/Y on mouseMove; cleared on mouseUp/mouseLeave.
+    const panDragRef = useRef<PanDrag | null>(null);
     // View transform — mirrors viewState into a ref so event handlers (which
     // capture the closure at mount) always read the current viewport.
     const viewRef = useRef<View>(DEFAULT_VIEW);
@@ -597,6 +618,46 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         }
         drawSketch(canvas, view, rd, pendingBondAtom, hoverAtom, dragRect);
     });
+
+    // Wheel zoom centered on the cursor. Attached imperatively because React's
+    // onWheel attaches as a passive listener — we need preventDefault to stop
+    // the page from scrolling underneath us. Reads viewRef so we don't have
+    // to re-bind the listener every time the view changes.
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        function onWheel(e: WheelEvent): void {
+            e.preventDefault();
+            const cur = viewRef.current;
+            // deltaY > 0 → wheel down → zoom out; deltaY < 0 → zoom in.
+            const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+            const nextScale = Math.max(
+                MIN_VIEW_SCALE,
+                Math.min(MAX_VIEW_SCALE, cur.scale * factor),
+            );
+            if (nextScale === cur.scale) return;
+            // Keep the model-space point under the cursor pinned to the same
+            // pixel after the zoom. modelFromPixel(canvas, view, px, py) = q
+            // where px - (cx + offsetX) = q.x * scale (and similarly for y).
+            // We want: q stays the same; offsetX' = (px - cx) - q.x * scale'
+            // and analogously for offsetY. Mouse position relative to the
+            // canvas takes the place of (px - canvas/2).
+            const rect = canvas.getBoundingClientRect();
+            const px = e.clientX - rect.left;
+            const py = e.clientY - rect.top;
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+            const modelX = (px - cx - cur.offsetX) / cur.scale;
+            const modelY = -(py - cy - cur.offsetY) / cur.scale;
+            const offsetX = px - cx - modelX * nextScale;
+            const offsetY = py - cy + modelY * nextScale;
+            setView({ scale: nextScale, offsetX, offsetY });
+        }
+        canvas.addEventListener('wheel', onWheel, { passive: false });
+        return () => {
+            canvas.removeEventListener('wheel', onWheel);
+        };
+    }, [setView]);
 
     // Keep a ref in sync so the cleanup callback (which doesn't re-create on
     // every render) can clear it without stale state.
@@ -731,6 +792,17 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const rect = canvas.getBoundingClientRect();
             const px = e.clientX - rect.left;
             const py = e.clientY - rect.top;
+            const pan = panDragRef.current;
+            if (pan) {
+                // Pan: translate the viewport by the cursor delta in pixels.
+                // Scale stays put; only offsetX/offsetY shift.
+                setView({
+                    scale: viewRef.current.scale,
+                    offsetX: pan.startOffsetX + (px - pan.startPx),
+                    offsetY: pan.startOffsetY + (py - pan.startPy),
+                });
+                return;
+            }
             const ad = atomDragRef.current;
             if (ad) {
                 const dpx = px - ad.startPx;
@@ -775,19 +847,29 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const next = hit >= 0 ? hit : null;
             if (next !== hoverAtom) setHoverAtom(next);
         },
-        [tool, hoverAtom, dragRect],
+        [tool, hoverAtom, dragRect, setView],
     );
 
     const onCanvasMouseDown = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
-            if (tool !== 'select') return;
             if (e.button !== 0) return;
             const canvas = canvasRef.current;
-            const model = modelRef.current;
-            if (!canvas || !model) return;
+            if (!canvas) return;
             const rect = canvas.getBoundingClientRect();
             const px = e.clientX - rect.left;
             const py = e.clientY - rect.top;
+            if (tool === 'pan') {
+                panDragRef.current = {
+                    startPx: px,
+                    startPy: py,
+                    startOffsetX: viewRef.current.offsetX,
+                    startOffsetY: viewRef.current.offsetY,
+                };
+                return;
+            }
+            if (tool !== 'select') return;
+            const model = modelRef.current;
+            if (!model) return;
 
             let rd: RenderDesc = BLANK_DESC;
             try {
@@ -841,6 +923,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
 
     const onCanvasMouseUp = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
+            if (panDragRef.current) {
+                // Pan already wrote each delta into view during move; just
+                // drop the drag state. No undo step — pan is view-only.
+                panDragRef.current = null;
+                return;
+            }
             const ad = atomDragRef.current;
             if (ad) {
                 atomDragRef.current = null;
@@ -954,6 +1042,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
 
     const onCanvasMouseLeave = useCallback((): void => {
         setHoverAtom(null);
+        // Pan that left the canvas: just stop. The view is already at the
+        // most recent offset; nothing to roll back.
+        if (panDragRef.current) {
+            panDragRef.current = null;
+        }
         // Don't commit a drag-select that left the canvas — just cancel it.
         if (dragRect) {
             setDragRect(null);
@@ -1194,6 +1287,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setStatus(`${label} (${scope})`);
     };
 
+    const doResetView = (): void => {
+        setView(DEFAULT_VIEW);
+        setStatus('view reset');
+    };
+
     const doFit = (): void => {
         const model = modelRef.current;
         const canvas = canvasRef.current;
@@ -1352,6 +1450,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             }}
                             testid='tool-bond'
                         />
+                        <ToolButton
+                            label='Pan'
+                            active={tool === 'pan'}
+                            onClick={() => {
+                                setTool('pan');
+                                setPendingBondAtom(null);
+                            }}
+                            testid='tool-pan'
+                            title='Pan: drag to move the viewport'
+                        />
                     </Section>
                     <Section label='Atoms'>
                         {(['C', 'N', 'O', 'H', 'Cl'] as const).map((el) => (
@@ -1454,6 +1562,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             testid='fit-to-screen'
                             title='Fit the structure to the canvas'
                         />
+                        <ActionButton
+                            label='Reset View'
+                            onClick={doResetView}
+                            testid='reset-view'
+                            title='Reset zoom and pan to defaults'
+                        />
                     </Section>
                     <Section label='Transform'>
                         <ActionButton
@@ -1521,7 +1635,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         ref={canvasRef}
                         width={CANVAS_W}
                         height={CANVAS_H}
-                        style={styles.canvas}
+                        style={{
+                            ...styles.canvas,
+                            cursor: tool === 'pan' ? 'grab' : 'crosshair',
+                        }}
                         onClick={onCanvasClick}
                         onMouseDown={onCanvasMouseDown}
                         onMouseMove={onCanvasMove}

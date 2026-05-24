@@ -875,4 +875,157 @@ test.describe('React Sketcher', () => {
         expect(undone.atoms[1].x).toBeCloseTo(before.atoms[1].x, 3);
         expect(undone.atoms[1].y).toBeCloseTo(before.atoms[1].y, 3);
     });
+
+    test('Wheel zooms toward the cursor: model-space point under cursor stays put', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Drop one atom so we have a model-space point with a known pixel
+        // location. (270, 180) is canvas center → model (0, 0) under the
+        // default view (scale 40, no offset).
+        await canvas.click({ position: { x: 270, y: 180 } });
+
+        // Pick a cursor target away from the center so the pin-point test is
+        // meaningful (offsetX/Y must change to keep the point stationary).
+        const target = { x: 400, y: 120 };
+        const box = await canvas.boundingBox();
+
+        // Find what model-space point sits under (400, 120) before the zoom.
+        const before = await page.evaluate(({ px, py }) => {
+            const v = window.SketcherView.current;
+            return {
+                view: { scale: v.scale, offsetX: v.offsetX, offsetY: v.offsetY },
+                model: {
+                    x: (px - 540 / 2 - v.offsetX) / v.scale,
+                    y: -(py - 360 / 2 - v.offsetY) / v.scale,
+                },
+            };
+        }, { px: target.x, py: target.y });
+        expect(before.view.scale).toBeCloseTo(40, 3);
+
+        // Wheel up over the cursor target — should zoom in (scale grows).
+        await page.mouse.move(box.x + target.x, box.y + target.y);
+        await page.mouse.wheel(0, -100);
+
+        const after = await page.evaluate(({ px, py, modelX, modelY }) => {
+            const v = window.SketcherView.current;
+            const pxAfter = modelX * v.scale + 540 / 2 + v.offsetX;
+            const pyAfter = -modelY * v.scale + 360 / 2 + v.offsetY;
+            return {
+                scale: v.scale,
+                offsetX: v.offsetX,
+                offsetY: v.offsetY,
+                pxAfter,
+                pyAfter,
+            };
+        }, {
+            px: target.x,
+            py: target.y,
+            modelX: before.model.x,
+            modelY: before.model.y,
+        });
+        // Scale grew — wheel up = zoom in.
+        expect(after.scale).toBeGreaterThan(before.view.scale);
+        // The model point that was under the cursor is still under the cursor
+        // (within a sub-pixel tolerance). This is the whole point of cursor-
+        // centered zoom — content doesn't slide under your fingertip.
+        expect(after.pxAfter).toBeCloseTo(target.x, 1);
+        expect(after.pyAfter).toBeCloseTo(target.y, 1);
+
+        // Wheel down zooms back out — and the same model point still pins.
+        await page.mouse.wheel(0, 100);
+        const back = await page.evaluate(({ modelX, modelY }) => {
+            const v = window.SketcherView.current;
+            return {
+                scale: v.scale,
+                pxAt: modelX * v.scale + 540 / 2 + v.offsetX,
+                pyAt: -modelY * v.scale + 360 / 2 + v.offsetY,
+            };
+        }, { modelX: before.model.x, modelY: before.model.y });
+        expect(back.scale).toBeLessThan(after.scale);
+        expect(back.pxAt).toBeCloseTo(target.x, 1);
+        expect(back.pyAt).toBeCloseTo(target.y, 1);
+    });
+
+    test('Pan tool drags the viewport: offsetX/Y track the cursor delta', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Place an atom at canvas center so we can verify it visually
+        // translates after the pan (atom model coords don't change — the
+        // viewport does — so the atom's pixel location shifts by the delta).
+        await canvas.click({ position: { x: 270, y: 180 } });
+        const atomBefore = (await snapshot(page)).atoms[0];
+
+        await page.getByTestId('tool-pan').click();
+        const view0 = await page.evaluate(() => ({
+            scale: window.SketcherView.current.scale,
+            offsetX: window.SketcherView.current.offsetX,
+            offsetY: window.SketcherView.current.offsetY,
+        }));
+
+        const box = await canvas.boundingBox();
+        await page.mouse.move(box.x + 270, box.y + 180);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 320, box.y + 220, { steps: 6 });
+        await page.mouse.up();
+
+        const view1 = await page.evaluate(() => ({
+            scale: window.SketcherView.current.scale,
+            offsetX: window.SketcherView.current.offsetX,
+            offsetY: window.SketcherView.current.offsetY,
+        }));
+        // Scale unchanged — pan never zooms.
+        expect(view1.scale).toBeCloseTo(view0.scale, 6);
+        // Offset shifted by exactly the cursor delta (+50, +40).
+        expect(view1.offsetX - view0.offsetX).toBeCloseTo(50, 0);
+        expect(view1.offsetY - view0.offsetY).toBeCloseTo(40, 0);
+
+        // Atom coordinates are unchanged — pan is view-only.
+        const atomAfter = (await snapshot(page)).atoms[0];
+        expect(atomAfter.x).toBeCloseTo(atomBefore.x, 6);
+        expect(atomAfter.y).toBeCloseTo(atomBefore.y, 6);
+    });
+
+    test('Reset View restores DEFAULT_VIEW after pan and zoom', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Hover before wheeling so the wheel event has the canvas as its
+        // target. Without an initial pointer event, Playwright's mouse.wheel
+        // doesn't always route to the right element.
+        await canvas.hover({ position: { x: 400, y: 120 } });
+        // Zoom in over an off-center point so both scale and offset change.
+        const box = await canvas.boundingBox();
+        await page.mouse.move(box.x + 400, box.y + 120);
+        await page.mouse.wheel(0, -100);
+        await page.mouse.wheel(0, -100);
+
+        // Pan as well so offset deviates further from zero.
+        await page.getByTestId('tool-pan').click();
+        await page.mouse.move(box.x + 270, box.y + 180);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 300, box.y + 230, { steps: 4 });
+        await page.mouse.up();
+
+        const dirty = await page.evaluate(() => ({
+            scale: window.SketcherView.current.scale,
+            offsetX: window.SketcherView.current.offsetX,
+            offsetY: window.SketcherView.current.offsetY,
+        }));
+        expect(dirty.scale).not.toBeCloseTo(40, 3);
+        // At least one of the offsets diverged from zero.
+        expect(Math.abs(dirty.offsetX) + Math.abs(dirty.offsetY)).toBeGreaterThan(1);
+
+        await page.getByTestId('reset-view').click();
+        const reset = await page.evaluate(() => ({
+            scale: window.SketcherView.current.scale,
+            offsetX: window.SketcherView.current.offsetX,
+            offsetY: window.SketcherView.current.offsetY,
+        }));
+        // Reset View returns to DEFAULT_VIEW exactly.
+        expect(reset.scale).toBeCloseTo(40, 6);
+        expect(reset.offsetX).toBeCloseTo(0, 6);
+        expect(reset.offsetY).toBeCloseTo(0, 6);
+    });
 });
