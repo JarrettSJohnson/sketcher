@@ -7,6 +7,7 @@ import {
     type CSSProperties,
     type JSX,
     type MouseEvent as ReactMouseEvent,
+    type ReactNode,
 } from 'react';
 import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 
@@ -17,8 +18,16 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 // tests cover.
 
 type Tool = 'atom' | 'bond' | 'select';
-type Element = 'C' | 'O' | 'N';
+type Element = 'C' | 'O' | 'N' | 'H' | 'Cl';
 type BondOrder = 1 | 2 | 3;
+
+// Palette mirrors the original Qt sketcher's QSS so the React port doesn't
+// drift into a different look. Sage-green accent is the primary interactive
+// color; selection halos and selected-state fills use the same family.
+const ACCENT_GREEN = '#779c59';
+const SELECTION_FILL = '#c7d5b8';
+const HOVER_FILL = '#e2eadb';
+const PENDING_FILL = '#fde68a';
 
 interface AtomDesc {
     i: number;
@@ -56,10 +65,15 @@ const ATOM_HIT_RADIUS = 18; // pixels for click hit-test
 const BOND_HIT_RADIUS = 6; // pixels perpendicular to bond line
 const BLANK_DESC: RenderDesc = { atoms: [], bonds: [] };
 
+// Element colors approximate the CPK conventions the original uses.
+// Chlorine is the deeper green used in the Qt build — pure #0c0 fights
+// the sage accent for attention.
 const ELEMENT_COLORS: Record<string, string> = {
-    O: '#c00',
-    N: '#06c',
-    C: '#333',
+    C: '#222',
+    O: '#c0392b',
+    N: '#1f4faa',
+    H: '#888',
+    Cl: '#3fa54f',
 };
 
 function modelFromPixel(
@@ -178,38 +192,30 @@ function drawSketch(
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Original sketcher has no grid — a clean white canvas reads as the
+    // working area without competing for attention with the structure.
 
-    // Faint grid so the click-to-place behavior feels intentional.
-    ctx.strokeStyle = '#eef2f7';
-    ctx.lineWidth = 1;
-    for (let gx = 0; gx <= canvas.width; gx += SCALE) {
-        ctx.beginPath();
-        ctx.moveTo(gx, 0);
-        ctx.lineTo(gx, canvas.height);
-        ctx.stroke();
-    }
-    for (let gy = 0; gy <= canvas.height; gy += SCALE) {
-        ctx.beginPath();
-        ctx.moveTo(0, gy);
-        ctx.lineTo(canvas.width, gy);
-        ctx.stroke();
-    }
+    const BOND_STROKE = 2;
+    const BOND_DOUBLE_OFFSET = 4.5;
 
     for (let i = 0; i < rd.bonds.length; ++i) {
         const b = rd.bonds[i];
         const p1 = pixelFromModel(canvas, rd.atoms[b.a].x, rd.atoms[b.a].y);
         const p2 = pixelFromModel(canvas, rd.atoms[b.b].x, rd.atoms[b.b].y);
         if (b.sel) {
-            // Wide translucent highlight underneath the bond strokes.
-            ctx.strokeStyle = '#bfdbfe';
-            ctx.lineWidth = 8;
+            // Wide sage highlight underneath the bond strokes — matches the
+            // selection halo color used for atoms below.
+            ctx.strokeStyle = SELECTION_FILL;
+            ctx.lineWidth = 9;
+            ctx.lineCap = 'round';
             ctx.beginPath();
             ctx.moveTo(p1.px, p1.py);
             ctx.lineTo(p2.px, p2.py);
             ctx.stroke();
+            ctx.lineCap = 'butt';
         }
-        ctx.strokeStyle = b.sel ? '#1d4ed8' : '#333';
-        ctx.fillStyle = b.sel ? '#1d4ed8' : '#333';
+        ctx.strokeStyle = '#222';
+        ctx.fillStyle = '#222';
         // Stereo bonds: wedge is a filled triangle expanding from begin to
         // end atom; dash is a sequence of perpendicular bars that grow in
         // length toward the end atom. Both replace the plain line stroke
@@ -220,8 +226,8 @@ function drawSketch(
             const dx = p2.px - p1.px;
             const dy = p2.py - p1.py;
             const len = Math.hypot(dx, dy);
-            const ox = (-dy / len) * 4;
-            const oy = (dx / len) * 4;
+            const ox = (-dy / len) * 5;
+            const oy = (dx / len) * 5;
             ctx.beginPath();
             ctx.moveTo(p1.px, p1.py);
             ctx.lineTo(p2.px + ox, p2.py + oy);
@@ -237,19 +243,19 @@ function drawSketch(
             const px = -uy;
             const py2 = ux;
             const dashCount = 6;
-            ctx.lineWidth = 1.5;
+            ctx.lineWidth = 1.6;
             for (let k = 1; k <= dashCount; ++k) {
                 const t = k / (dashCount + 1);
                 const cx = p1.px + dx * t;
                 const cy = p1.py + dy * t;
-                const halfW = 1 + 3 * t; // grows toward the end atom
+                const halfW = 1 + 3.5 * t; // grows toward the end atom
                 ctx.beginPath();
                 ctx.moveTo(cx + px * halfW, cy + py2 * halfW);
                 ctx.lineTo(cx - px * halfW, cy - py2 * halfW);
                 ctx.stroke();
             }
         } else {
-            ctx.lineWidth = 1.5;
+            ctx.lineWidth = BOND_STROKE;
             ctx.beginPath();
             ctx.moveTo(p1.px, p1.py);
             ctx.lineTo(p2.px, p2.py);
@@ -259,8 +265,9 @@ function drawSketch(
             const dx = p2.px - p1.px;
             const dy = p2.py - p1.py;
             const len = Math.hypot(dx, dy);
-            const ox = (-dy / len) * 4;
-            const oy = (dx / len) * 4;
+            const ox = (-dy / len) * BOND_DOUBLE_OFFSET;
+            const oy = (dx / len) * BOND_DOUBLE_OFFSET;
+            ctx.lineWidth = BOND_STROKE;
             ctx.beginPath();
             ctx.moveTo(p1.px + ox, p1.py + oy);
             ctx.lineTo(p2.px + ox, p2.py + oy);
@@ -282,19 +289,19 @@ function drawSketch(
         const isPending = pendingAtomIdx === a.i;
         const isHover = hoverAtomIdx === a.i;
         if (a.sel) {
-            // Selection ring sits behind the hover/pending fills so it doesn't
-            // disappear when the user mouses over a selected atom.
-            ctx.fillStyle = '#1d4ed8';
+            // Sage outline ring + light sage fill matches the Qt sketcher's
+            // selection halo so a port user can't tell the renderer changed.
+            ctx.fillStyle = ACCENT_GREEN;
             ctx.beginPath();
             ctx.arc(px, py, 13, 0, 2 * Math.PI);
             ctx.fill();
-            ctx.fillStyle = '#dbeafe';
+            ctx.fillStyle = SELECTION_FILL;
             ctx.beginPath();
             ctx.arc(px, py, 10, 0, 2 * Math.PI);
             ctx.fill();
         }
         if (isPending || isHover) {
-            ctx.fillStyle = isPending ? '#fbbf24' : '#dbeafe';
+            ctx.fillStyle = isPending ? PENDING_FILL : HOVER_FILL;
             ctx.beginPath();
             ctx.arc(px, py, 13, 0, 2 * Math.PI);
             ctx.fill();
@@ -370,9 +377,9 @@ function drawSketch(
 
     if (dragRect) {
         const { x1, y1, x2, y2 } = dragRectBounds(dragRect);
-        ctx.fillStyle = 'rgba(29, 78, 216, 0.10)';
+        ctx.fillStyle = 'rgba(119, 156, 89, 0.12)';
         ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
-        ctx.strokeStyle = '#1d4ed8';
+        ctx.strokeStyle = ACCENT_GREEN;
         ctx.lineWidth = 1;
         ctx.setLineDash([4, 3]);
         ctx.strokeRect(x1 + 0.5, y1 + 0.5, x2 - x1 - 1, y2 - y1 - 1);
@@ -812,113 +819,189 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setStatus(label);
     };
 
-    return (
-        <section style={styles.body}>
-            <h2 style={styles.h2}>Interactive sketcher</h2>
-            <p style={styles.meta}>
-                Drives <code>sketcher_core::MolModel</code> via embind — same
-                undo stack the C++ Boost tests cover. No Qt under the hood.
-            </p>
+    // Keyboard shortcuts match the Qt sketcher: Ctrl/Cmd+Z undo,
+    // Ctrl/Cmd+Shift+Z or Ctrl+Y redo, Del/Backspace deletes the selection,
+    // Ctrl/Cmd+A selects everything. We listen on window so the user doesn't
+    // have to focus the canvas first.
+    useEffect(() => {
+        function onKey(e: KeyboardEvent): void {
+            const model = modelRef.current;
+            if (!model) return;
+            // Ignore key events when the user is typing into an input.
+            const target = e.target as HTMLElement | null;
+            const tag = target?.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) {
+                return;
+            }
+            const mod = e.ctrlKey || e.metaKey;
+            if (mod && !e.shiftKey && e.key.toLowerCase() === 'z') {
+                e.preventDefault();
+                doUndo();
+                return;
+            }
+            if (mod && ((e.shiftKey && e.key.toLowerCase() === 'z') || e.key.toLowerCase() === 'y')) {
+                e.preventDefault();
+                doRedo();
+                return;
+            }
+            if (mod && e.key.toLowerCase() === 'a') {
+                e.preventDefault();
+                doSelectAll();
+                return;
+            }
+            if ((e.key === 'Delete' || e.key === 'Backspace') && !mod) {
+                if (model.hasSelection()) {
+                    e.preventDefault();
+                    doDeleteSelected();
+                }
+            }
+        }
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, []);
 
-            <div style={styles.toolbar}>
-                <ToolButton
-                    label='Select'
-                    active={tool === 'select'}
-                    onClick={() => {
-                        setTool('select');
-                        setPendingBondAtom(null);
-                    }}
-                    testid='tool-select'
-                />
-                <ToolButton
-                    label='Atom'
-                    active={tool === 'atom'}
-                    onClick={() => {
-                        setTool('atom');
-                        setPendingBondAtom(null);
-                    }}
-                    testid='tool-atom'
-                />
-                <ToolButton
-                    label='Bond'
-                    active={tool === 'bond'}
-                    onClick={() => {
-                        setTool('bond');
-                        setPendingBondAtom(null);
-                    }}
-                    testid='tool-bond'
-                />
-                <span style={styles.divider} />
-                {(['C', 'O', 'N'] as const).map((el) => (
-                    <ToolButton
-                        key={el}
-                        label={el}
-                        active={element === el}
-                        onClick={() => setElement(el)}
-                        testid={`element-${el}`}
+    return (
+        <section style={styles.shell}>
+            <div style={styles.topBar}>
+                <div style={styles.topBarGroup}>
+                    <ActionButton label='Undo' onClick={doUndo} testid='undo' title='Undo (Ctrl+Z)' />
+                    <ActionButton label='Redo' onClick={doRedo} testid='redo' title='Redo (Ctrl+Y)' />
+                </div>
+                <span style={styles.topDivider} />
+                <div style={styles.topBarGroup}>
+                    <ActionButton
+                        label='Select all'
+                        onClick={doSelectAll}
+                        testid='select-all'
+                        title='Select all (Ctrl+A)'
                     />
-                ))}
-                <span style={styles.divider} />
-                {([1, 2, 3] as const).map((o) => (
-                    <ToolButton
-                        key={o}
-                        label={o === 1 ? 'Single' : o === 2 ? 'Double' : 'Triple'}
-                        active={bondOrder === o}
-                        onClick={() => setBondOrder(o)}
-                        testid={`bond-${o}`}
+                    <ActionButton
+                        label='Delete'
+                        onClick={doDeleteSelected}
+                        testid='delete-selected'
+                        title='Delete selection (Del)'
                     />
-                ))}
-                <span style={styles.divider} />
-                <ActionButton
-                    label='Select all'
-                    onClick={doSelectAll}
-                    testid='select-all'
-                />
-                <ActionButton
-                    label='Delete selected'
-                    onClick={doDeleteSelected}
-                    testid='delete-selected'
-                />
-                <ActionButton
-                    label='Wedge'
-                    onClick={() => applyStereo(BOND_DIR_WEDGE, 'wedge applied')}
-                    testid='stereo-wedge'
-                />
-                <ActionButton
-                    label='Dash'
-                    onClick={() => applyStereo(BOND_DIR_DASH, 'dash applied')}
-                    testid='stereo-dash'
-                />
-                <ActionButton
-                    label='No stereo'
-                    onClick={() =>
-                        applyStereo(BOND_DIR_NONE, 'stereo cleared')
-                    }
-                    testid='stereo-none'
-                />
-                <ActionButton label='Undo' onClick={doUndo} testid='undo' />
-                <ActionButton label='Redo' onClick={doRedo} testid='redo' />
-                <ActionButton label='Clear' onClick={doClear} testid='clear' />
+                </div>
+                <span style={styles.topDivider} />
+                <div style={styles.topBarGroup}>
+                    <ActionButton label='Clear' onClick={doClear} testid='clear' />
+                </div>
+                <div style={styles.topSpacer} />
+                <div style={styles.titleBlock}>
+                    <span style={styles.title}>2D Sketcher</span>
+                    <span style={styles.subtitle}>Qt-free preview</span>
+                </div>
             </div>
 
-            <div style={styles.row}>
-                <canvas
-                    ref={canvasRef}
-                    width={CANVAS_W}
-                    height={CANVAS_H}
-                    style={styles.canvas}
-                    onClick={onCanvasClick}
-                    onMouseDown={onCanvasMouseDown}
-                    onMouseMove={onCanvasMove}
-                    onMouseUp={onCanvasMouseUp}
-                    onMouseLeave={onCanvasMouseLeave}
-                    data-testid='sketcher-canvas'
-                />
-                <div style={styles.statusBox} data-testid='sketcher-status'>
-                    {status}
+            <div style={styles.workspace}>
+                <aside style={styles.sidebar}>
+                    <Section label='Tools'>
+                        <ToolButton
+                            label='Select'
+                            active={tool === 'select'}
+                            onClick={() => {
+                                setTool('select');
+                                setPendingBondAtom(null);
+                            }}
+                            testid='tool-select'
+                        />
+                        <ToolButton
+                            label='Atom'
+                            active={tool === 'atom'}
+                            onClick={() => {
+                                setTool('atom');
+                                setPendingBondAtom(null);
+                            }}
+                            testid='tool-atom'
+                        />
+                        <ToolButton
+                            label='Bond'
+                            active={tool === 'bond'}
+                            onClick={() => {
+                                setTool('bond');
+                                setPendingBondAtom(null);
+                            }}
+                            testid='tool-bond'
+                        />
+                    </Section>
+                    <Section label='Atoms'>
+                        {(['C', 'N', 'O', 'H', 'Cl'] as const).map((el) => (
+                            <ToolButton
+                                key={el}
+                                label={el}
+                                active={element === el}
+                                onClick={() => {
+                                    setElement(el);
+                                    setTool('atom');
+                                    setPendingBondAtom(null);
+                                }}
+                                testid={`element-${el}`}
+                                color={ELEMENT_COLORS[el]}
+                            />
+                        ))}
+                    </Section>
+                    <Section label='Bonds'>
+                        {([1, 2, 3] as const).map((o) => (
+                            <ToolButton
+                                key={o}
+                                label={o === 1 ? 'Single' : o === 2 ? 'Double' : 'Triple'}
+                                active={bondOrder === o}
+                                onClick={() => {
+                                    setBondOrder(o);
+                                    setTool('bond');
+                                    setPendingBondAtom(null);
+                                }}
+                                testid={`bond-${o}`}
+                            />
+                        ))}
+                    </Section>
+                    <Section label='Stereo'>
+                        <ActionButton
+                            label='Wedge'
+                            onClick={() => applyStereo(BOND_DIR_WEDGE, 'wedge applied')}
+                            testid='stereo-wedge'
+                        />
+                        <ActionButton
+                            label='Dash'
+                            onClick={() => applyStereo(BOND_DIR_DASH, 'dash applied')}
+                            testid='stereo-dash'
+                        />
+                        <ActionButton
+                            label='No stereo'
+                            onClick={() => applyStereo(BOND_DIR_NONE, 'stereo cleared')}
+                            testid='stereo-none'
+                        />
+                    </Section>
+                </aside>
+
+                <div style={styles.canvasColumn}>
+                    <canvas
+                        ref={canvasRef}
+                        width={CANVAS_W}
+                        height={CANVAS_H}
+                        style={styles.canvas}
+                        onClick={onCanvasClick}
+                        onMouseDown={onCanvasMouseDown}
+                        onMouseMove={onCanvasMove}
+                        onMouseUp={onCanvasMouseUp}
+                        onMouseLeave={onCanvasMouseLeave}
+                        data-testid='sketcher-canvas'
+                    />
+                    <div style={styles.statusBox} data-testid='sketcher-status'>
+                        {status}
+                    </div>
                 </div>
             </div>
         </section>
+    );
+}
+
+function Section({ label, children }: { label: string; children: ReactNode }): JSX.Element {
+    return (
+        <div style={styles.section}>
+            <div style={styles.sectionLabel}>{label}</div>
+            <div style={styles.sectionGrid}>{children}</div>
+        </div>
     );
 }
 
@@ -927,18 +1010,26 @@ interface ToolButtonProps {
     active: boolean;
     onClick: () => void;
     testid: string;
+    color?: string;
+    title?: string;
 }
 
-function ToolButton({ label, active, onClick, testid }: ToolButtonProps): JSX.Element {
+function ToolButton({ label, active, onClick, testid, color, title }: ToolButtonProps): JSX.Element {
+    const [hover, setHover] = useState(false);
     return (
         <button
             style={{
                 ...styles.toolBtn,
+                ...(hover && !active ? styles.toolBtnHover : {}),
                 ...(active ? styles.toolBtnActive : {}),
+                ...(color && !active ? { color } : {}),
             }}
             onClick={onClick}
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
             data-testid={testid}
             aria-pressed={active}
+            title={title ?? label}
         >
             {label}
         </button>
@@ -949,77 +1040,156 @@ interface ActionButtonProps {
     label: string;
     onClick: () => void;
     testid: string;
+    title?: string;
 }
 
-function ActionButton({ label, onClick, testid }: ActionButtonProps): JSX.Element {
+function ActionButton({ label, onClick, testid, title }: ActionButtonProps): JSX.Element {
+    const [hover, setHover] = useState(false);
     return (
         <button
-            style={styles.actionBtn}
+            style={{
+                ...styles.actionBtn,
+                ...(hover ? styles.actionBtnHover : {}),
+            }}
             onClick={onClick}
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
             data-testid={testid}
+            title={title ?? label}
         >
             {label}
         </button>
     );
 }
 
+// Palette echoes the original Qt QSS: accent sage green, sky-blue "checked"
+// state (matches Qt's QToolButton:checked), beige hover. The whole layout
+// (left sidebar + top action bar + canvas) mirrors sketcher_widget.ui so a
+// returning Qt user lands in the same place.
+const TOP_BAR_BG = '#f4f4f4';
+const SIDEBAR_BG = '#f4f4f4';
+const BORDER_COLOR = '#cfcfcf';
+const CHECKED_BG = '#d4e6f1';
+const CHECKED_BORDER = '#7fa9c7';
+const ACTION_HOVER_BG = '#edf7fc';
+
 const styles: Record<string, CSSProperties> = {
-    body: { marginTop: 32 },
-    h2: { fontSize: 16, margin: '0 0 4px' },
-    meta: { color: '#666', fontSize: 12, margin: '0 0 12px' },
-    toolbar: {
+    shell: {
+        marginTop: 12,
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 4,
+        background: 'white',
+        overflow: 'hidden',
+        font: '13px Arimo, "Helvetica Neue", Arial, sans-serif',
+        color: '#222',
         display: 'flex',
-        gap: 6,
-        marginBottom: 10,
-        alignItems: 'center',
-        flexWrap: 'wrap',
+        flexDirection: 'column',
     },
-    divider: {
+    topBar: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '6px 8px',
+        background: TOP_BAR_BG,
+        borderBottom: `1px solid ${BORDER_COLOR}`,
+        minHeight: 35,
+    },
+    topBarGroup: { display: 'flex', gap: 4, alignItems: 'center' },
+    topDivider: {
         display: 'inline-block',
         width: 1,
         height: 22,
-        background: '#ddd',
-        margin: '0 4px',
+        background: BORDER_COLOR,
+        margin: '0 2px',
+    },
+    topSpacer: { flex: '1 1 auto' },
+    titleBlock: {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-end',
+        lineHeight: 1.1,
+    },
+    title: { fontSize: 13, fontWeight: 600, color: '#333' },
+    subtitle: { fontSize: 10, color: '#888' },
+    workspace: { display: 'flex', alignItems: 'stretch' },
+    sidebar: {
+        width: 117,
+        flex: '0 0 117px',
+        background: SIDEBAR_BG,
+        borderRight: `1px solid ${BORDER_COLOR}`,
+        padding: '8px 6px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+    },
+    section: { display: 'flex', flexDirection: 'column', gap: 4 },
+    sectionLabel: {
+        fontSize: 10,
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+        color: '#777',
+        padding: '0 2px',
+    },
+    sectionGrid: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(2, 1fr)',
+        gap: 3,
+    },
+    canvasColumn: {
+        flex: '1 1 auto',
+        display: 'flex',
+        flexDirection: 'column',
+        background: 'white',
     },
     toolBtn: {
-        font: '12px sans-serif',
-        padding: '4px 10px',
-        border: '1px solid #bbb',
+        font: 'inherit',
+        fontSize: 12,
+        padding: '5px 6px',
+        minHeight: 28,
+        border: `1px solid ${BORDER_COLOR}`,
         background: 'white',
-        color: '#333',
-        borderRadius: 4,
+        color: '#222',
+        borderRadius: 3,
         cursor: 'pointer',
+        textAlign: 'center',
+    },
+    toolBtnHover: {
+        background: ACTION_HOVER_BG,
+        borderColor: CHECKED_BORDER,
     },
     toolBtnActive: {
-        borderColor: '#2b6cb0',
-        background: '#2b6cb0',
-        color: 'white',
+        background: CHECKED_BG,
+        borderColor: CHECKED_BORDER,
+        color: '#111',
+        fontWeight: 600,
     },
     actionBtn: {
-        font: '12px sans-serif',
+        font: 'inherit',
+        fontSize: 12,
         padding: '4px 10px',
-        border: '1px solid #aaa',
-        background: '#f7f7f8',
+        minHeight: 24,
+        border: `1px solid ${BORDER_COLOR}`,
+        background: 'white',
         color: '#222',
-        borderRadius: 4,
+        borderRadius: 3,
         cursor: 'pointer',
     },
-    row: { display: 'flex', gap: 12, alignItems: 'flex-start' },
+    actionBtnHover: {
+        background: ACTION_HOVER_BG,
+        borderColor: CHECKED_BORDER,
+    },
     canvas: {
-        border: '1px solid #ddd',
-        borderRadius: 4,
         background: 'white',
         display: 'block',
         cursor: 'crosshair',
+        flex: '1 1 auto',
     },
     statusBox: {
-        flex: '1 1 auto',
-        font: '12px monospace',
-        background: '#f4f4f6',
-        border: '1px solid #ddd',
-        borderRadius: 4,
-        padding: '8px 10px',
-        color: '#333',
-        minHeight: 40,
+        font: '11px Menlo, Consolas, monospace',
+        background: '#fafafa',
+        borderTop: `1px solid ${BORDER_COLOR}`,
+        padding: '4px 10px',
+        color: '#555',
+        minHeight: 22,
     },
 };
