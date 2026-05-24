@@ -485,6 +485,33 @@ void MolModel::kekulize()
         "Kekulize");
 }
 
+void MolModel::cleanUp()
+{
+    if (m_mol.getNumAtoms() == 0) {
+        return;
+    }
+    doMutation(
+        [this] {
+            // compute2DCoords forces the RDKit native depictor with ring
+            // templates (matches the SMILES-load coord path). Swallow on
+            // failure — the snapshot pre-image is still on the undo stack
+            // so a bad recompute won't strand the user.
+            try {
+                rdkit_extensions::compute2DCoords(m_mol);
+            } catch (...) {
+                return;
+            }
+            try {
+                // Stereo bond dirs are anchored to the old conformer; the
+                // recompute may have rotated/reflected the layout, so
+                // re-derive them from CIP chirality.
+                RDKit::Chirality::wedgeMolBonds(m_mol, &m_mol.getConformer());
+            } catch (...) {
+            }
+        },
+        "Clean up");
+}
+
 std::string MolModel::toMolBlock(bool v3000) const
 {
     if (m_mol.getNumAtoms() == 0) {

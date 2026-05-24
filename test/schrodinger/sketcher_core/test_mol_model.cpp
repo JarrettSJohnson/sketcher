@@ -1002,3 +1002,49 @@ BOOST_AUTO_TEST_CASE(testMoveAtomsUndoableIsNoOpOnEmptyAndMismatchedArrays)
     BOOST_CHECK_CLOSE(x, 0.0, 1e-6);
     BOOST_CHECK_CLOSE(y, 0.0, 1e-6);
 }
+
+BOOST_AUTO_TEST_CASE(testCleanUpRecomputesCoordsAndIsUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    // Three carbons stacked nearly on top of each other — degenerate layout
+    // that compute2DCoords will redistribute. Two bonds keep them connected
+    // so the depictor actually moves them apart.
+    m.addAtom("C", 0.0, 0.0);
+    m.addAtom("C", 0.01, 0.0);
+    m.addAtom("C", 0.0, 0.01);
+    m.addBond(0, 1);
+    m.addBond(1, 2);
+
+    double x0_before = 0, y0_before = 0, x1_before = 0, y1_before = 0;
+    m.atomPos(0, x0_before, y0_before);
+    m.atomPos(1, x1_before, y1_before);
+    const auto stack_before = stack.count();
+
+    m.cleanUp();
+    BOOST_CHECK_EQUAL(stack.count(), stack_before + 1);
+
+    // After clean-up the two bonded atoms must be a non-trivial distance
+    // apart (depictor uses ~1.5 unit bond length).
+    double x0_after = 0, y0_after = 0, x1_after = 0, y1_after = 0;
+    m.atomPos(0, x0_after, y0_after);
+    m.atomPos(1, x1_after, y1_after);
+    const double dist = std::hypot(x1_after - x0_after, y1_after - y0_after);
+    BOOST_CHECK_GT(dist, 1.0);
+
+    // Single undo restores the original degenerate coords.
+    stack.undo();
+    double x0_undo = 0, y0_undo = 0;
+    m.atomPos(0, x0_undo, y0_undo);
+    BOOST_CHECK_CLOSE(x0_undo, x0_before, 1e-6);
+    BOOST_CHECK_CLOSE(y0_undo, y0_before, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(testCleanUpIsNoOpOnEmptyMol)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.cleanUp();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 0u);
+    BOOST_CHECK_EQUAL(stack.count(), 0u);
+}

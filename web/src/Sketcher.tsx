@@ -1088,6 +1088,17 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setStatus('kekulized');
     };
 
+    const doCleanUp = (): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        if (model.numAtoms() === 0) {
+            setStatus('nothing to clean up — sketch something first');
+            return;
+        }
+        model.cleanUp();
+        setStatus('cleaned up layout');
+    };
+
     // Keyboard shortcuts match the Qt sketcher: Ctrl/Cmd+Z undo,
     // Ctrl/Cmd+Shift+Z or Ctrl+Y redo, Del/Backspace deletes the selection,
     // Ctrl/Cmd+A selects everything. We listen on window so the user doesn't
@@ -1279,6 +1290,14 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             onClick={doKekulize}
                             testid='kekulize'
                             title='Replace aromatic bonds with explicit single/double alternation'
+                        />
+                    </Section>
+                    <Section label='Layout'>
+                        <ActionButton
+                            label='Clean Up'
+                            onClick={doCleanUp}
+                            testid='clean-up'
+                            title='Recompute 2D coordinates'
                         />
                     </Section>
                     <Section label='Stereo'>

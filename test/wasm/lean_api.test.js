@@ -630,6 +630,37 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
         expect(result.afterRedo).toEqual([[10, 20], [11, 20], [0, 1]]);
     });
 
+    test('cleanUp recomputes 2D coords and is a single undo step', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            // Degenerate bonded geometry — three Cs nearly on top of each
+            // other; clean-up should redistribute them.
+            m.addAtom('C', 0, 0);
+            m.addAtom('C', 0.01, 0);
+            m.addAtom('C', 0, 0.01);
+            m.addBond(0, 1, 1);
+            m.addBond(1, 2, 1);
+            const before = JSON.parse(m.description()).atoms.map((a) => [a.x, a.y]);
+            m.cleanUp();
+            const after = JSON.parse(m.description()).atoms.map((a) => [a.x, a.y]);
+            m.undo();
+            const undone = JSON.parse(m.description()).atoms.map((a) => [a.x, a.y]);
+            m.delete();
+            return { before, after, undone };
+        });
+        // Atoms moved during clean-up.
+        const d01_after = Math.hypot(
+            result.after[1][0] - result.after[0][0],
+            result.after[1][1] - result.after[0][1],
+        );
+        expect(d01_after).toBeGreaterThan(1.0);
+        // Single undo restores original coords.
+        expect(result.undone[0][0]).toBeCloseTo(result.before[0][0], 6);
+        expect(result.undone[0][1]).toBeCloseTo(result.before[0][1], 6);
+        expect(result.undone[1][0]).toBeCloseTo(result.before[1][0], 6);
+        expect(result.undone[1][1]).toBeCloseTo(result.before[1][1], 6);
+    });
+
     test('moveAtomsUndoable on an empty indices array is a no-op', async ({ page }) => {
         const result = await page.evaluate(() => {
             const m = new window.Module.MolModel();

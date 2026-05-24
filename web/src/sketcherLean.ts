@@ -52,6 +52,8 @@ export interface MolModelInstance {
     aromatize(): void;
     /** Kekulize aromatic bonds back to explicit SINGLE/DOUBLE alternation. Single undo step. */
     kekulize(): void;
+    /** Recompute 2D coords via the RDKit native depictor. Single undo step. */
+    cleanUp(): void;
     undo(): void;
     redo(): void;
     numAtoms(): number;

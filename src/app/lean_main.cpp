@@ -369,6 +369,10 @@ class MolModelJS
     {
         m_model.kekulize();
     }
+    void cleanUp()
+    {
+        m_model.cleanUp();
+    }
     void undo()
     {
         m_stack.undo();
@@ -547,6 +551,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("removeHydrogens", &MolModelJS::removeHydrogens)
         .function("aromatize", &MolModelJS::aromatize)
         .function("kekulize", &MolModelJS::kekulize)
+        .function("cleanUp", &MolModelJS::cleanUp)
         .function("undo", &MolModelJS::undo)
         .function("redo", &MolModelJS::redo)
         .function("numAtoms", &MolModelJS::numAtoms)

@@ -644,4 +644,50 @@ test.describe('React Sketcher', () => {
         rd = await snapshot(page);
         expect(rd.bonds.some((b) => b.arom === true)).toBe(false);
     });
+
+    test('Clean Up recomputes 2D coords and is a single undo step', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Build three atoms with a bond chain, then drag them all onto
+        // nearly the same pixel so the layout is visibly degenerate.
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+        await page.getByTestId('tool-bond').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+
+        // Drag atom 1 onto atom 0 to collapse the layout.
+        await page.getByTestId('tool-select').click();
+        const box = await canvas.boundingBox();
+        await page.mouse.move(box.x + 260, box.y + 180);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 122, box.y + 182, { steps: 6 });
+        await page.mouse.up();
+
+        const before = await snapshot(page);
+        const d01_before = Math.hypot(
+            before.atoms[1].x - before.atoms[0].x,
+            before.atoms[1].y - before.atoms[0].y,
+        );
+        expect(d01_before).toBeLessThan(0.5);
+
+        await page.getByTestId('clean-up').click();
+        const after = await snapshot(page);
+        const d01_after = Math.hypot(
+            after.atoms[1].x - after.atoms[0].x,
+            after.atoms[1].y - after.atoms[0].y,
+        );
+        // Clean-up restored a sensible bond length (~1.5).
+        expect(d01_after).toBeGreaterThan(1.0);
+
+        // One undo walks back to the degenerate layout.
+        await page.getByTestId('undo').click();
+        const undone = await snapshot(page);
+        expect(undone.atoms[1].x).toBeCloseTo(before.atoms[1].x, 3);
+        expect(undone.atoms[1].y).toBeCloseTo(before.atoms[1].y, 3);
+    });
 });

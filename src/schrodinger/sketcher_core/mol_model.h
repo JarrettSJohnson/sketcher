@@ -196,6 +196,15 @@ class MolModel : public UndoableModel
      */
     void kekulize();
 
+    /**
+     * Recompute 2D coordinates for the entire mol via
+     * rdkit_extensions::compute2DCoords + wedgeMolBonds. Useful as a
+     * "clean up" action after the user has dragged atoms into a mess, or
+     * after a load path that left coords stale. Single undo step. No-op
+     * when the mol is empty.
+     */
+    void cleanUp();
+
     // -- Selection --------------------------------------------------------
     // Selection is transient UI state, not undoable. Any mutation that may
     // reindex atoms/bonds clears it (matching the simplest correct policy
