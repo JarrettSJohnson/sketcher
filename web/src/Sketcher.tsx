@@ -16,7 +16,7 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 // to commit it. Undo/redo/clear go through the same UndoStack the C++ Boost
 // tests cover.
 
-type Tool = 'atom' | 'bond' | 'select' | 'ring';
+type Tool = 'atom' | 'bond' | 'select' | 'move-rotate' | 'ring';
 // SetAtomWidget.ui ships C/H/N/O/P/S/F/Cl/Si on the atomistic panel.
 type Element = 'C' | 'H' | 'N' | 'O' | 'P' | 'S' | 'F' | 'Cl' | 'Si';
 // Qt's bond_group is a single radio group covering single/double/triple plus
@@ -706,32 +706,59 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const hit = nearestAtomIndex(canvas, viewRef.current, rd.atoms, px, py);
 
             if (tool === 'select') {
-                if (hit >= 0) {
-                    const wasSelected = model.isAtomSelected(hit);
-                    model.setAtomSelected(hit, !wasSelected);
-                    setStatus(
-                        `${wasSelected ? 'deselect' : 'select'} atom #${hit}`,
-                    );
+                // Modifier convention mirrors Qt's SelectSceneTool::getSelectMode
+                // (tool/select_erase_scene_tool.cpp:166-176): Ctrl=TOGGLE,
+                // Shift=SELECT(add), plain=SELECT_ONLY(replace). Empty-area
+                // click with no modifier clears; with Ctrl/Shift it's a no-op.
+                const toggle = e.ctrlKey || e.metaKey;
+                const add = !toggle && e.shiftKey;
+                const replace = !toggle && !add;
+                const bondHit = hit < 0
+                    ? nearestBondIndex(canvas, viewRef.current, rd, px, py)
+                    : -1;
+                if (hit < 0 && bondHit < 0) {
+                    if (replace && model.hasSelection()) {
+                        model.clearSelection();
+                        setStatus('cleared selection');
+                    } else if (replace) {
+                        setStatus(
+                            'select mode: click an atom or bond (or use Select All)',
+                        );
+                    }
                     return;
                 }
-                const bondHit = nearestBondIndex(canvas, viewRef.current, rd, px, py);
-                if (bondHit >= 0) {
-                    const wasSelected = model.isBondSelected(bondHit);
-                    model.setBondSelected(bondHit, !wasSelected);
-                    setStatus(
-                        `${wasSelected ? 'deselect' : 'select'} bond #${bondHit}`,
-                    );
-                    return;
-                }
-                // Click on empty area clears the selection.
-                if (model.hasSelection()) {
+                const isAtom = hit >= 0;
+                const idx = isAtom ? hit : bondHit;
+                const isSel = isAtom
+                    ? model.isAtomSelected(idx)
+                    : model.isBondSelected(idx);
+                if (replace) {
                     model.clearSelection();
-                    setStatus('cleared selection');
-                } else {
+                    if (isAtom) model.setAtomSelected(idx, true);
+                    else model.setBondSelected(idx, true);
+                    setStatus(`select ${isAtom ? 'atom' : 'bond'} #${idx}`);
+                } else if (toggle) {
+                    if (isAtom) model.setAtomSelected(idx, !isSel);
+                    else model.setBondSelected(idx, !isSel);
                     setStatus(
-                        'select mode: click an atom or bond (or use Select All)',
+                        `${isSel ? 'deselect' : 'select'} ${isAtom ? 'atom' : 'bond'} #${idx}`,
+                    );
+                } else { // add
+                    if (isAtom) model.setAtomSelected(idx, true);
+                    else model.setBondSelected(idx, true);
+                    setStatus(
+                        `add ${isAtom ? 'atom' : 'bond'} #${idx} to selection`,
                     );
                 }
+                return;
+            }
+
+            if (tool === 'move-rotate') {
+                // All move-rotate logic lives in the mousedown/move/up
+                // pipeline. The click event that fires after the gesture
+                // shouldn't do anything (and must not fall through to the
+                // bond tool's "click on an atom to start a bond" message,
+                // which would overwrite the move-rotate status).
                 return;
             }
 
@@ -863,36 +890,54 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const rect = canvas.getBoundingClientRect();
             const px = e.clientX - rect.left;
             const py = e.clientY - rect.top;
-            if (tool !== 'select') return;
             const model = modelRef.current;
             if (!model) return;
 
-            let rd: RenderDesc = BLANK_DESC;
-            try {
-                rd = JSON.parse(model.description()) as RenderDesc;
-            } catch {
-                rd = BLANK_DESC;
-            }
-            const atomHit = nearestAtomIndex(canvas, viewRef.current, rd.atoms, px, py);
-            if (atomHit >= 0) {
-                // Press on an atom: prepare a drag-to-move. If the user just
-                // releases without crossing the threshold, the click handler
-                // will treat it as a select toggle.
-                const grabbed = rd.atoms.find((x) => x.i === atomHit);
-                if (!grabbed) return;
-                // If the grabbed atom is part of a multi-atom selection, drag
-                // every selected atom together. Single-atom selection or
-                // grabbing an unselected atom both fall through to a
-                // single-atom move (the original behavior).
-                const grabbedIsSelected = grabbed.sel === true;
-                const selectedAtoms = grabbedIsSelected
-                    ? rd.atoms.filter((x) => x.sel === true)
-                    : [grabbed];
+            if (tool === 'move-rotate') {
+                // Qt move_rotate_scene_tool.cpp:107-114 — drag-translate only
+                // fires if the mouse press lands inside the selection bbox.
+                // Drag outside the bbox or with nothing selected is a visual
+                // no-op (we surface a status message instead of silent fail).
+                let rd: RenderDesc = BLANK_DESC;
+                try {
+                    rd = JSON.parse(model.description()) as RenderDesc;
+                } catch {
+                    rd = BLANK_DESC;
+                }
+                const selected = rd.atoms.filter((a) => a.sel === true);
+                if (selected.length === 0) {
+                    setStatus('move/rotate: select atoms first');
+                    return;
+                }
+                // Compute the selection bbox in pixel space.
+                let minPx = Infinity, minPy = Infinity;
+                let maxPx = -Infinity, maxPy = -Infinity;
+                for (const a of selected) {
+                    const p = pixelFromModel(canvas, viewRef.current, a.x, a.y);
+                    if (p.px < minPx) minPx = p.px;
+                    if (p.px > maxPx) maxPx = p.px;
+                    if (p.py < minPy) minPy = p.py;
+                    if (p.py > maxPy) maxPy = p.py;
+                }
+                // Qt uses the strict scene-rect bbox; we add a small padding
+                // so single-atom selections (zero-area bbox) are still
+                // grabbable from a few pixels around the atom dot.
+                const pad = 8;
+                const insideBbox = px >= minPx - pad && px <= maxPx + pad &&
+                    py >= minPy - pad && py <= maxPy + pad;
+                if (!insideBbox) {
+                    setStatus('move/rotate: drag from inside the selection');
+                    return;
+                }
+                // Pivot for the delta math: use the bbox centroid; the actual
+                // grabbed atom is just for status text.
+                const grabbedCenter = modelFromPixel(canvas, viewRef.current,
+                    (minPx + maxPx) / 2, (minPy + maxPy) / 2);
                 atomDragRef.current = {
-                    grabbedIdx: atomHit,
-                    grabbedFromX: grabbed.x,
-                    grabbedFromY: grabbed.y,
-                    atoms: selectedAtoms.map((x) => ({
+                    grabbedIdx: selected[0].i,
+                    grabbedFromX: grabbedCenter.x,
+                    grabbedFromY: grabbedCenter.y,
+                    atoms: selected.map((x) => ({
                         idx: x.i,
                         fromX: x.x,
                         fromY: x.y,
@@ -903,7 +948,21 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 };
                 return;
             }
-            // Press on a bond: let onClick handle the bond toggle.
+
+            if (tool !== 'select') return;
+
+            let rd: RenderDesc = BLANK_DESC;
+            try {
+                rd = JSON.parse(model.description()) as RenderDesc;
+            } catch {
+                rd = BLANK_DESC;
+            }
+            // Qt's select tool does NOT drag-move atoms — it only rubber-band
+            // selects. Drag-move lives on the Move/Rotate tool. So we let
+            // mousedown on an atom/bond fall through to onClick (which applies
+            // the modifier-based select), and only start a rubber-band when
+            // mousedown lands on empty canvas.
+            if (nearestAtomIndex(canvas, viewRef.current, rd.atoms, px, py) >= 0) return;
             if (nearestBondIndex(canvas, viewRef.current, rd, px, py) >= 0) return;
 
             setDragRect({
@@ -1479,12 +1538,14 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         Select tool is active. */}
                     <div style={{
                         ...styles.selectSection,
-                        ...(tool === 'select' ? styles.selectSectionActive : {}),
+                        ...(tool === 'select' || tool === 'move-rotate'
+                            ? styles.selectSectionActive
+                            : {}),
                     }}>
                         <div style={styles.sectionLabel}>SELECT</div>
                         <div style={styles.row3}>
                             <IconButton icon='select_square' testid='tool-select'
-                                title='Select'
+                                title='Select (Ctrl=toggle, Shift=add)'
                                 active={tool === 'select'}
                                 onClick={() => {
                                     setTool('select');
@@ -1493,8 +1554,13 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 }} />
                             <IconButton icon='select_move_rotate'
                                 testid='tool-move-rotate'
-                                title='Move and Rotate'
-                                onClick={() => comingSoon('Move/Rotate tool')} />
+                                title='Move and Rotate (drag from inside selection)'
+                                active={tool === 'move-rotate'}
+                                onClick={() => {
+                                    setTool('move-rotate');
+                                    setPendingBondAtom(null);
+                                    setStatus('move/rotate mode');
+                                }} />
                             <IconButton icon='mode_erase'
                                 testid='tool-erase'
                                 title='Erase'
@@ -1653,7 +1719,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         ref={canvasRef}
                         width={CANVAS_W}
                         height={CANVAS_H}
-                        style={styles.canvas}
+                        style={{
+                            ...styles.canvas,
+                            cursor: tool === 'move-rotate' ? 'move' : 'crosshair',
+                        }}
                         onClick={onCanvasClick}
                         onMouseDown={onCanvasMouseDown}
                         onMouseMove={onCanvasMove}

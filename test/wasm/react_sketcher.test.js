@@ -103,7 +103,7 @@ test.describe('React Sketcher', () => {
         expect([rd.atoms.length, rd.bonds.length]).toEqual([2, 1]);
     });
 
-    test('select tool toggles atom selection and renders sel flag', async ({
+    test('select tool: plain=replace, Ctrl=toggle, Shift=add (Qt modifiers)', async ({
         page,
     }) => {
         const canvas = page.getByTestId('sketcher-canvas');
@@ -112,28 +112,40 @@ test.describe('React Sketcher', () => {
         await canvas.click({ position: { x: 400, y: 180 } });
 
         await page.getByTestId('tool-select').click();
-        // Toggle atoms 0 and 2 by clicking at their pixel positions.
-        await canvas.click({ position: { x: 120, y: 180 } });
-        await canvas.click({ position: { x: 400, y: 180 } });
 
+        // Plain click on atom 0 → replace selection with just atom 0.
+        await canvas.click({ position: { x: 120, y: 180 } });
         let rd = await snapshot(page);
-        expect(rd.atoms.map((a) => !!a.sel)).toEqual([true, false, true]);
-        expect(
-            await page.evaluate(() => window.SketcherModel.hasSelection()),
-        ).toBe(true);
+        expect(rd.atoms.map((a) => !!a.sel)).toEqual([true, false, false]);
 
-        // Re-click atom 0 to deselect it.
-        await canvas.click({ position: { x: 120, y: 180 } });
+        // Shift+click on atom 2 → add atom 2 (keeps atom 0).
+        await canvas.click({ position: { x: 400, y: 180 }, modifiers: ['Shift'] });
+        rd = await snapshot(page);
+        expect(rd.atoms.map((a) => !!a.sel)).toEqual([true, false, true]);
+
+        // Ctrl+click on atom 0 → toggle atom 0 off (atom 2 stays selected).
+        await canvas.click({ position: { x: 120, y: 180 }, modifiers: ['ControlOrMeta'] });
         rd = await snapshot(page);
         expect(rd.atoms.map((a) => !!a.sel)).toEqual([false, false, true]);
 
-        // Click empty area to clear remaining selection.
+        // Ctrl+click on atom 1 → toggle atom 1 on (additive).
+        await canvas.click({ position: { x: 260, y: 180 }, modifiers: ['ControlOrMeta'] });
+        rd = await snapshot(page);
+        expect(rd.atoms.map((a) => !!a.sel)).toEqual([false, true, true]);
+
+        // Plain click on empty area → clears.
         await canvas.click({ position: { x: 50, y: 50 } });
         rd = await snapshot(page);
         expect(rd.atoms.some((a) => a.sel)).toBe(false);
         expect(
             await page.evaluate(() => window.SketcherModel.hasSelection()),
         ).toBe(false);
+
+        // Plain click on atom while another atom is selected → replace.
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        rd = await snapshot(page);
+        expect(rd.atoms.map((a) => !!a.sel)).toEqual([false, true, false]);
     });
 
     test('delete-selected removes the selection and is undoable', async ({
@@ -234,7 +246,7 @@ test.describe('React Sketcher', () => {
         expect(rd.bonds.every((b) => b.sel)).toBe(true);
     });
 
-    test('drag-to-move atom: live preview + undoable commit', async ({
+    test('drag-to-move atom (move-rotate tool): live preview + undoable commit', async ({
         page,
     }) => {
         const canvas = page.getByTestId('sketcher-canvas');
@@ -245,13 +257,13 @@ test.describe('React Sketcher', () => {
         // Capture original coords of atom 0.
         const before = await snapshot(page);
         const a0Before = before.atoms[0];
+        const a1Before = before.atoms[1];
 
-        // Select atom 1 first — moving atom 0 must NOT clear that selection.
+        // Qt's move-rotate tool only drags atoms inside the selection bbox.
+        // Select atom 0 first, then switch to move-rotate.
         await page.getByTestId('tool-select').click();
-        await canvas.click({ position: { x: 260, y: 180 } });
-        expect(
-            await page.evaluate(() => window.SketcherModel.isAtomSelected(1)),
-        ).toBe(true);
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-move-rotate').click();
 
         // Drag atom 0 to a clearly different pixel position.
         const box = await canvas.boundingBox();
@@ -267,9 +279,13 @@ test.describe('React Sketcher', () => {
         const after = await snapshot(page);
         expect(after.atoms[0].x).not.toBeCloseTo(a0Before.x, 3);
         expect(after.atoms[0].y).not.toBeCloseTo(a0Before.y, 3);
-        // Atom 1's selection survives the move.
+        // Atom 1 (unselected) didn't move.
+        expect(after.atoms[1].x).toBeCloseTo(a1Before.x, 3);
+        expect(after.atoms[1].y).toBeCloseTo(a1Before.y, 3);
+        // Atom 0's selection survives the move (per Qt, drag-translate
+        // doesn't reindex so selection is preserved).
         expect(
-            await page.evaluate(() => window.SketcherModel.isAtomSelected(1)),
+            await page.evaluate(() => window.SketcherModel.isAtomSelected(0)),
         ).toBe(true);
 
         // Undo restores the original position.
@@ -283,6 +299,58 @@ test.describe('React Sketcher', () => {
         const redone = await snapshot(page);
         expect(redone.atoms[0].x).toBeCloseTo(after.atoms[0].x, 3);
         expect(redone.atoms[0].y).toBeCloseTo(after.atoms[0].y, 3);
+    });
+
+    test('move-rotate tool refuses to drag when nothing is selected', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        const before = await snapshot(page);
+
+        await page.getByTestId('tool-move-rotate').click();
+        // No selection → drag is a no-op + status message.
+        const box = await canvas.boundingBox();
+        await page.mouse.move(box.x + 120, box.y + 180);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 220, box.y + 280, { steps: 6 });
+        await page.mouse.up();
+
+        const after = await snapshot(page);
+        expect(after.atoms[0].x).toBeCloseTo(before.atoms[0].x, 3);
+        expect(after.atoms[0].y).toBeCloseTo(before.atoms[0].y, 3);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/select atoms first/);
+    });
+
+    test('move-rotate tool refuses to drag from outside the selection bbox', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+        const before = await snapshot(page);
+
+        // Select only atom 0 (left side).
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+
+        await page.getByTestId('tool-move-rotate').click();
+        // Drag starts on atom 1 (right side, NOT selected, outside the
+        // bbox of the selection which is just atom 0).
+        const box = await canvas.boundingBox();
+        await page.mouse.move(box.x + 400, box.y + 180);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 450, box.y + 250, { steps: 6 });
+        await page.mouse.up();
+
+        const after = await snapshot(page);
+        // Nothing moved.
+        expect(after.atoms[0].x).toBeCloseTo(before.atoms[0].x, 3);
+        expect(after.atoms[1].x).toBeCloseTo(before.atoms[1].x, 3);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/inside the selection/);
     });
 
     test('drag-to-move on a multi-atom selection translates the whole group as one undo step', async ({
@@ -309,8 +377,10 @@ test.describe('React Sketcher', () => {
         const selected = await snapshot(page);
         expect(selected.atoms.map((a) => !!a.sel)).toEqual([true, true, false]);
 
-        // Grab atom 0 (selected) and drag it — atom 1 should follow by the
-        // same delta; atom 2 must stay put.
+        // Switch to move-rotate tool — drag-translate lives there per Qt.
+        await page.getByTestId('tool-move-rotate').click();
+        // Grab atom 0 (selected, inside bbox) and drag it — atom 1 should
+        // follow by the same delta; atom 2 must stay put.
         await page.mouse.move(box.x + 120, box.y + 180);
         await page.mouse.down();
         await page.mouse.move(box.x + 180, box.y + 250, { steps: 8 });
@@ -828,8 +898,11 @@ test.describe('React Sketcher', () => {
         await canvas.click({ position: { x: 260, y: 180 } });
         await canvas.click({ position: { x: 400, y: 180 } });
 
-        // Drag atom 1 onto atom 0 to collapse the layout.
+        // Select atom 1 then drag it onto atom 0 via the move-rotate tool
+        // (drag-translate lives there per Qt's move_rotate_scene_tool).
         await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-move-rotate').click();
         const box = await canvas.boundingBox();
         await page.mouse.move(box.x + 260, box.y + 180);
         await page.mouse.down();
@@ -947,14 +1020,13 @@ test.describe('React Sketcher', () => {
         page,
     }) => {
         // Several Qt-side widgets are present for visual fidelity but not yet
-        // ported (Move/Rotate, Erase, atom_query popup, periodic_table,
-        // bond_query, atom_chain, R-group, attachment point, reaction,
-        // monomeric mode, import/export/settings/help). All of them route
-        // through comingSoon() → setStatus(...) so users can tell the button
-        // is intentional rather than broken.
+        // ported (Erase, atom_query popup, periodic_table, bond_query,
+        // atom_chain, R-group, attachment point, reaction, monomeric mode,
+        // import/export/settings/help). All of them route through
+        // comingSoon() → setStatus(...) so users can tell the button is
+        // intentional rather than broken. (Move/Rotate was wired in Batch 3.)
         const status = page.getByTestId('sketcher-status');
         const stubs = [
-            ['tool-move-rotate', /Move\/Rotate/],
             ['tool-erase', /Erase tool/],
             ['atom-query', /Atom query/],
             ['periodic-table', /Periodic table/],
