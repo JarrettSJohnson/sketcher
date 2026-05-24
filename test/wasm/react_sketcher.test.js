@@ -1083,4 +1083,279 @@ test.describe('React Sketcher', () => {
         const cap = await page.evaluate(() => window.SketcherView.current.scale);
         expect(cap).toBeCloseTo(40, 6); // exactly DEFAULT_SCALE
     });
+
+    // ---- Keyboard shortcuts (Qt parity) -----------------------------------
+    // Qt sources: menu/sketcher_top_bar_menus.cpp:65-88 (Ctrl combos),
+    // sketcher_widget.cpp:1195-1310 (Space / Delete / 0-3 / D-T / +-= /
+    // single-letter elements), molviewer/view.cpp:230-251 (arrow-key pan).
+
+    test('Ctrl/Cmd+Z undoes; Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y redo', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        let rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+
+        await page.keyboard.press('ControlOrMeta+z');
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+
+        await page.keyboard.press('ControlOrMeta+Shift+z');
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+
+        await page.keyboard.press('ControlOrMeta+z');
+        await page.keyboard.press('ControlOrMeta+y');
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+    });
+
+    test('Ctrl/Cmd+A selects all, Ctrl/Cmd+D clears, Ctrl/Cmd+I inverts', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+
+        await page.keyboard.press('ControlOrMeta+a');
+        let rd = await snapshot(page);
+        expect(rd.atoms.every((a) => a.sel)).toBe(true);
+
+        await page.keyboard.press('ControlOrMeta+d');
+        rd = await snapshot(page);
+        expect(rd.atoms.some((a) => a.sel)).toBe(false);
+
+        // Select atom 0 manually then invert: 0 off, 1+2 on.
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.keyboard.press('ControlOrMeta+i');
+        rd = await snapshot(page);
+        expect(rd.atoms.map((a) => !!a.sel)).toEqual([false, true, true]);
+    });
+
+    test('Ctrl/Cmd+F fits the view (recenters offsets)', async ({ page }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+
+        // Pan first so the offsets are non-zero, then Ctrl+F should reset.
+        await page.keyboard.press('ArrowRight');
+        await page.keyboard.press('ArrowDown');
+        const panned = await page.evaluate(() => ({
+            offsetX: window.SketcherView.current.offsetX,
+            offsetY: window.SketcherView.current.offsetY,
+        }));
+        expect(panned.offsetX).not.toBe(0);
+        expect(panned.offsetY).not.toBe(0);
+
+        await page.keyboard.press('ControlOrMeta+f');
+        const fitted = await page.evaluate(() => {
+            const v = window.SketcherView.current;
+            const desc = JSON.parse(window.SketcherModel.description());
+            const xs = desc.atoms.map((a) => a.x);
+            const ys = desc.atoms.map((a) => a.y);
+            const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+            const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+            return { offsetX: v.offsetX, offsetY: v.offsetY, cx, cy };
+        });
+        // Fit puts the molecule centroid at the canvas center, i.e.
+        //   offsetX = -cx * scale  and  offsetY = cy * scale  (Y-flipped).
+        const scale = await page.evaluate(() => window.SketcherView.current.scale);
+        expect(fitted.offsetX).toBeCloseTo(-fitted.cx * scale, 3);
+        expect(fitted.offsetY).toBeCloseTo(fitted.cy * scale, 3);
+    });
+
+    test('arrow keys pan the view by half a bond length per press', async ({
+        page,
+    }) => {
+        // Need atoms in the scene so the view isn't visually empty, but the
+        // pan math is purely view-state and atom-independent.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 200 } });
+
+        const before = await page.evaluate(() => ({
+            scale: window.SketcherView.current.scale,
+            offsetX: window.SketcherView.current.offsetX,
+            offsetY: window.SketcherView.current.offsetY,
+        }));
+        // Qt: KEY_SCROLL_BOND_LENGTH_RATIO = 0.5 → step = 0.5 * scale px.
+        const step = 0.5 * before.scale;
+
+        await page.keyboard.press('ArrowRight');
+        let v = await page.evaluate(() => window.SketcherView.current);
+        expect(v.offsetX).toBeCloseTo(before.offsetX + step, 3);
+        expect(v.offsetY).toBeCloseTo(before.offsetY, 3);
+
+        await page.keyboard.press('ArrowLeft');
+        await page.keyboard.press('ArrowLeft');
+        v = await page.evaluate(() => window.SketcherView.current);
+        expect(v.offsetX).toBeCloseTo(before.offsetX - step, 3);
+
+        await page.keyboard.press('ArrowDown');
+        v = await page.evaluate(() => window.SketcherView.current);
+        expect(v.offsetY).toBeCloseTo(before.offsetY + step, 3);
+
+        await page.keyboard.press('ArrowUp');
+        await page.keyboard.press('ArrowUp');
+        v = await page.evaluate(() => window.SketcherView.current);
+        expect(v.offsetY).toBeCloseTo(before.offsetY - step, 3);
+    });
+
+    test('Space switches to Select tool when scene is non-empty', async ({
+        page,
+    }) => {
+        const status = page.getByTestId('sketcher-status');
+        const canvas = page.getByTestId('sketcher-canvas');
+
+        // Empty scene: Space is a no-op (Qt sketcher_widget.cpp:1217 guards
+        // on sceneIsEmpty).
+        await page.keyboard.press('Space');
+        await expect(status).not.toContainText('select mode');
+
+        // Add an atom, then Space activates Select.
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.keyboard.press('Space');
+        await expect(status).toContainText('select mode');
+        await expect(page.getByTestId('tool-select')).toHaveAttribute(
+            'aria-pressed',
+            'true',
+        );
+    });
+
+    test('Delete/Backspace remove the current selection', async ({ page }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.keyboard.press('Backspace');
+        let rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+
+        // Delete key works too.
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.keyboard.press('Delete');
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+    });
+
+    test('1 / 2 set bond order (single / double) and switch to bond tool', async ({
+        page,
+    }) => {
+        const status = page.getByTestId('sketcher-status');
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Need to be on a non-input target.
+        await canvas.click({ position: { x: 200, y: 200 } });
+
+        await page.keyboard.press('1');
+        await expect(status).toContainText(/bond mode: single/);
+        await expect(page.getByTestId('bond-single')).toHaveAttribute(
+            'aria-pressed',
+            'true',
+        );
+
+        await page.keyboard.press('2');
+        await expect(status).toContainText(/bond mode: double/);
+        await expect(page.getByTestId('bond-double')).toHaveAttribute(
+            'aria-pressed',
+            'true',
+        );
+    });
+
+    test('single-letter element shortcuts (c h n o p s f) switch atom + element', async ({
+        page,
+    }) => {
+        const status = page.getByTestId('sketcher-status');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 200 } }); // seed atom 0 = C
+
+        // 'o' → atom tool with element O. Next canvas click places an O.
+        await page.keyboard.press('o');
+        await expect(status).toContainText('element: O');
+        await canvas.click({ position: { x: 320, y: 200 } });
+        let rd = await snapshot(page);
+        expect(rd.atoms.map((a) => a.el)).toEqual(['C', 'O']);
+
+        // Cycle through the rest of the single-char elements.
+        for (const [k, el] of [
+            ['n', 'N'],
+            ['p', 'P'],
+            ['s', 'S'],
+            ['f', 'F'],
+            ['h', 'H'],
+            ['c', 'C'],
+        ]) {
+            await page.keyboard.press(k);
+            await expect(status).toContainText(`element: ${el}`);
+        }
+    });
+
+    test('+ / = / - adjust charge on the selection', async ({ page }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+
+        await page.keyboard.press('+');
+        let rd = await snapshot(page);
+        expect(rd.atoms[0].q).toBe(1);
+
+        await page.keyboard.press('=');
+        rd = await snapshot(page);
+        expect(rd.atoms[0].q).toBe(2);
+
+        await page.keyboard.press('-');
+        await page.keyboard.press('-');
+        await page.keyboard.press('-');
+        rd = await snapshot(page);
+        expect(rd.atoms[0].q).toBe(-1);
+    });
+
+    test('stub shortcuts (Ctrl+X/C/V, D/T isotope, 0/3 bond) surface a status', async ({
+        page,
+    }) => {
+        const status = page.getByTestId('sketcher-status');
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Need atoms so the shortcuts route to model-aware branches.
+        await canvas.click({ position: { x: 200, y: 200 } });
+
+        const checks = [
+            ['ControlOrMeta+x', /Cut/],
+            ['ControlOrMeta+c', /Copy/],
+            ['ControlOrMeta+v', /Paste/],
+            ['d', /Deuterium/],
+            ['t', /Tritium/],
+            ['0', /Zero bond/],
+            ['3', /Triple bond/],
+        ];
+        for (const [combo, pattern] of checks) {
+            await page.keyboard.press(combo);
+            await expect(status).toContainText(pattern);
+        }
+    });
+
+    test('shortcuts are suppressed while typing in an input', async ({ page }) => {
+        // SMILES Load input field is a normal <input>; pressing Backspace
+        // there must edit the field, not delete the selection.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+
+        const input = page.getByTestId('smiles-input');
+        await input.click();
+        await input.fill('CCO');
+        await page.keyboard.press('Backspace');
+
+        // Input now reads 'CC', and selection is intact (atoms unchanged).
+        await expect(input).toHaveValue('CC');
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+    });
 });

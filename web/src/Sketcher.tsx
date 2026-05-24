@@ -1375,46 +1375,170 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setStatus(`fit ${rd.atoms.length} atoms to canvas`);
     };
 
-    // Keyboard shortcuts match the Qt sketcher: Ctrl/Cmd+Z undo,
-    // Ctrl/Cmd+Shift+Z or Ctrl+Y redo, Del/Backspace deletes the selection,
-    // Ctrl/Cmd+A selects everything. We listen on window so the user doesn't
-    // have to focus the canvas first.
+    // Keyboard shortcuts mirror the Qt sketcher. Sources cross-referenced:
+    //   - undo/redo/cut/copy/paste/select-all/clear/invert/fit:
+    //     menu/sketcher_top_bar_menus.cpp:65-88
+    //   - Space + Backspace/Delete: sketcher_widget.cpp:1198-1224
+    //   - 0/1/2/3 (bond order), D/T (isotope), single-letter elements,
+    //     +/-/= (charge): sketcher_widget.cpp:1238-1308
+    //   - arrow-key pan with KEY_SCROLL_BOND_LENGTH_RATIO=0.5:
+    //     molviewer/view.cpp:230-251, constants.h:240
+    // We listen on window so the user doesn't have to focus the canvas first.
+    // Single-letter element shortcuts only cover atoms whose symbol is one
+    // character: H/B/C/N/O/F/P/S/K/V/Y/I/W/U in Qt; our React UI only
+    // currently exposes C/H/N/O/F/P/S as buttons (Cl/Si are 2-char so
+    // unreachable from a single keypress, matching Qt's limitation).
     useEffect(() => {
         function onKey(e: KeyboardEvent): void {
             const model = modelRef.current;
             if (!model) return;
-            // Ignore key events when the user is typing into an input.
             const target = e.target as HTMLElement | null;
             const tag = target?.tagName;
             if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) {
                 return;
             }
             const mod = e.ctrlKey || e.metaKey;
-            if (mod && !e.shiftKey && e.key.toLowerCase() === 'z') {
+            const key = e.key;
+            const lower = key.toLowerCase();
+
+            // -- Ctrl/Cmd combos first (avoid colliding with letter shortcuts).
+            if (mod && !e.shiftKey && lower === 'z') {
+                e.preventDefault(); doUndo(); return;
+            }
+            if (mod && ((e.shiftKey && lower === 'z') || lower === 'y')) {
+                e.preventDefault(); doRedo(); return;
+            }
+            if (mod && lower === 'a') {
+                e.preventDefault(); doSelectAll(); return;
+            }
+            if (mod && lower === 'd') {
+                e.preventDefault(); doClearSelection(); return;
+            }
+            if (mod && lower === 'i') {
+                e.preventDefault(); doInvertSelection(); return;
+            }
+            if (mod && lower === 'f') {
+                e.preventDefault(); doFit(); return;
+            }
+            if (mod && (lower === 'x' || lower === 'c' || lower === 'v')) {
+                // Cut / Copy / Paste — Qt routes through cut_copy_action_manager
+                // which isn't ported yet. Stub so the user can tell the
+                // shortcut was recognized.
                 e.preventDefault();
-                doUndo();
+                const which = lower === 'x' ? 'Cut' : lower === 'c' ? 'Copy' : 'Paste';
+                comingSoon(which);
                 return;
             }
-            if (mod && ((e.shiftKey && e.key.toLowerCase() === 'z') || e.key.toLowerCase() === 'y')) {
-                e.preventDefault();
-                doRedo();
-                return;
-            }
-            if (mod && e.key.toLowerCase() === 'a') {
-                e.preventDefault();
-                doSelectAll();
-                return;
-            }
-            if ((e.key === 'Delete' || e.key === 'Backspace') && !mod) {
+
+            // -- Non-mod shortcuts (skip if Ctrl/Cmd/Alt held).
+            if (mod || e.altKey) return;
+
+            if (key === 'Delete' || key === 'Backspace') {
                 if (model.hasSelection()) {
                     e.preventDefault();
                     doDeleteSelected();
                 }
+                return;
+            }
+
+            // Arrow-key pan (Qt molviewer/view.cpp:230-251). Half a bond
+            // length per keypress, in pixel terms = 0.5 * scale.
+            if (key === 'ArrowUp' || key === 'ArrowDown' ||
+                key === 'ArrowLeft' || key === 'ArrowRight') {
+                e.preventDefault();
+                const v = viewRef.current;
+                const dPx = 0.5 * v.scale;
+                let dx = 0, dy = 0;
+                if (key === 'ArrowUp') dy = -dPx;
+                else if (key === 'ArrowDown') dy = +dPx;
+                else if (key === 'ArrowRight') dx = +dPx;
+                else dx = -dPx;
+                setView({ ...v, offsetX: v.offsetX + dx, offsetY: v.offsetY + dy });
+                return;
+            }
+
+            // Space → switch to Select tool (only if scene is non-empty,
+            // per Qt sketcher_widget.cpp:1217). Use Space not " " because
+            // ' ' would scroll the page on some browsers.
+            if (key === ' ' || key === 'Spacebar') {
+                if (model.numAtoms() > 0) {
+                    e.preventDefault();
+                    setTool('select');
+                    setPendingBondAtom(null);
+                    setStatus('select mode');
+                }
+                return;
+            }
+
+            // 0/1/2/3 → bond order (Qt sketcher_widget.cpp:1252-1269).
+            if (key === '1' || key === '2') {
+                e.preventDefault();
+                const next = key === '1' ? 'single' : 'double';
+                setTool('bond');
+                setBondMode(next);
+                setStatus(`bond mode: ${next}`);
+                return;
+            }
+            if (key === '3') {
+                e.preventDefault();
+                comingSoon('Triple bond (needs popup component)');
+                return;
+            }
+            if (key === '0') {
+                e.preventDefault();
+                comingSoon('Zero bond');
+                return;
+            }
+
+            // + / = → adjust charge +1; - → -1. Qt requires a selection
+            // OR an atom under the cursor (it can apply on the fly); we
+            // only do the selection path here since cursor-targeting
+            // would need pointer-tracking state we don't carry yet.
+            if (key === '+' || key === '=') {
+                if (model.hasSelection()) {
+                    e.preventDefault();
+                    adjustCharge(+1);
+                }
+                return;
+            }
+            if (key === '-') {
+                if (model.hasSelection()) {
+                    e.preventDefault();
+                    adjustCharge(-1);
+                }
+                return;
+            }
+
+            // D / T → mutate selected atoms to deuterium / tritium (Qt
+            // sketcher_widget.cpp:1272-1283). MolModel doesn't expose
+            // isotope mutation yet, so stub.
+            if (lower === 'd' || lower === 't') {
+                e.preventDefault();
+                const iso = lower === 'd' ? 'Deuterium' : 'Tritium';
+                comingSoon(`${iso} isotope (needs MolModel.mutateAtoms)`);
+                return;
+            }
+
+            // Single-letter element shortcuts (Qt sketcher_widget.cpp:1287-1306).
+            // Only the elements present in our atom palette and whose symbol
+            // is a single character. Cl/Si are excluded since one keypress
+            // can't produce two characters.
+            const elementMap: Record<string, Element> = {
+                c: 'C', h: 'H', n: 'N', o: 'O',
+                p: 'P', s: 'S', f: 'F',
+            };
+            const upcase = lower.toUpperCase() as Element;
+            if (elementMap[lower] === upcase) {
+                e.preventDefault();
+                setTool('atom');
+                setElement(elementMap[lower]);
+                setStatus(`element: ${elementMap[lower]}`);
+                return;
             }
         }
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, []);
+    }, [setView]);
 
     // Features whose Qt counterparts exist in the UI files but whose C++ port
     // isn't here yet. Showing the buttons keeps the visual layout matching the
