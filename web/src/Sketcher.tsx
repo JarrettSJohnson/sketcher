@@ -16,7 +16,7 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 // to commit it. Undo/redo/clear go through the same UndoStack the C++ Boost
 // tests cover.
 
-type Tool = 'atom' | 'bond';
+type Tool = 'atom' | 'bond' | 'select';
 type Element = 'C' | 'O' | 'N';
 type BondOrder = 1 | 2 | 3;
 
@@ -25,11 +25,13 @@ interface AtomDesc {
     el: string;
     x: number;
     y: number;
+    sel?: boolean;
 }
 interface BondDesc {
     a: number;
     b: number;
     o: number;
+    sel?: boolean;
 }
 interface RenderDesc {
     atoms: AtomDesc[];
@@ -40,6 +42,7 @@ const CANVAS_W = 540;
 const CANVAS_H = 360;
 const SCALE = 40; // pixels per RDKit model unit
 const ATOM_HIT_RADIUS = 18; // pixels for click hit-test
+const BOND_HIT_RADIUS = 6; // pixels perpendicular to bond line
 const BLANK_DESC: RenderDesc = { atoms: [], bonds: [] };
 
 const ELEMENT_COLORS: Record<string, string> = {
@@ -87,6 +90,40 @@ function nearestAtomIndex(
     return bestIdx;
 }
 
+// Index of the bond whose pixel-space line segment is closest to (px,py),
+// or -1 when no bond is within BOND_HIT_RADIUS. Used by the select tool.
+function nearestBondIndex(
+    canvas: HTMLCanvasElement,
+    rd: RenderDesc,
+    pixelX: number,
+    pixelY: number,
+): number {
+    let bestIdx = -1;
+    let bestDist = BOND_HIT_RADIUS;
+    for (let i = 0; i < rd.bonds.length; ++i) {
+        const b = rd.bonds[i];
+        const a1 = rd.atoms[b.a];
+        const a2 = rd.atoms[b.b];
+        if (!a1 || !a2) continue;
+        const p1 = pixelFromModel(canvas, a1.x, a1.y);
+        const p2 = pixelFromModel(canvas, a2.x, a2.y);
+        const dx = p2.px - p1.px;
+        const dy = p2.py - p1.py;
+        const len2 = dx * dx + dy * dy;
+        if (len2 === 0) continue;
+        let t = ((pixelX - p1.px) * dx + (pixelY - p1.py) * dy) / len2;
+        t = Math.max(0, Math.min(1, t));
+        const qx = p1.px + t * dx;
+        const qy = p1.py + t * dy;
+        const d = Math.hypot(qx - pixelX, qy - pixelY);
+        if (d < bestDist) {
+            bestIdx = i;
+            bestDist = d;
+        }
+    }
+    return bestIdx;
+}
+
 function drawSketch(
     canvas: HTMLCanvasElement,
     rd: RenderDesc,
@@ -113,11 +150,21 @@ function drawSketch(
         ctx.stroke();
     }
 
-    ctx.strokeStyle = '#333';
-    ctx.lineWidth = 1.5;
-    for (const b of rd.bonds) {
+    for (let i = 0; i < rd.bonds.length; ++i) {
+        const b = rd.bonds[i];
         const p1 = pixelFromModel(canvas, rd.atoms[b.a].x, rd.atoms[b.a].y);
         const p2 = pixelFromModel(canvas, rd.atoms[b.b].x, rd.atoms[b.b].y);
+        if (b.sel) {
+            // Wide translucent highlight underneath the bond strokes.
+            ctx.strokeStyle = '#bfdbfe';
+            ctx.lineWidth = 8;
+            ctx.beginPath();
+            ctx.moveTo(p1.px, p1.py);
+            ctx.lineTo(p2.px, p2.py);
+            ctx.stroke();
+        }
+        ctx.strokeStyle = b.sel ? '#1d4ed8' : '#333';
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(p1.px, p1.py);
         ctx.lineTo(p2.px, p2.py);
@@ -148,13 +195,25 @@ function drawSketch(
         const { px, py } = pixelFromModel(canvas, a.x, a.y);
         const isPending = pendingAtomIdx === a.i;
         const isHover = hoverAtomIdx === a.i;
+        if (a.sel) {
+            // Selection ring sits behind the hover/pending fills so it doesn't
+            // disappear when the user mouses over a selected atom.
+            ctx.fillStyle = '#1d4ed8';
+            ctx.beginPath();
+            ctx.arc(px, py, 13, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.fillStyle = '#dbeafe';
+            ctx.beginPath();
+            ctx.arc(px, py, 10, 0, 2 * Math.PI);
+            ctx.fill();
+        }
         if (isPending || isHover) {
             ctx.fillStyle = isPending ? '#fbbf24' : '#dbeafe';
             ctx.beginPath();
             ctx.arc(px, py, 13, 0, 2 * Math.PI);
             ctx.fill();
         }
-        if (a.el === 'C' && !isPending && !isHover) {
+        if (a.el === 'C' && !isPending && !isHover && !a.sel) {
             // Carbon: just a dot so the user can see something's there.
             ctx.fillStyle = '#333';
             ctx.beginPath();
@@ -162,10 +221,18 @@ function drawSketch(
             ctx.fill();
             continue;
         }
-        ctx.fillStyle = 'white';
-        ctx.fillRect(px - 9, py - 9, 18, 18);
+        if (a.el !== 'C') {
+            ctx.fillStyle = 'white';
+            ctx.fillRect(px - 9, py - 9, 18, 18);
+        }
         ctx.fillStyle = ELEMENT_COLORS[a.el] ?? '#333';
-        ctx.fillText(a.el, px, py);
+        if (a.el === 'C' && a.sel && !isPending && !isHover) {
+            ctx.beginPath();
+            ctx.arc(px, py, 2.5, 0, 2 * Math.PI);
+            ctx.fill();
+        } else {
+            ctx.fillText(a.el, px, py);
+        }
     }
 }
 
@@ -177,6 +244,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const modelRef = useRef<MolModelInstance | null>(null);
     const subscriptionRef = useRef<number | null>(null);
+    const selectionSubscriptionRef = useRef<number | null>(null);
     const pendingRef = useRef<number | null>(null);
 
     const [tool, setTool] = useState<Tool>('atom');
@@ -196,8 +264,14 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             // reads model.description() to pick up the new state.
             bumpVersion();
         });
+        const selHandle = Module.mol_model_selection_subscribe(model, () => {
+            // Selection is non-undoable but visually distinct — re-render so
+            // the canvas picks up the new sel flags from description().
+            bumpVersion();
+        });
         modelRef.current = model;
         subscriptionRef.current = handle;
+        selectionSubscriptionRef.current = selHandle;
         // Expose for Playwright assertions, mirroring lean.html.
         (
             window as unknown as { SketcherModel?: MolModelInstance }
@@ -207,6 +281,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             if (subscriptionRef.current !== null) {
                 Module.mol_model_unsubscribe(subscriptionRef.current);
                 subscriptionRef.current = null;
+            }
+            if (selectionSubscriptionRef.current !== null) {
+                Module.mol_model_selection_unsubscribe(
+                    selectionSubscriptionRef.current,
+                );
+                selectionSubscriptionRef.current = null;
             }
             if (modelRef.current) {
                 modelRef.current.delete();
@@ -247,13 +327,43 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const px = e.clientX - rect.left;
             const py = e.clientY - rect.top;
 
-            let atoms: AtomDesc[] = [];
+            let rd: RenderDesc = BLANK_DESC;
             try {
-                atoms = (JSON.parse(model.description()) as RenderDesc).atoms;
+                rd = JSON.parse(model.description()) as RenderDesc;
             } catch {
-                atoms = [];
+                rd = BLANK_DESC;
             }
-            const hit = nearestAtomIndex(canvas, atoms, px, py);
+            const hit = nearestAtomIndex(canvas, rd.atoms, px, py);
+
+            if (tool === 'select') {
+                if (hit >= 0) {
+                    const wasSelected = model.isAtomSelected(hit);
+                    model.setAtomSelected(hit, !wasSelected);
+                    setStatus(
+                        `${wasSelected ? 'deselect' : 'select'} atom #${hit}`,
+                    );
+                    return;
+                }
+                const bondHit = nearestBondIndex(canvas, rd, px, py);
+                if (bondHit >= 0) {
+                    const wasSelected = model.isBondSelected(bondHit);
+                    model.setBondSelected(bondHit, !wasSelected);
+                    setStatus(
+                        `${wasSelected ? 'deselect' : 'select'} bond #${bondHit}`,
+                    );
+                    return;
+                }
+                // Click on empty area clears the selection.
+                if (model.hasSelection()) {
+                    model.clearSelection();
+                    setStatus('cleared selection');
+                } else {
+                    setStatus(
+                        'select mode: click an atom or bond (or use Select All)',
+                    );
+                }
+                return;
+            }
 
             if (tool === 'atom') {
                 if (hit >= 0) {
@@ -340,6 +450,23 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setPendingBondAtom(null);
         setStatus('cleared');
     };
+    const doSelectAll = (): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        model.selectAll();
+        setStatus('selected all');
+    };
+    const doDeleteSelected = (): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        if (!model.hasSelection()) {
+            setStatus('nothing selected to delete');
+            return;
+        }
+        model.deleteSelected();
+        setPendingBondAtom(null);
+        setStatus('deleted selection');
+    };
 
     return (
         <section style={styles.body}>
@@ -350,6 +477,15 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             </p>
 
             <div style={styles.toolbar}>
+                <ToolButton
+                    label='Select'
+                    active={tool === 'select'}
+                    onClick={() => {
+                        setTool('select');
+                        setPendingBondAtom(null);
+                    }}
+                    testid='tool-select'
+                />
                 <ToolButton
                     label='Atom'
                     active={tool === 'atom'}
@@ -389,6 +525,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     />
                 ))}
                 <span style={styles.divider} />
+                <ActionButton
+                    label='Select all'
+                    onClick={doSelectAll}
+                    testid='select-all'
+                />
+                <ActionButton
+                    label='Delete selected'
+                    onClick={doDeleteSelected}
+                    testid='delete-selected'
+                />
                 <ActionButton label='Undo' onClick={doUndo} testid='undo' />
                 <ActionButton label='Redo' onClick={doRedo} testid='redo' />
                 <ActionButton label='Clear' onClick={doClear} testid='clear' />

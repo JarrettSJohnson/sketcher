@@ -192,4 +192,72 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
         expect(result.afterRemove).toEqual([2, 0]);
         expect(result.afterUndo).toEqual([3, 2]);
     });
+
+    test('selection: toggle, render-description flag, and deleteSelected', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('C', 0, 0);
+            m.addAtom('C', 1.5, 0);
+            m.addAtom('O', 3.0, 0);
+            m.addBond(0, 1, 1);
+            m.addBond(1, 2, 1);
+
+            m.setAtomSelected(1, true);
+            m.setBondSelected(0, true);
+            const rd1 = JSON.parse(m.description());
+
+            const hasSel = m.hasSelection();
+            const atomSelFlags = rd1.atoms.map(a => !!a.sel);
+            const bondSelFlags = rd1.bonds.map(b => !!b.sel);
+
+            m.deleteSelected(); // removes atom 1 (and incident bonds) + bond 0
+            const afterDelete = [m.numAtoms(), m.numBonds()];
+            const selAfterDelete = m.hasSelection();
+
+            m.undo(); // restores everything; selection stays cleared
+            const afterUndo = [m.numAtoms(), m.numBonds()];
+            const selAfterUndo = m.hasSelection();
+            m.delete();
+            return {
+                hasSel, atomSelFlags, bondSelFlags,
+                afterDelete, selAfterDelete,
+                afterUndo, selAfterUndo,
+            };
+        });
+        expect(result.hasSel).toBe(true);
+        expect(result.atomSelFlags).toEqual([false, true, false]);
+        expect(result.bondSelFlags).toEqual([true, false]);
+        expect(result.afterDelete).toEqual([2, 0]);
+        expect(result.selAfterDelete).toBe(false);
+        expect(result.afterUndo).toEqual([3, 2]);
+        expect(result.selAfterUndo).toBe(false);
+    });
+
+    test('selectionChanged fires independently from modelChanged', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('C', 0, 0);
+            m.addAtom('C', 1.5, 0);
+
+            let modelFired = 0;
+            let selFired = 0;
+            const h1 = window.Module.mol_model_subscribe(m, () => { ++modelFired; });
+            const h2 = window.Module.mol_model_selection_subscribe(m, () => { ++selFired; });
+
+            m.setAtomSelected(0, true);   // sel++, model 0
+            m.setAtomSelected(0, true);   // no-op
+            m.setAtomSelected(1, true);   // sel++
+            m.selectAll();                 // already complete, no-op
+            m.clearSelection();           // sel++
+            m.setAtomSelected(0, true);   // sel++
+            m.addAtom('O', 3, 0);         // mutation: clears selection -> sel++; model++
+
+            window.Module.mol_model_unsubscribe(h1);
+            window.Module.mol_model_selection_unsubscribe(h2);
+            m.delete();
+            return { modelFired, selFired };
+        });
+        expect(result.modelFired).toBe(1);
+        expect(result.selFired).toBe(5);
+    });
 });

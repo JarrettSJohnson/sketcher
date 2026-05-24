@@ -42,8 +42,13 @@ using schrodinger::rdkit_extensions::to_rdkit;
  * lean.html and Playwright. The caller is responsible for ensuring `mol` has
  * a conformer — typically by calling compute2DCoords first for parsed mols,
  * or by relying on the model to maintain coords for interactive ones.
+ *
+ * When `model` is non-null, atoms and bonds carry a `"sel": true` flag when
+ * they're in the model's selection set. Parsed-from-SMILES callers pass null.
  */
-std::string mol_to_render_description(const RDKit::RWMol& mol)
+std::string mol_to_render_description(
+    const RDKit::RWMol& mol,
+    const schrodinger::sketcher_core::MolModel* model = nullptr)
 {
     if (mol.getNumAtoms() == 0) {
         return R"({"atoms":[],"bonds":[]})";
@@ -62,7 +67,11 @@ std::string mol_to_render_description(const RDKit::RWMol& mol)
         }
         os << "{\"i\":" << i << ",\"el\":\""
            << mol.getAtomWithIdx(i)->getSymbol() << "\",\"x\":" << p.x
-           << ",\"y\":" << p.y << '}';
+           << ",\"y\":" << p.y;
+        if (model != nullptr && model->isAtomSelected(i)) {
+            os << ",\"sel\":true";
+        }
+        os << '}';
     }
     os << "],\"bonds\":[";
     for (unsigned int i = 0; i < mol.getNumBonds(); ++i) {
@@ -72,7 +81,11 @@ std::string mol_to_render_description(const RDKit::RWMol& mol)
         }
         os << "{\"a\":" << b->getBeginAtomIdx()
            << ",\"b\":" << b->getEndAtomIdx()
-           << ",\"o\":" << b->getBondTypeAsDouble() << '}';
+           << ",\"o\":" << b->getBondTypeAsDouble();
+        if (model != nullptr && model->isBondSelected(i)) {
+            os << ",\"sel\":true";
+        }
+        os << '}';
     }
     os << "]}";
     return os.str();
@@ -240,14 +253,52 @@ class MolModelJS
         return m_model.numBonds();
     }
 
+    // -- Selection (transient UI state, not undoable) ---------------------
+    void setAtomSelected(unsigned int idx, bool selected)
+    {
+        m_model.setAtomSelected(idx, selected);
+    }
+    void setBondSelected(unsigned int idx, bool selected)
+    {
+        m_model.setBondSelected(idx, selected);
+    }
+    bool isAtomSelected(unsigned int idx) const
+    {
+        return m_model.isAtomSelected(idx);
+    }
+    bool isBondSelected(unsigned int idx) const
+    {
+        return m_model.isBondSelected(idx);
+    }
+    bool hasSelection() const
+    {
+        return m_model.hasSelection();
+    }
+    void selectAll()
+    {
+        m_model.selectAll();
+    }
+    void clearSelection()
+    {
+        m_model.clearSelection();
+    }
+    void deleteSelected()
+    {
+        m_model.deleteSelected();
+    }
+
     std::string description() const
     {
-        return mol_to_render_description(m_model.mol());
+        return mol_to_render_description(m_model.mol(), &m_model);
     }
 
     Signal<>& modelChangedSignal()
     {
         return m_model.modelChanged;
+    }
+    Signal<>& selectionChangedSignal()
+    {
+        return m_model.selectionChanged;
     }
 
   private:
@@ -278,6 +329,35 @@ std::size_t mol_model_subscribe(MolModelJS& m, emscripten::val callback)
 void mol_model_unsubscribe(std::size_t handle)
 {
     mol_model_connections().handles.erase(handle);
+}
+
+// Separate registry for selection subscriptions — selection is a distinct
+// signal and JS-side handlers usually want to react independently of
+// modelChanged.
+struct MolModelSelectionConnections {
+    std::size_t next_id = 1;
+    std::unordered_map<std::size_t, Connection> handles;
+};
+
+MolModelSelectionConnections& mol_model_selection_connections()
+{
+    static MolModelSelectionConnections inst;
+    return inst;
+}
+
+std::size_t mol_model_selection_subscribe(MolModelJS& m,
+                                          emscripten::val callback)
+{
+    auto id = mol_model_selection_connections().next_id++;
+    mol_model_selection_connections().handles.emplace(
+        id, m.selectionChangedSignal().connect(
+                [callback]() mutable { callback(); }));
+    return id;
+}
+
+void mol_model_selection_unsubscribe(std::size_t handle)
+{
+    mol_model_selection_connections().handles.erase(handle);
 }
 
 } // namespace
@@ -321,9 +401,21 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("redo", &MolModelJS::redo)
         .function("numAtoms", &MolModelJS::numAtoms)
         .function("numBonds", &MolModelJS::numBonds)
+        .function("setAtomSelected", &MolModelJS::setAtomSelected)
+        .function("setBondSelected", &MolModelJS::setBondSelected)
+        .function("isAtomSelected", &MolModelJS::isAtomSelected)
+        .function("isBondSelected", &MolModelJS::isBondSelected)
+        .function("hasSelection", &MolModelJS::hasSelection)
+        .function("selectAll", &MolModelJS::selectAll)
+        .function("clearSelection", &MolModelJS::clearSelection)
+        .function("deleteSelected", &MolModelJS::deleteSelected)
         .function("description", &MolModelJS::description);
     emscripten::function("mol_model_subscribe", &mol_model_subscribe);
     emscripten::function("mol_model_unsubscribe", &mol_model_unsubscribe);
+    emscripten::function("mol_model_selection_subscribe",
+                         &mol_model_selection_subscribe);
+    emscripten::function("mol_model_selection_unsubscribe",
+                         &mol_model_selection_unsubscribe);
 }
 
 int main()

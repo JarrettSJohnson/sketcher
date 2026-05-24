@@ -14,6 +14,7 @@
 
 #include <functional>
 #include <string>
+#include <unordered_set>
 
 #include <GraphMol/Bond.h>
 #include <GraphMol/RWMol.h>
@@ -69,18 +70,51 @@ class MolModel : public UndoableModel
     /** Reset to an empty molecule. */
     void clear();
 
+    // -- Selection --------------------------------------------------------
+    // Selection is transient UI state, not undoable. Any mutation that may
+    // reindex atoms/bonds clears it (matching the simplest correct policy
+    // for index-based selection). For a stable-across-edits selection we'd
+    // need the original sketcher's tag system; deliberately scoped out.
+
+    void setAtomSelected(unsigned int atom_idx, bool selected);
+    void setBondSelected(unsigned int bond_idx, bool selected);
+    bool isAtomSelected(unsigned int atom_idx) const;
+    bool isBondSelected(unsigned int bond_idx) const;
+    bool hasSelection() const;
+    void selectAll();
+    void clearSelection();
+
+    const std::unordered_set<unsigned int>& selectedAtoms() const
+    {
+        return m_selected_atoms;
+    }
+    const std::unordered_set<unsigned int>& selectedBonds() const
+    {
+        return m_selected_bonds;
+    }
+
+    /** Undoably remove every selected atom and bond (and incident bonds of
+     *  selected atoms). No-op if the selection is empty. */
+    void deleteSelected();
+
     /** Fired once per applied/undone/redone mutation. */
     Signal<> modelChanged;
+
+    /** Fired when the selection set changes (independent of modelChanged). */
+    Signal<> selectionChanged;
 
   private:
     /**
      * Run a mutation under snapshot-based undo: capture an RWMol copy before
      * and after, then push a command whose redo/undo restore those copies.
+     * Also clears any current selection (selection is reset by any edit).
      */
     void doMutation(const std::function<void()>& mutate,
                     std::string description);
 
     RDKit::RWMol m_mol;
+    std::unordered_set<unsigned int> m_selected_atoms;
+    std::unordered_set<unsigned int> m_selected_bonds;
 };
 
 } // namespace sketcher_core

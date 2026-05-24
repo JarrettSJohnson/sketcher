@@ -207,3 +207,132 @@ BOOST_AUTO_TEST_CASE(testMacroGroupsMutationsIntoSingleUndoStep)
     BOOST_CHECK_EQUAL(m.numAtoms(), 2u);
     BOOST_CHECK_EQUAL(m.numBonds(), 1u);
 }
+
+BOOST_AUTO_TEST_CASE(testSelectionStartsEmptyAndTogglesAtomAndBond)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addBond(0, 1);
+
+    BOOST_CHECK(!m.hasSelection());
+    m.setAtomSelected(0, true);
+    BOOST_CHECK(m.isAtomSelected(0));
+    BOOST_CHECK(!m.isAtomSelected(1));
+    BOOST_CHECK(m.hasSelection());
+
+    m.setBondSelected(0, true);
+    BOOST_CHECK(m.isBondSelected(0));
+    BOOST_CHECK_EQUAL(m.selectedAtoms().size(), 1u);
+    BOOST_CHECK_EQUAL(m.selectedBonds().size(), 1u);
+
+    m.setAtomSelected(0, false);
+    BOOST_CHECK(!m.isAtomSelected(0));
+    BOOST_CHECK(m.hasSelection()); // bond still selected
+}
+
+BOOST_AUTO_TEST_CASE(testSelectionChangedFiresOnlyOnRealChanges)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+
+    int fired = 0;
+    auto conn = m.selectionChanged.connect([&] { ++fired; });
+
+    m.setAtomSelected(0, true);
+    BOOST_CHECK_EQUAL(fired, 1);
+    m.setAtomSelected(0, true); // already selected — no signal
+    BOOST_CHECK_EQUAL(fired, 1);
+    m.setAtomSelected(1, false); // already unselected — no signal
+    BOOST_CHECK_EQUAL(fired, 1);
+    m.setAtomSelected(0, false);
+    BOOST_CHECK_EQUAL(fired, 2);
+
+    // Out-of-range indices are silently ignored.
+    m.setAtomSelected(999u, true);
+    BOOST_CHECK_EQUAL(fired, 2);
+}
+
+BOOST_AUTO_TEST_CASE(testSelectAllAndClearSelection)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addAtom("O", 3.0, 0);
+    m.addBond(0, 1);
+    m.addBond(1, 2);
+
+    m.selectAll();
+    BOOST_CHECK_EQUAL(m.selectedAtoms().size(), 3u);
+    BOOST_CHECK_EQUAL(m.selectedBonds().size(), 2u);
+
+    m.clearSelection();
+    BOOST_CHECK(!m.hasSelection());
+
+    int fired = 0;
+    auto conn = m.selectionChanged.connect([&] { ++fired; });
+    m.clearSelection(); // already empty — no signal
+    BOOST_CHECK_EQUAL(fired, 0);
+}
+
+BOOST_AUTO_TEST_CASE(testMutationResetsSelectionAndFiresSelectionChanged)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+
+    m.setAtomSelected(0, true);
+    m.setAtomSelected(1, true);
+
+    int sel_fired = 0;
+    auto conn = m.selectionChanged.connect([&] { ++sel_fired; });
+
+    m.addAtom("O", 3.0, 0); // mutation: selection should reset
+    BOOST_CHECK(!m.hasSelection());
+    BOOST_CHECK_EQUAL(sel_fired, 1);
+}
+
+BOOST_AUTO_TEST_CASE(testDeleteSelectedRemovesAtomsAndBondsAndIsUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addAtom("O", 3.0, 0);
+    m.addAtom("N", 4.5, 0);
+    m.addBond(0, 1);
+    m.addBond(1, 2);
+    m.addBond(2, 3);
+
+    // Select atom 0 (drops bond 0 with it) and bond 2 explicitly.
+    m.setAtomSelected(0, true);
+    m.setBondSelected(2, true);
+    m.deleteSelected();
+
+    // 3 atoms left, bond 1 (1→2) survives, original bond 2 gone, bond 0 gone.
+    BOOST_CHECK_EQUAL(m.numAtoms(), 3u);
+    BOOST_CHECK_EQUAL(m.numBonds(), 1u);
+    BOOST_CHECK(!m.hasSelection());
+
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 4u);
+    BOOST_CHECK_EQUAL(m.numBonds(), 3u);
+}
+
+BOOST_AUTO_TEST_CASE(testDeleteSelectedIsNoOpWhenNothingSelected)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    const auto count_before = stack.count();
+
+    m.deleteSelected(); // no selection — should not push a command
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    BOOST_CHECK_EQUAL(m.numAtoms(), 2u);
+}

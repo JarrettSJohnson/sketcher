@@ -16,6 +16,14 @@ export interface MolModelInstance {
     redo(): void;
     numAtoms(): number;
     numBonds(): number;
+    setAtomSelected(idx: number, selected: boolean): void;
+    setBondSelected(idx: number, selected: boolean): void;
+    isAtomSelected(idx: number): boolean;
+    isBondSelected(idx: number): boolean;
+    hasSelection(): boolean;
+    selectAll(): void;
+    clearSelection(): void;
+    deleteSelected(): void;
     description(): string;
     delete(): void;
 }
@@ -29,6 +37,8 @@ export interface SketcherLeanModule {
     MolModel: MolModelConstructor;
     mol_model_subscribe(m: MolModelInstance, cb: () => void): number;
     mol_model_unsubscribe(handle: number): void;
+    mol_model_selection_subscribe(m: MolModelInstance, cb: () => void): number;
+    mol_model_selection_unsubscribe(handle: number): void;
     getExceptionMessage?: (ptr: number) => string[];
     [key: string]: unknown;
 }

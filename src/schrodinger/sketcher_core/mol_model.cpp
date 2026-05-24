@@ -12,8 +12,11 @@
 
 #include "schrodinger/sketcher_core/mol_model.h"
 
+#include <algorithm>
+#include <functional>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include <Geometry/point.h>
 #include <GraphMol/Atom.h>
@@ -52,6 +55,15 @@ MolModel::MolModel(UndoStack* stack) : UndoableModel(stack)
 void MolModel::doMutation(const std::function<void()>& mutate,
                           std::string description)
 {
+    // Selection is transient: any mutation that may reindex atoms/bonds
+    // resets it. Fire the selection signal eagerly so observers can react
+    // before modelChanged.
+    if (hasSelection()) {
+        m_selected_atoms.clear();
+        m_selected_bonds.clear();
+        selectionChanged.emit();
+    }
+
     RDKit::RWMol before(m_mol);
     mutate();
     RDKit::RWMol after(m_mol);
@@ -121,6 +133,119 @@ void MolModel::clear()
             install_empty_2d_conformer(m_mol);
         },
         "Clear");
+}
+
+// -- Selection ------------------------------------------------------------
+// Direct signal emission (rather than emitSignal) because selection changes
+// are deliberately not commands — they shouldn't go through AllowEditsScope.
+
+void MolModel::setAtomSelected(unsigned int atom_idx, bool selected)
+{
+    if (atom_idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    const bool changed = selected ? m_selected_atoms.insert(atom_idx).second
+                                  : (m_selected_atoms.erase(atom_idx) > 0);
+    if (changed) {
+        selectionChanged.emit();
+    }
+}
+
+void MolModel::setBondSelected(unsigned int bond_idx, bool selected)
+{
+    if (bond_idx >= m_mol.getNumBonds()) {
+        return;
+    }
+    const bool changed = selected ? m_selected_bonds.insert(bond_idx).second
+                                  : (m_selected_bonds.erase(bond_idx) > 0);
+    if (changed) {
+        selectionChanged.emit();
+    }
+}
+
+bool MolModel::isAtomSelected(unsigned int atom_idx) const
+{
+    return m_selected_atoms.count(atom_idx) > 0;
+}
+
+bool MolModel::isBondSelected(unsigned int bond_idx) const
+{
+    return m_selected_bonds.count(bond_idx) > 0;
+}
+
+bool MolModel::hasSelection() const
+{
+    return !m_selected_atoms.empty() || !m_selected_bonds.empty();
+}
+
+void MolModel::selectAll()
+{
+    const auto na = m_mol.getNumAtoms();
+    const auto nb = m_mol.getNumBonds();
+    const bool was_complete = m_selected_atoms.size() == na &&
+                              m_selected_bonds.size() == nb;
+    if (was_complete && na + nb > 0) {
+        return;
+    }
+    m_selected_atoms.clear();
+    m_selected_bonds.clear();
+    for (unsigned int i = 0; i < na; ++i) {
+        m_selected_atoms.insert(i);
+    }
+    for (unsigned int i = 0; i < nb; ++i) {
+        m_selected_bonds.insert(i);
+    }
+    selectionChanged.emit();
+}
+
+void MolModel::clearSelection()
+{
+    if (!hasSelection()) {
+        return;
+    }
+    m_selected_atoms.clear();
+    m_selected_bonds.clear();
+    selectionChanged.emit();
+}
+
+void MolModel::deleteSelected()
+{
+    if (!hasSelection()) {
+        return;
+    }
+    // Snapshot the selection: doMutation clears it before invoking the
+    // mutate lambda, so we capture indices first.
+    const auto sel_atoms = m_selected_atoms;
+    const auto sel_bonds = m_selected_bonds;
+    doMutation(
+        [this, sel_atoms, sel_bonds] {
+            // Resolve selected bond indices to (begin, end) pairs *before*
+            // any removal, since removeBond renumbers the bond array.
+            std::vector<std::pair<unsigned int, unsigned int>> bond_endpoints;
+            bond_endpoints.reserve(sel_bonds.size());
+            for (auto idx : sel_bonds) {
+                const auto* b = m_mol.getBondWithIdx(idx);
+                bond_endpoints.emplace_back(b->getBeginAtomIdx(),
+                                            b->getEndAtomIdx());
+            }
+            for (const auto& [a, b] : bond_endpoints) {
+                if (m_mol.getBondBetweenAtoms(a, b) != nullptr) {
+                    m_mol.removeBond(a, b);
+                }
+            }
+            // Atoms in descending index order so earlier indices stay valid.
+            // removeAtom drops incident bonds automatically.
+            std::vector<unsigned int> atoms_desc(sel_atoms.begin(),
+                                                 sel_atoms.end());
+            std::sort(atoms_desc.begin(), atoms_desc.end(),
+                      std::greater<unsigned int>());
+            for (auto idx : atoms_desc) {
+                if (idx < m_mol.getNumAtoms()) {
+                    m_mol.removeAtom(idx);
+                }
+            }
+        },
+        "Delete selection");
 }
 
 } // namespace sketcher_core
