@@ -32,6 +32,27 @@ test.describe('lean WASM render description', () => {
         expect(rd.atoms[0].nh).toBe(4);
     });
 
+    test('chiral SMILES produces wedge/dash bond dirs via wedgeMolBonds', async ({ page }) => {
+        // (R)-bromochlorofluoromethane — RDKit's wedgeMolBonds turns the
+        // parsed CIP descriptor into at least one wedge or dash bond.
+        const rd = await page.evaluate(() => {
+            const json = window.Module.render_description_from_smiles(
+                '[C@@H](F)(Cl)Br',
+            );
+            return JSON.parse(json);
+        });
+        const stereoBonds = rd.bonds.filter(
+            (b) => typeof b.dir === 'number' && b.dir !== 0,
+        );
+        expect(stereoBonds.length).toBeGreaterThan(0);
+        // dir values must be in the expected enum range (1=wedge, 2=dash,
+        // up to 6=unknown).
+        for (const b of stereoBonds) {
+            expect(b.dir).toBeGreaterThanOrEqual(1);
+            expect(b.dir).toBeLessThanOrEqual(6);
+        }
+    });
+
     test('aromatic SMILES sets arom flag on atoms and bonds', async ({ page }) => {
         const rd = await page.evaluate(() => {
             const json = window.Module.render_description_from_smiles('c1ccccc1');
@@ -328,5 +349,46 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
         });
         expect(result.modelFired).toBe(1);
         expect(result.selFired).toBe(5);
+    });
+
+    test('setBondDir round-trips through render description + undo', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('C', 0, 0);
+            m.addAtom('C', 1.5, 0);
+            m.addAtom('F', 3, 0);
+            m.addBond(0, 1, 1);
+            m.addBond(1, 2, 1);
+
+            const before = JSON.parse(m.description()).bonds.map(b => b.dir);
+
+            // Wedge bond 0; bond 1 should remain unset.
+            m.setBondDirUndoable(0, 1, 1);
+            const afterWedge = JSON.parse(m.description()).bonds.map(b => b.dir);
+
+            // Apply dash to selected bonds (both) via the macro entry point.
+            m.setBondSelected(0, true);
+            m.setBondSelected(1, true);
+            m.setBondDirForSelectedBonds(2);
+            const afterDashAll = JSON.parse(m.description()).bonds.map(b => b.dir);
+
+            // A single undo unwinds the macro.
+            m.undo();
+            const afterMacroUndo = JSON.parse(m.description()).bonds.map(b => b.dir);
+
+            // Another undo unwinds the original setBondDirUndoable.
+            m.undo();
+            const afterFirstUndo = JSON.parse(m.description()).bonds.map(b => b.dir);
+
+            m.delete();
+            return { before, afterWedge, afterDashAll, afterMacroUndo, afterFirstUndo };
+        });
+        // dir field is omitted (undefined) when BondDir is NONE.
+        expect(result.before).toEqual([undefined, undefined]);
+        expect(result.afterWedge).toEqual([1, undefined]);
+        expect(result.afterDashAll).toEqual([2, 2]);
+        // Macro undo restores both bonds at once: wedge on 0, none on 1.
+        expect(result.afterMacroUndo).toEqual([1, undefined]);
+        expect(result.afterFirstUndo).toEqual([undefined, undefined]);
     });
 });

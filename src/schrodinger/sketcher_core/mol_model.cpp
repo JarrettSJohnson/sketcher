@@ -177,6 +177,51 @@ void MolModel::moveAtomUndoable(unsigned int idx, double from_x, double from_y,
     doCommand(std::move(redo), std::move(undo), "Move atom");
 }
 
+void MolModel::setBondDirUndoable(unsigned int begin_idx, unsigned int end_idx,
+                                  RDKit::Bond::BondDir dir)
+{
+    auto* bond = m_mol.getBondBetweenAtoms(begin_idx, end_idx);
+    if (bond == nullptr) {
+        return;
+    }
+    const auto old_dir = bond->getBondDir();
+    if (old_dir == dir) {
+        return;
+    }
+    const unsigned int bond_idx = bond->getIdx();
+    // Custom command (not snapshot) — setting bond direction doesn't reindex
+    // and selection should survive. By-index access in the closures stays
+    // valid because no atoms/bonds are added or removed.
+    auto redo = [this, bond_idx, dir] {
+        m_mol.getBondWithIdx(bond_idx)->setBondDir(dir);
+        emitSignal(modelChanged);
+    };
+    auto undo = [this, bond_idx, old_dir] {
+        m_mol.getBondWithIdx(bond_idx)->setBondDir(old_dir);
+        emitSignal(modelChanged);
+    };
+    doCommand(std::move(redo), std::move(undo), "Set bond stereo");
+}
+
+void MolModel::setBondDirForSelectedBonds(RDKit::Bond::BondDir dir)
+{
+    if (m_selected_bonds.empty()) {
+        return;
+    }
+    // Snapshot indices before iterating (defensive — closures shouldn't
+    // mutate the set, but a single macro keeps the undo step atomic).
+    const std::vector<unsigned int> bonds(m_selected_bonds.begin(),
+                                          m_selected_bonds.end());
+    auto macro = createUndoMacro("Set stereo on selection");
+    for (auto idx : bonds) {
+        if (idx >= m_mol.getNumBonds()) {
+            continue;
+        }
+        const auto* b = m_mol.getBondWithIdx(idx);
+        setBondDirUndoable(b->getBeginAtomIdx(), b->getEndAtomIdx(), dir);
+    }
+}
+
 // -- Selection ------------------------------------------------------------
 // Direct signal emission (rather than emitSignal) because selection changes
 // are deliberately not commands — they shouldn't go through AllowEditsScope.

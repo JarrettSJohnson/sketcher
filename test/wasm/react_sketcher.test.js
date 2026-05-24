@@ -325,6 +325,44 @@ test.describe('React Sketcher', () => {
         expect(rd.bonds.some((b) => b.sel)).toBe(false);
     });
 
+    test('wedge / dash stereo buttons apply dir to selected bonds and undo', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Build a two-atom skeleton with one bond.
+        await canvas.click({ position: { x: 160, y: 200 } });
+        await canvas.click({ position: { x: 320, y: 200 } });
+        await page.getByTestId('tool-bond').click();
+        await canvas.click({ position: { x: 160, y: 200 } });
+        await canvas.click({ position: { x: 320, y: 200 } });
+
+        // Select the bond.
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 240, y: 200 } });
+
+        let rd = await snapshot(page);
+        expect(rd.bonds[0].sel).toBe(true);
+        expect(rd.bonds[0].dir).toBeUndefined();
+
+        await page.getByTestId('stereo-wedge').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].dir).toBe(1);
+        // Wedge is per-bond stereo; selection survives the stereo edit.
+        expect(rd.bonds[0].sel).toBe(true);
+
+        await page.getByTestId('stereo-dash').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].dir).toBe(2);
+
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].dir).toBe(1);
+
+        await page.getByTestId('stereo-none').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].dir).toBeUndefined();
+    });
+
     test('interactively added O atom carries chemistry annotations', async ({
         page,
     }) => {

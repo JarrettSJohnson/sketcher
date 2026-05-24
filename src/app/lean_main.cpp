@@ -18,6 +18,7 @@
 
 #include <GraphMol/Atom.h>
 #include <GraphMol/Bond.h>
+#include <GraphMol/Chirality.h>
 #include <GraphMol/Conformer.h>
 #include <GraphMol/RWMol.h>
 
@@ -108,6 +109,13 @@ std::string mol_to_render_description(
         os << "{\"a\":" << b->getBeginAtomIdx()
            << ",\"b\":" << b->getEndAtomIdx()
            << ",\"o\":" << b->getBondTypeAsDouble();
+        const auto dir = b->getBondDir();
+        if (dir != RDKit::Bond::BondDir::NONE) {
+            // Cast to underlying enum value — JS side knows the encoding
+            // (1=BEGINWEDGE, 2=BEGINDASH, ...). Omitted for the common
+            // NONE case to keep the description shape minimal.
+            os << ",\"dir\":" << static_cast<int>(dir);
+        }
         if (b->getIsAromatic()) {
             os << ",\"arom\":true";
         }
@@ -137,6 +145,13 @@ std::string render_description_from_text(const std::string& text,
             rw.updatePropertyCache(/*strict=*/false);
         } catch (...) {
             // Swallow: render will fall back to nh=0 for affected atoms.
+        }
+        // Translate parsed CIP chirality into 2D wedge/dash bond dirs so
+        // SMILES like [C@@H](F)(Cl)Br renders with a wedge. Swallow on
+        // failure — fallback is flat bonds, which is still readable.
+        try {
+            RDKit::Chirality::wedgeMolBonds(rw, &rw.getConformer());
+        } catch (...) {
         }
     }
     return mol_to_render_description(rw);
@@ -281,6 +296,16 @@ class MolModelJS
                           double to_x, double to_y)
     {
         m_model.moveAtomUndoable(idx, from_x, from_y, to_x, to_y);
+    }
+    void setBondDirUndoable(unsigned int begin, unsigned int end, int dir)
+    {
+        m_model.setBondDirUndoable(
+            begin, end, static_cast<RDKit::Bond::BondDir>(dir));
+    }
+    void setBondDirForSelectedBonds(int dir)
+    {
+        m_model.setBondDirForSelectedBonds(
+            static_cast<RDKit::Bond::BondDir>(dir));
     }
     void undo()
     {
@@ -445,6 +470,9 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("clear", &MolModelJS::clear)
         .function("setAtomPos", &MolModelJS::setAtomPos)
         .function("moveAtomUndoable", &MolModelJS::moveAtomUndoable)
+        .function("setBondDirUndoable", &MolModelJS::setBondDirUndoable)
+        .function("setBondDirForSelectedBonds",
+                  &MolModelJS::setBondDirForSelectedBonds)
         .function("undo", &MolModelJS::undo)
         .function("redo", &MolModelJS::redo)
         .function("numAtoms", &MolModelJS::numAtoms)

@@ -408,6 +408,82 @@ BOOST_AUTO_TEST_CASE(testMoveAtomUndoablePreservesSelection)
     BOOST_CHECK_EQUAL(sel_fires, 0);
 }
 
+BOOST_AUTO_TEST_CASE(testSetBondDirUndoableRoundTripsAndPreservesSelection)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondDir(),
+                      RDKit::Bond::BondDir::NONE);
+
+    m.setBondSelected(0, true);
+    int sel_fires = 0;
+    auto conn = m.selectionChanged.connect([&sel_fires] { ++sel_fires; });
+
+    m.setBondDirUndoable(0, 1, RDKit::Bond::BondDir::BEGINWEDGE);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondDir(),
+                      RDKit::Bond::BondDir::BEGINWEDGE);
+    // Selection survives — setting bond direction doesn't reindex.
+    BOOST_CHECK(m.isBondSelected(0));
+    BOOST_CHECK_EQUAL(sel_fires, 0);
+
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondDir(),
+                      RDKit::Bond::BondDir::NONE);
+    BOOST_CHECK(m.isBondSelected(0));
+
+    stack.redo();
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondDir(),
+                      RDKit::Bond::BondDir::BEGINWEDGE);
+}
+
+BOOST_AUTO_TEST_CASE(testSetBondDirNoOpsWhenBondMissingOrUnchanged)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    const auto count_after_atoms = stack.count();
+    // No bond exists between 0 and 1 yet — should be a silent no-op
+    // (no undo command pushed).
+    m.setBondDirUndoable(0, 1, RDKit::Bond::BondDir::BEGINWEDGE);
+    BOOST_CHECK_EQUAL(stack.count(), count_after_atoms);
+
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    const auto count_after_bond = stack.count();
+    // Setting NONE on a bond that's already NONE — no command pushed.
+    m.setBondDirUndoable(0, 1, RDKit::Bond::BondDir::NONE);
+    BOOST_CHECK_EQUAL(stack.count(), count_after_bond);
+}
+
+BOOST_AUTO_TEST_CASE(testSetBondDirForSelectedBondsAppliesAsSingleUndoStep)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    m.addAtom("C", 2, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    m.addBond(1, 2, RDKit::Bond::SINGLE);
+    m.setBondSelected(0, true);
+    m.setBondSelected(1, true);
+
+    m.setBondDirForSelectedBonds(RDKit::Bond::BondDir::BEGINDASH);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondDir(),
+                      RDKit::Bond::BondDir::BEGINDASH);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(1)->getBondDir(),
+                      RDKit::Bond::BondDir::BEGINDASH);
+
+    // A single undo must clear stereo on both bonds — they live in one macro.
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondDir(),
+                      RDKit::Bond::BondDir::NONE);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(1)->getBondDir(),
+                      RDKit::Bond::BondDir::NONE);
+}
+
 BOOST_AUTO_TEST_CASE(testPropertyCacheRefreshExposesImplicitHs)
 {
     // doMutation refreshes the implicit-valence cache so callers can read

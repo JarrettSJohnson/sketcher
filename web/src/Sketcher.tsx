@@ -37,7 +37,13 @@ interface BondDesc {
     o: number;
     sel?: boolean;
     arom?: boolean;
+    dir?: number; // RDKit::Bond::BondDir: 1=BEGINWEDGE, 2=BEGINDASH
 }
+
+// Mirror RDKit::Bond::BondDir for the values we render.
+const BOND_DIR_NONE = 0;
+const BOND_DIR_WEDGE = 1;
+const BOND_DIR_DASH = 2;
 interface RenderDesc {
     atoms: AtomDesc[];
     bonds: BondDesc[];
@@ -203,11 +209,52 @@ function drawSketch(
             ctx.stroke();
         }
         ctx.strokeStyle = b.sel ? '#1d4ed8' : '#333';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(p1.px, p1.py);
-        ctx.lineTo(p2.px, p2.py);
-        ctx.stroke();
+        ctx.fillStyle = b.sel ? '#1d4ed8' : '#333';
+        // Stereo bonds: wedge is a filled triangle expanding from begin to
+        // end atom; dash is a sequence of perpendicular bars that grow in
+        // length toward the end atom. Both replace the plain line stroke
+        // for single bonds (b.o === 1); for double/triple we still draw
+        // the second stroke so the order is visible alongside the stereo.
+        const dir = b.dir ?? BOND_DIR_NONE;
+        if (dir === BOND_DIR_WEDGE && b.o === 1) {
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy);
+            const ox = (-dy / len) * 4;
+            const oy = (dx / len) * 4;
+            ctx.beginPath();
+            ctx.moveTo(p1.px, p1.py);
+            ctx.lineTo(p2.px + ox, p2.py + oy);
+            ctx.lineTo(p2.px - ox, p2.py - oy);
+            ctx.closePath();
+            ctx.fill();
+        } else if (dir === BOND_DIR_DASH && b.o === 1) {
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy);
+            const ux = dx / len;
+            const uy = dy / len;
+            const px = -uy;
+            const py2 = ux;
+            const dashCount = 6;
+            ctx.lineWidth = 1.5;
+            for (let k = 1; k <= dashCount; ++k) {
+                const t = k / (dashCount + 1);
+                const cx = p1.px + dx * t;
+                const cy = p1.py + dy * t;
+                const halfW = 1 + 3 * t; // grows toward the end atom
+                ctx.beginPath();
+                ctx.moveTo(cx + px * halfW, cy + py2 * halfW);
+                ctx.lineTo(cx - px * halfW, cy - py2 * halfW);
+                ctx.stroke();
+            }
+        } else {
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(p1.px, p1.py);
+            ctx.lineTo(p2.px, p2.py);
+            ctx.stroke();
+        }
         if (b.o === 2 || b.o === 3) {
             const dx = p2.px - p1.px;
             const dy = p2.py - p1.py;
@@ -754,6 +801,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setPendingBondAtom(null);
         setStatus('deleted selection');
     };
+    const applyStereo = (dir: number, label: string): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        if (!model.hasSelection()) {
+            setStatus('select a bond first');
+            return;
+        }
+        model.setBondDirForSelectedBonds(dir);
+        setStatus(label);
+    };
 
     return (
         <section style={styles.body}>
@@ -821,6 +878,23 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     label='Delete selected'
                     onClick={doDeleteSelected}
                     testid='delete-selected'
+                />
+                <ActionButton
+                    label='Wedge'
+                    onClick={() => applyStereo(BOND_DIR_WEDGE, 'wedge applied')}
+                    testid='stereo-wedge'
+                />
+                <ActionButton
+                    label='Dash'
+                    onClick={() => applyStereo(BOND_DIR_DASH, 'dash applied')}
+                    testid='stereo-dash'
+                />
+                <ActionButton
+                    label='No stereo'
+                    onClick={() =>
+                        applyStereo(BOND_DIR_NONE, 'stereo cleared')
+                    }
+                    testid='stereo-none'
                 />
                 <ActionButton label='Undo' onClick={doUndo} testid='undo' />
                 <ActionButton label='Redo' onClick={doRedo} testid='redo' />

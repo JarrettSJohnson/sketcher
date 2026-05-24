@@ -88,6 +88,22 @@ class MolModel : public UndoableModel
     void moveAtomUndoable(unsigned int idx, double from_x, double from_y,
                           double to_x, double to_y);
 
+    /**
+     * Set the BondDir on the bond between `begin_idx` and `end_idx` to
+     * `dir` (RDKit::Bond::BondDir cast to int). Undoable; preserves the
+     * current selection (setting stereo doesn't reindex anything). No-op
+     * if the bond does not exist.
+     */
+    void setBondDirUndoable(unsigned int begin_idx, unsigned int end_idx,
+                            RDKit::Bond::BondDir dir);
+
+    /**
+     * Apply `setBondDirUndoable` to every selected bond in a single undo
+     * macro. Convenient for UI actions like "wedge selected bonds". No-op
+     * if no bonds are selected.
+     */
+    void setBondDirForSelectedBonds(RDKit::Bond::BondDir dir);
+
     // -- Selection --------------------------------------------------------
     // Selection is transient UI state, not undoable. Any mutation that may
     // reindex atoms/bonds clears it (matching the simplest correct policy
