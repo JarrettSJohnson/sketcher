@@ -7,10 +7,14 @@
  * Copyright Schrodinger LLC, All Rights Reserved.
  --------------------------------------------------------------------------- */
 
+#include <cstddef>
 #include <sstream>
 #include <string>
+#include <unordered_map>
+#include <utility>
 
 #include <emscripten/bind.h>
+#include <emscripten/val.h>
 
 #include <GraphMol/Atom.h>
 #include <GraphMol/Bond.h>
@@ -20,6 +24,10 @@
 #include "schrodinger/rdkit_extensions/convert.h"
 #include "schrodinger/rdkit_extensions/coord_utils.h"
 #include "schrodinger/rdkit_extensions/file_format.h"
+
+#include "schrodinger/sketcher_core/observer.h"
+#include "schrodinger/sketcher_core/undo_stack.h"
+#include "schrodinger/sketcher_core/undoable_model.h"
 
 namespace
 {
@@ -71,6 +79,94 @@ std::string render_description_from_smiles(const std::string& smiles)
     return render_description_from_text(smiles, Format::SMILES);
 }
 
+// -- Phase 0 spike consumer ------------------------------------------------
+// A trivial undoable model demonstrating that sketcher_core::UndoableModel +
+// UndoStack + Signal compose into an end-to-end pattern with no Qt. Exposed
+// via embind so it can be poked from the browser:
+//
+//   const c = new Module.Counter();
+//   c.onChanged(n => console.log("value =", n));
+//   c.add(5); c.add(3); c.undo();          // -> 5, 8, 5
+//   Module.disposeCounter(c);              // free C++ side
+//
+// Replaces a hypothetical QObject + Q_SIGNAL + QUndoStack triplet.
+
+using schrodinger::sketcher_core::Connection;
+using schrodinger::sketcher_core::Signal;
+using schrodinger::sketcher_core::UndoableModel;
+using schrodinger::sketcher_core::UndoStack;
+
+class Counter : public UndoableModel
+{
+  public:
+    Counter() : UndoableModel(&m_owned_stack)
+    {
+    }
+
+    int value() const
+    {
+        return m_value;
+    }
+
+    void add(int delta)
+    {
+        auto redo = [this, delta] {
+            m_value += delta;
+            emitSignal(changed, m_value);
+        };
+        auto undo = [this, delta] {
+            m_value -= delta;
+            emitSignal(changed, m_value);
+        };
+        doCommand(std::move(redo), std::move(undo),
+                  "Add " + std::to_string(delta));
+    }
+
+    void undoLast()
+    {
+        undoStack()->undo();
+    }
+    void redoLast()
+    {
+        undoStack()->redo();
+    }
+
+    Signal<int> changed;
+
+  private:
+    int m_value = 0;
+    UndoStack m_owned_stack;
+};
+
+// embind doesn't bind C++ class members of arbitrary types directly, so the
+// Signal is reached through a small wrapper that returns the active Connection
+// to JS. JS holds a "pseudo-handle" (just the index) and disposes via
+// counter_disconnect(handle).
+struct CounterConnections {
+    std::size_t next_id = 1;
+    std::unordered_map<std::size_t, Connection> handles;
+};
+
+CounterConnections& connections()
+{
+    static CounterConnections inst;
+    return inst;
+}
+
+std::size_t counter_subscribe(Counter& c, emscripten::val callback)
+{
+    auto id = connections().next_id++;
+    connections().handles.emplace(
+        id,
+        c.changed.connect([callback](int value) mutable { callback(value); }));
+    return id;
+}
+
+void counter_unsubscribe(std::size_t handle)
+{
+    connections().handles.erase(handle);
+}
+
 } // namespace
 
 EMSCRIPTEN_BINDINGS(sketcher_lean)
@@ -89,6 +185,16 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
                          &render_description_from_smiles);
     emscripten::function("render_description_from_text",
                          &render_description_from_text);
+
+    // Phase 0 spike: Qt-free undoable model
+    emscripten::class_<Counter>("Counter")
+        .constructor<>()
+        .function("value", &Counter::value)
+        .function("add", &Counter::add)
+        .function("undo", &Counter::undoLast)
+        .function("redo", &Counter::redoLast);
+    emscripten::function("counter_subscribe", &counter_subscribe);
+    emscripten::function("counter_unsubscribe", &counter_unsubscribe);
 }
 
 int main()

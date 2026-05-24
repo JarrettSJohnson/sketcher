@@ -46,6 +46,7 @@
     let Module;
     try {
       Module = await sketcher_lean_entry();
+      window.Module = Module; // expose for Playwright + console poking
       status.textContent = 'ready';
     } catch (e) {
       status.textContent = 'WASM load failed: ' + e;

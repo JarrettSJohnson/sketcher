@@ -348,7 +348,14 @@ endif() # NOT SKETCHER_LEAN_ONLY
 # no ASYNCIFY. Produces sketcher_lean_app/SketcherLean.{wasm,js} + index.html.
 if(EMSCRIPTEN)
   set(LEAN_APP_TARGET sketcher_lean)
-  add_executable(${LEAN_APP_TARGET} src/app/lean_main.cpp)
+  add_executable(
+    ${LEAN_APP_TARGET}
+    src/app/lean_main.cpp
+    # Phase 0 spike: Qt-free model primitives (sketcher_core/). Inlined into
+    # the lean executable for now — promote to its own library once a second
+    # consumer arrives.
+    src/schrodinger/sketcher_core/undo_stack.cpp
+    src/schrodinger/sketcher_core/undoable_model.cpp)
   setup_target(${LEAN_APP_TARGET})
   set_target_properties(
     ${LEAN_APP_TARGET}
@@ -374,6 +381,35 @@ if(EMSCRIPTEN)
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/wasm/public/lean.html
             ${CMAKE_BINARY_DIR}/sketcher_lean_app/index.html)
+endif()
+
+# Phase 0 spike tests for sketcher_core/. These are Boost.Test executables that
+# build under Emscripten and run with node — no Qt dependency. Gated by
+# SKETCHER_LEAN_ONLY rather than ENABLE_TESTING so they always build with the
+# lean target.
+if(SKETCHER_LEAN_ONLY AND EMSCRIPTEN)
+  enable_testing()
+  set(LEAN_TEST_SOURCES
+      test/schrodinger/sketcher_core/test_signal.cpp
+      test/schrodinger/sketcher_core/test_undo_stack.cpp
+      test/schrodinger/sketcher_core/test_undoable_model.cpp)
+  foreach(TEST_SOURCE ${LEAN_TEST_SOURCES})
+    cmake_path(GET TEST_SOURCE STEM TEST_STEM)
+    set(TEST_TARGET "sketcher_core-${TEST_STEM}")
+    add_executable(${TEST_TARGET}
+                   ${TEST_SOURCE}
+                   src/schrodinger/sketcher_core/undo_stack.cpp
+                   src/schrodinger/sketcher_core/undoable_model.cpp)
+    setup_target(${TEST_TARGET})
+    target_link_libraries(${TEST_TARGET} PRIVATE Boost::unit_test_framework)
+    set_target_properties(
+      ${TEST_TARGET}
+      PROPERTIES RUNTIME_OUTPUT_DIRECTORY
+                 ${CMAKE_BINARY_DIR}/sketcher_core_tests
+                 OUTPUT_NAME ${TEST_STEM})
+    add_test(NAME ${TEST_TARGET}
+             COMMAND node $<TARGET_FILE:${TEST_TARGET}>)
+  endforeach()
 endif()
 
 # Tests (skipped in lean-only mode — all existing tests link Qt).
