@@ -183,6 +183,28 @@ void MolModel::moveAtomUndoable(unsigned int idx, double from_x, double from_y,
     doCommand(std::move(redo), std::move(undo), "Move atom");
 }
 
+void MolModel::moveAtomsUndoable(const std::vector<unsigned int>& indices,
+                                 const std::vector<double>& from_xs,
+                                 const std::vector<double>& from_ys,
+                                 const std::vector<double>& to_xs,
+                                 const std::vector<double>& to_ys)
+{
+    if (indices.empty()) {
+        return;
+    }
+    // Caller bug — parallel arrays must agree. Silently no-op rather than
+    // crash (the JS bridge would have a hard time recovering from a throw).
+    if (from_xs.size() != indices.size() || from_ys.size() != indices.size() ||
+        to_xs.size() != indices.size() || to_ys.size() != indices.size()) {
+        return;
+    }
+    auto macro = createUndoMacro("Move atoms");
+    for (size_t i = 0; i < indices.size(); ++i) {
+        moveAtomUndoable(indices[i], from_xs[i], from_ys[i], to_xs[i],
+                         to_ys[i]);
+    }
+}
+
 void MolModel::setBondDirUndoable(unsigned int begin_idx, unsigned int end_idx,
                                   RDKit::Bond::BondDir dir)
 {

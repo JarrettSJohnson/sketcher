@@ -297,6 +297,28 @@ class MolModelJS
     {
         m_model.moveAtomUndoable(idx, from_x, from_y, to_x, to_y);
     }
+    void moveAtomsUndoable(emscripten::val indices, emscripten::val from_xs,
+                           emscripten::val from_ys, emscripten::val to_xs,
+                           emscripten::val to_ys)
+    {
+        // Convert four parallel JS arrays into C++ vectors. emscripten::val
+        // arrays expose ["length"] + indexed access; the explicit loop is
+        // simpler than wrestling with register_vector wrappers.
+        const auto n = indices["length"].as<unsigned int>();
+        std::vector<unsigned int> idx(n);
+        std::vector<double> fx(n);
+        std::vector<double> fy(n);
+        std::vector<double> tx(n);
+        std::vector<double> ty(n);
+        for (unsigned int i = 0; i < n; ++i) {
+            idx[i] = indices[i].as<unsigned int>();
+            fx[i] = from_xs[i].as<double>();
+            fy[i] = from_ys[i].as<double>();
+            tx[i] = to_xs[i].as<double>();
+            ty[i] = to_ys[i].as<double>();
+        }
+        m_model.moveAtomsUndoable(idx, fx, fy, tx, ty);
+    }
     void setBondDirUndoable(unsigned int begin, unsigned int end, int dir)
     {
         m_model.setBondDirUndoable(
@@ -510,6 +532,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("clear", &MolModelJS::clear)
         .function("setAtomPos", &MolModelJS::setAtomPos)
         .function("moveAtomUndoable", &MolModelJS::moveAtomUndoable)
+        .function("moveAtomsUndoable", &MolModelJS::moveAtomsUndoable)
         .function("setBondDirUndoable", &MolModelJS::setBondDirUndoable)
         .function("setBondDirForSelectedBonds",
                   &MolModelJS::setBondDirForSelectedBonds)

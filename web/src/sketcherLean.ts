@@ -20,6 +20,17 @@ export interface MolModelInstance {
         toX: number,
         toY: number,
     ): void;
+    /**
+     * Batched moveAtomUndoable — every (idx, from, to) row commits inside
+     * a single undo macro so the whole gesture collapses to one undo.
+     */
+    moveAtomsUndoable(
+        indices: number[],
+        fromXs: number[],
+        fromYs: number[],
+        toXs: number[],
+        toYs: number[],
+    ): void;
     /** dir is RDKit::Bond::BondDir as int: 0=NONE, 1=BEGINWEDGE, 2=BEGINDASH. */
     setBondDirUndoable(begin: number, end: number, dir: number): void;
     setBondDirForSelectedBonds(dir: number): void;

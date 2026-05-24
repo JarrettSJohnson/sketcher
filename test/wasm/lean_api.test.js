@@ -606,6 +606,43 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
         expect(result.aromAfter).toBe(true);
     });
 
+    test('moveAtomsUndoable translates a multi-atom selection as one undo step', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('C', 0, 0);
+            m.addAtom('C', 1, 0);
+            m.addAtom('C', 0, 1);
+
+            // Translate atoms 0 and 1 by (+10, +20); leave atom 2 alone.
+            m.moveAtomsUndoable([0, 1], [0, 1], [0, 0], [10, 11], [20, 20]);
+            const afterMove = JSON.parse(m.description()).atoms.map((a) => [a.x, a.y]);
+
+            // Single undo restores both atoms in one step.
+            m.undo();
+            const afterUndo = JSON.parse(m.description()).atoms.map((a) => [a.x, a.y]);
+            m.redo();
+            const afterRedo = JSON.parse(m.description()).atoms.map((a) => [a.x, a.y]);
+            m.delete();
+            return { afterMove, afterUndo, afterRedo };
+        });
+        expect(result.afterMove).toEqual([[10, 20], [11, 20], [0, 1]]);
+        expect(result.afterUndo).toEqual([[0, 0], [1, 0], [0, 1]]);
+        expect(result.afterRedo).toEqual([[10, 20], [11, 20], [0, 1]]);
+    });
+
+    test('moveAtomsUndoable on an empty indices array is a no-op', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('C', 0, 0);
+            // Empty arrays: no atoms moved, no exception, no undo entry.
+            m.moveAtomsUndoable([], [], [], [], []);
+            const desc = JSON.parse(m.description());
+            m.delete();
+            return desc.atoms.map((a) => [a.x, a.y]);
+        });
+        expect(result).toEqual([[0, 0]]);
+    });
+
     test('addHydrogens then removeHydrogens round-trips through MolModel', async ({ page }) => {
         const result = await page.evaluate(() => {
             const m = new window.Module.MolModel();

@@ -167,9 +167,16 @@ interface DragRect {
 }
 
 interface AtomDrag {
-    idx: number;
-    fromX: number; // model coords at drag start (for undo command)
-    fromY: number;
+    // The "grabbed" atom — the one the user actually clicked. Its (fromX,
+    // fromY) define the drag origin against which the live cursor delta is
+    // measured. For a single-atom drag, `atoms` is just [{idx, fromX, fromY}]
+    // for the grabbed atom. For a multi-atom drag, `atoms` lists every atom
+    // in the selection (including the grabbed one) so the whole set
+    // translates together by the same (dx, dy).
+    grabbedIdx: number;
+    grabbedFromX: number;
+    grabbedFromY: number;
+    atoms: { idx: number; fromX: number; fromY: number }[];
     startPx: number; // pixel coords at drag start (for threshold check)
     startPy: number;
     moved: boolean; // true once we crossed the move threshold
@@ -676,8 +683,19 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     return; // still within "click" tolerance
                 }
                 ad.moved = true;
-                const { x, y } = modelFromPixel(canvas, px, py);
-                model.setAtomPos(ad.idx, x, y);
+                // Convert the grabbed atom's destination into a model-space
+                // delta, then translate every dragged atom by that delta.
+                // For a single-atom drag this collapses to the simple case.
+                const { x: grabbedToX, y: grabbedToY } = modelFromPixel(
+                    canvas,
+                    px,
+                    py,
+                );
+                const dx = grabbedToX - ad.grabbedFromX;
+                const dy = grabbedToY - ad.grabbedFromY;
+                for (const a of ad.atoms) {
+                    model.setAtomPos(a.idx, a.fromX + dx, a.fromY + dy);
+                }
                 return;
             }
             if (dragRect) {
@@ -723,12 +741,25 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 // Press on an atom: prepare a drag-to-move. If the user just
                 // releases without crossing the threshold, the click handler
                 // will treat it as a select toggle.
-                const a = rd.atoms.find((x) => x.i === atomHit);
-                if (!a) return;
+                const grabbed = rd.atoms.find((x) => x.i === atomHit);
+                if (!grabbed) return;
+                // If the grabbed atom is part of a multi-atom selection, drag
+                // every selected atom together. Single-atom selection or
+                // grabbing an unselected atom both fall through to a
+                // single-atom move (the original behavior).
+                const grabbedIsSelected = grabbed.sel === true;
+                const selectedAtoms = grabbedIsSelected
+                    ? rd.atoms.filter((x) => x.sel === true)
+                    : [grabbed];
                 atomDragRef.current = {
-                    idx: atomHit,
-                    fromX: a.x,
-                    fromY: a.y,
+                    grabbedIdx: atomHit,
+                    grabbedFromX: grabbed.x,
+                    grabbedFromY: grabbed.y,
+                    atoms: selectedAtoms.map((x) => ({
+                        idx: x.i,
+                        fromX: x.x,
+                        fromY: x.y,
+                    })),
                     startPx: px,
                     startPy: py,
                     moved: false,
@@ -764,15 +795,38 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 const rect = canvas.getBoundingClientRect();
                 const px = e.clientX - rect.left;
                 const py = e.clientY - rect.top;
-                const { x: toX, y: toY } = modelFromPixel(canvas, px, py);
-                // setAtomPos previews have already moved the conformer; commit
-                // a single undo command capturing the original→final delta.
-                model.moveAtomUndoable(ad.idx, ad.fromX, ad.fromY, toX, toY);
-                suppressNextClickRef.current = true;
-                setStatus(
-                    `moved atom #${ad.idx} to ` +
-                        `(${toX.toFixed(2)}, ${toY.toFixed(2)})`,
+                const { x: grabbedToX, y: grabbedToY } = modelFromPixel(
+                    canvas,
+                    px,
+                    py,
                 );
+                const dx = grabbedToX - ad.grabbedFromX;
+                const dy = grabbedToY - ad.grabbedFromY;
+                // setAtomPos previews have already moved every atom; commit
+                // a single batch undo command (one undo step for the whole
+                // gesture, even when multiple atoms moved). Single-atom
+                // gestures still go through this — moveAtomsUndoable with
+                // a one-row macro produces the same undo behavior as the
+                // bare moveAtomUndoable, just with a "Move atoms" label.
+                model.moveAtomsUndoable(
+                    ad.atoms.map((a) => a.idx),
+                    ad.atoms.map((a) => a.fromX),
+                    ad.atoms.map((a) => a.fromY),
+                    ad.atoms.map((a) => a.fromX + dx),
+                    ad.atoms.map((a) => a.fromY + dy),
+                );
+                suppressNextClickRef.current = true;
+                if (ad.atoms.length === 1) {
+                    setStatus(
+                        `moved atom #${ad.grabbedIdx} to ` +
+                            `(${grabbedToX.toFixed(2)}, ${grabbedToY.toFixed(2)})`,
+                    );
+                } else {
+                    setStatus(
+                        `moved ${ad.atoms.length} atoms by ` +
+                            `(${dx.toFixed(2)}, ${dy.toFixed(2)})`,
+                    );
+                }
                 return;
             }
             if (!dragRect) return;
@@ -844,14 +898,24 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         if (dragRect) {
             setDragRect(null);
         }
-        // Cancel an atom-drag that left the canvas: restore the original
-        // position so the preview doesn't leave the atom stranded.
+        // Cancel an atom-drag that left the canvas: restore every dragged
+        // atom's original position so the preview doesn't leave anything
+        // stranded. Works for single- and multi-atom drags alike.
         const ad = atomDragRef.current;
         if (ad) {
             atomDragRef.current = null;
             if (ad.moved) {
-                modelRef.current?.setAtomPos(ad.idx, ad.fromX, ad.fromY);
-                setStatus(`move cancelled (atom #${ad.idx})`);
+                const m = modelRef.current;
+                if (m) {
+                    for (const a of ad.atoms) {
+                        m.setAtomPos(a.idx, a.fromX, a.fromY);
+                    }
+                }
+                setStatus(
+                    ad.atoms.length === 1
+                        ? `move cancelled (atom #${ad.grabbedIdx})`
+                        : `move cancelled (${ad.atoms.length} atoms)`,
+                );
             }
         }
     }, [dragRect]);

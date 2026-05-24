@@ -943,3 +943,62 @@ BOOST_AUTO_TEST_CASE(testAromatizeAndKekulizeAreNoOpOnEmptyMol)
     BOOST_CHECK_EQUAL(m.numAtoms(), 0u);
     BOOST_CHECK_EQUAL(stack.count(), 0u);
 }
+
+BOOST_AUTO_TEST_CASE(testMoveAtomsUndoableTranslatesMultipleAtomsAsOneUndoStep)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0.0, 0.0);
+    m.addAtom("C", 1.0, 0.0);
+    m.addAtom("C", 0.0, 1.0);
+    const auto stack_before = stack.count();
+
+    // Translate atoms 0 and 1 by (+10, +20); leave atom 2 alone.
+    m.moveAtomsUndoable(/*indices=*/{0u, 1u},
+                        /*from_xs=*/{0.0, 1.0},
+                        /*from_ys=*/{0.0, 0.0},
+                        /*to_xs=*/{10.0, 11.0},
+                        /*to_ys=*/{20.0, 20.0});
+
+    // Exactly one macro command was pushed (not two).
+    BOOST_CHECK_EQUAL(stack.count(), stack_before + 1);
+
+    double x = 0, y = 0;
+    m.atomPos(0, x, y);
+    BOOST_CHECK_CLOSE(x, 10.0, 1e-6);
+    BOOST_CHECK_CLOSE(y, 20.0, 1e-6);
+    m.atomPos(1, x, y);
+    BOOST_CHECK_CLOSE(x, 11.0, 1e-6);
+    BOOST_CHECK_CLOSE(y, 20.0, 1e-6);
+    m.atomPos(2, x, y);
+    BOOST_CHECK_CLOSE(x, 0.0, 1e-6);
+    BOOST_CHECK_CLOSE(y, 1.0, 1e-6);
+
+    // Single undo restores both atoms.
+    stack.undo();
+    m.atomPos(0, x, y);
+    BOOST_CHECK_CLOSE(x, 0.0, 1e-6);
+    BOOST_CHECK_CLOSE(y, 0.0, 1e-6);
+    m.atomPos(1, x, y);
+    BOOST_CHECK_CLOSE(x, 1.0, 1e-6);
+    BOOST_CHECK_CLOSE(y, 0.0, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(testMoveAtomsUndoableIsNoOpOnEmptyAndMismatchedArrays)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0.0, 0.0);
+    const auto stack_before = stack.count();
+    m.moveAtomsUndoable({}, {}, {}, {}, {});
+    BOOST_CHECK_EQUAL(stack.count(), stack_before);
+
+    // Mismatched array lengths: silent no-op (defensive against JS bridge
+    // bugs — better than throwing across the embind boundary).
+    m.moveAtomsUndoable({0u}, {0.0, 1.0}, {0.0}, {1.0}, {1.0});
+    BOOST_CHECK_EQUAL(stack.count(), stack_before);
+    double x = 0, y = 0;
+    m.atomPos(0, x, y);
+    BOOST_CHECK_CLOSE(x, 0.0, 1e-6);
+    BOOST_CHECK_CLOSE(y, 0.0, 1e-6);
+}

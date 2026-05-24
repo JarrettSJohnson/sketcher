@@ -89,6 +89,19 @@ class MolModel : public UndoableModel
                           double to_x, double to_y);
 
     /**
+     * Batched moveAtomUndoable: every (idx, from, to) row is committed
+     * inside a single undo macro so the whole gesture (e.g. drag-moving
+     * a multi-atom selection) collapses to one undo step. All four
+     * vectors must have the same length; no-op when `indices` is empty.
+     * Preserves selection like the single-atom variant.
+     */
+    void moveAtomsUndoable(const std::vector<unsigned int>& indices,
+                           const std::vector<double>& from_xs,
+                           const std::vector<double>& from_ys,
+                           const std::vector<double>& to_xs,
+                           const std::vector<double>& to_ys);
+
+    /**
      * Set the BondDir on the bond between `begin_idx` and `end_idx` to
      * `dir` (RDKit::Bond::BondDir cast to int). Undoable; preserves the
      * current selection (setting stereo doesn't reindex anything). No-op

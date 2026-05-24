@@ -282,6 +282,60 @@ test.describe('React Sketcher', () => {
         expect(redone.atoms[0].y).toBeCloseTo(after.atoms[0].y, 3);
     });
 
+    test('drag-to-move on a multi-atom selection translates the whole group as one undo step', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Place three atoms so we have something outside the selection too.
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+
+        const before = await snapshot(page);
+        const a0Before = before.atoms[0];
+        const a1Before = before.atoms[1];
+        const a2Before = before.atoms[2];
+
+        // Rubber-band select atoms 0 and 1; atom 2 stays unselected.
+        await page.getByTestId('tool-select').click();
+        const box = await canvas.boundingBox();
+        await page.mouse.move(box.x + 60, box.y + 100);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 320, box.y + 260, { steps: 6 });
+        await page.mouse.up();
+        const selected = await snapshot(page);
+        expect(selected.atoms.map((a) => !!a.sel)).toEqual([true, true, false]);
+
+        // Grab atom 0 (selected) and drag it — atom 1 should follow by the
+        // same delta; atom 2 must stay put.
+        await page.mouse.move(box.x + 120, box.y + 180);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 180, box.y + 250, { steps: 8 });
+        await page.mouse.up();
+
+        const after = await snapshot(page);
+        const dx0 = after.atoms[0].x - a0Before.x;
+        const dy0 = after.atoms[0].y - a0Before.y;
+        const dx1 = after.atoms[1].x - a1Before.x;
+        const dy1 = after.atoms[1].y - a1Before.y;
+        // Atom 0 actually moved.
+        expect(Math.hypot(dx0, dy0)).toBeGreaterThan(0.1);
+        // Atom 1 moved by the same delta as atom 0 (within float tolerance).
+        expect(dx1).toBeCloseTo(dx0, 3);
+        expect(dy1).toBeCloseTo(dy0, 3);
+        // Atom 2 did not move.
+        expect(after.atoms[2].x).toBeCloseTo(a2Before.x, 3);
+        expect(after.atoms[2].y).toBeCloseTo(a2Before.y, 3);
+
+        // One undo restores both moved atoms in a single step.
+        await page.getByTestId('undo').click();
+        const undone = await snapshot(page);
+        expect(undone.atoms[0].x).toBeCloseTo(a0Before.x, 3);
+        expect(undone.atoms[0].y).toBeCloseTo(a0Before.y, 3);
+        expect(undone.atoms[1].x).toBeCloseTo(a1Before.x, 3);
+        expect(undone.atoms[1].y).toBeCloseTo(a1Before.y, 3);
+    });
+
     test('tiny drag on atom falls through to click-toggle', async ({ page }) => {
         const canvas = page.getByTestId('sketcher-canvas');
         await canvas.click({ position: { x: 120, y: 180 } });
