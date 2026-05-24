@@ -61,6 +61,17 @@ class MolModel : public UndoableModel
     void addBond(unsigned int begin_idx, unsigned int end_idx,
                  RDKit::Bond::BondType type = RDKit::Bond::BondType::SINGLE);
 
+    /**
+     * Add a bond and immediately set its BondDir, both inside one undo
+     * macro. Convenient when the bond tool runs with an active stereo mode
+     * (wedge/dash) so the new bond appears wedged on creation rather than
+     * requiring a separate Wedge click. Falls through to addBond when dir
+     * is BondDir::NONE.
+     */
+    void addBondWithDir(unsigned int begin_idx, unsigned int end_idx,
+                        RDKit::Bond::BondType type,
+                        RDKit::Bond::BondDir dir);
+
     /** Remove an atom (and its incident bonds) by index. */
     void removeAtom(unsigned int idx);
 

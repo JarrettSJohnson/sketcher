@@ -392,6 +392,51 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
         expect(result.afterFirstUndo).toEqual([undefined, undefined]);
     });
 
+    test('addBondWithDir applies dir on creation and collapses to one undo step', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('C', 0, 0);
+            m.addAtom('C', 1.5, 0);
+            // dir=1 (BEGINWEDGE) — bond should appear with the wedge already set.
+            m.addBondWithDir(0, 1, 1, 1);
+            const afterAdd = JSON.parse(m.description());
+            const dir = afterAdd.bonds[0].dir;
+            // One undo removes BOTH the bond and the dir-set in a single step.
+            m.undo();
+            const afterUndo = JSON.parse(m.description());
+            // A second undo would unwind one of the addAtom calls.
+            m.delete();
+            return {
+                nBonds: afterAdd.bonds.length,
+                dir,
+                nBondsAfterUndo: afterUndo.bonds.length,
+                nAtomsAfterUndo: afterUndo.atoms.length,
+            };
+        });
+        expect(result.nBonds).toBe(1);
+        expect(result.dir).toBe(1);
+        // Bond is gone after one undo, but both atoms remain (proving the
+        // macro collapsed addBond + setBondDir into a single step).
+        expect(result.nBondsAfterUndo).toBe(0);
+        expect(result.nAtomsAfterUndo).toBe(2);
+    });
+
+    test('addBondWithDir falls through to addBond when dir is NONE', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('C', 0, 0);
+            m.addAtom('C', 1.5, 0);
+            m.addBondWithDir(0, 1, 1, 0); // dir=NONE → plain addBond path
+            const desc = JSON.parse(m.description());
+            const dir = desc.bonds[0].dir;
+            m.delete();
+            return { nBonds: desc.bonds.length, dir };
+        });
+        expect(result.nBonds).toBe(1);
+        // dir is omitted from the JSON when BondDir is NONE.
+        expect(result.dir).toBeUndefined();
+    });
+
     test('addRing(6, aromatic) inserts a Kekulé benzene as one undo step', async ({ page }) => {
         const result = await page.evaluate(() => {
             const m = new window.Module.MolModel();

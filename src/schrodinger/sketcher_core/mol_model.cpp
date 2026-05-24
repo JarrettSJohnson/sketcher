@@ -129,6 +129,21 @@ void MolModel::addBond(unsigned int begin_idx, unsigned int end_idx,
                "Add bond");
 }
 
+void MolModel::addBondWithDir(unsigned int begin_idx, unsigned int end_idx,
+                              RDKit::Bond::BondType type,
+                              RDKit::Bond::BondDir dir)
+{
+    if (dir == RDKit::Bond::BondDir::NONE) {
+        addBond(begin_idx, end_idx, type);
+        return;
+    }
+    // Two commands inside one macro: the user expects a single Ctrl+Z to
+    // undo both the new bond and its stereo dir together.
+    auto macro = createUndoMacro("Add bond with dir");
+    addBond(begin_idx, end_idx, type);
+    setBondDirUndoable(begin_idx, end_idx, dir);
+}
+
 void MolModel::removeAtom(unsigned int idx)
 {
     doMutation([this, idx] { m_mol.removeAtom(idx); }, "Remove atom");

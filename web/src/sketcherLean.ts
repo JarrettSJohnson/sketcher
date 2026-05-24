@@ -9,6 +9,16 @@
 export interface MolModelInstance {
     addAtom(element: string, x: number, y: number): void;
     addBond(begin: number, end: number, bondType: number): void;
+    /**
+     * addBond + setBondDirUndoable inside a single undo macro. Pass dir=0
+     * (NONE) to behave identically to addBond.
+     */
+    addBondWithDir(
+        begin: number,
+        end: number,
+        bondType: number,
+        dir: number,
+    ): void;
     removeAtom(idx: number): void;
     removeBond(begin: number, end: number): void;
     clear(): void;

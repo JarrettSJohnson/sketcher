@@ -485,6 +485,53 @@ BOOST_AUTO_TEST_CASE(testSetBondDirForSelectedBondsAppliesAsSingleUndoStep)
                       RDKit::Bond::BondDir::NONE);
 }
 
+BOOST_AUTO_TEST_CASE(testAddBondWithDirAppliesDirAtomicallyAsOneUndoStep)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    const auto count_after_atoms = stack.count();
+
+    // Single user-visible action: draw bond + immediately apply the wedge.
+    m.addBondWithDir(0, 1, RDKit::Bond::SINGLE,
+                     RDKit::Bond::BondDir::BEGINWEDGE);
+    BOOST_CHECK_EQUAL(m.numBonds(), 1u);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondDir(),
+                      RDKit::Bond::BondDir::BEGINWEDGE);
+    // Exactly one undo step on the stack — the addBond + setBondDir live
+    // in a single macro, so the user only Ctrl+Zs once.
+    BOOST_CHECK_EQUAL(stack.count(), count_after_atoms + 1);
+
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.numBonds(), 0u);
+    // Atoms are intact: the macro only covered the bond+dir, not the atoms.
+    BOOST_CHECK_EQUAL(m.numAtoms(), 2u);
+
+    stack.redo();
+    BOOST_CHECK_EQUAL(m.numBonds(), 1u);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondDir(),
+                      RDKit::Bond::BondDir::BEGINWEDGE);
+}
+
+BOOST_AUTO_TEST_CASE(testAddBondWithDirNoneFallsThroughToAddBond)
+{
+    // When dir is NONE the macro adds nothing on top of addBond — the result
+    // should be a plain SINGLE bond with no setBondDir command piled on.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    const auto count_after_atoms = stack.count();
+
+    m.addBondWithDir(0, 1, RDKit::Bond::SINGLE, RDKit::Bond::BondDir::NONE);
+    BOOST_CHECK_EQUAL(m.numBonds(), 1u);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondDir(),
+                      RDKit::Bond::BondDir::NONE);
+    // Exactly one command pushed — no orphan setBondDir command in a macro.
+    BOOST_CHECK_EQUAL(stack.count(), count_after_atoms + 1);
+}
+
 BOOST_AUTO_TEST_CASE(testPropertyCacheRefreshExposesImplicitHs)
 {
     // doMutation refreshes the implicit-valence cache so callers can read

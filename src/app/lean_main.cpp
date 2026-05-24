@@ -276,6 +276,13 @@ class MolModelJS
         m_model.addBond(begin, end,
                         static_cast<RDKit::Bond::BondType>(bond_type));
     }
+    void addBondWithDir(unsigned int begin, unsigned int end, int bond_type,
+                        int dir)
+    {
+        m_model.addBondWithDir(
+            begin, end, static_cast<RDKit::Bond::BondType>(bond_type),
+            static_cast<RDKit::Bond::BondDir>(dir));
+    }
     void removeAtom(unsigned int idx)
     {
         m_model.removeAtom(idx);
@@ -531,6 +538,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .constructor<>()
         .function("addAtom", &MolModelJS::addAtom)
         .function("addBond", &MolModelJS::addBond)
+        .function("addBondWithDir", &MolModelJS::addBondWithDir)
         .function("removeAtom", &MolModelJS::removeAtom)
         .function("removeBond", &MolModelJS::removeBond)
         .function("clear", &MolModelJS::clear)

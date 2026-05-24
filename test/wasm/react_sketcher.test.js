@@ -417,6 +417,78 @@ test.describe('React Sketcher', () => {
         expect(rd.bonds[0].dir).toBeUndefined();
     });
 
+    test('active stereo mode applies to newly-drawn bonds until toggled off', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Three carbons in a row.
+        await canvas.click({ position: { x: 140, y: 200 } });
+        await canvas.click({ position: { x: 280, y: 200 } });
+        await canvas.click({ position: { x: 420, y: 200 } });
+
+        // Activate wedge with NO selection — should arm the active mode
+        // without erroring or applying to anything (mol has no bonds yet).
+        await page.getByTestId('stereo-wedge').click();
+        // Active mode visible via aria-pressed on the ToolButton.
+        await expect(page.getByTestId('stereo-wedge')).toHaveAttribute(
+            'aria-pressed',
+            'true',
+        );
+
+        // Draw the first bond — it should pick up the wedge automatically.
+        await page.getByTestId('tool-bond').click();
+        await canvas.click({ position: { x: 140, y: 200 } });
+        await canvas.click({ position: { x: 280, y: 200 } });
+
+        let rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.bonds[0].dir).toBe(1); // BEGINWEDGE
+
+        // Draw a second bond — wedge mode persists across creations.
+        await canvas.click({ position: { x: 280, y: 200 } });
+        await canvas.click({ position: { x: 420, y: 200 } });
+        rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(2);
+        expect(rd.bonds[1].dir).toBe(1);
+
+        // Clicking the active mode again toggles it off.
+        await page.getByTestId('stereo-wedge').click();
+        await expect(page.getByTestId('stereo-wedge')).toHaveAttribute(
+            'aria-pressed',
+            'false',
+        );
+
+        // A fresh bond now goes in without a wedge — undo the second one
+        // first so we have endpoints to reconnect (delete-by-redraw isn't
+        // a thing in this skeleton).
+        await page.getByTestId('undo').click();
+        await page.getByTestId('undo').click(); // also peel the first bond
+        rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(0);
+
+        await canvas.click({ position: { x: 140, y: 200 } });
+        await canvas.click({ position: { x: 280, y: 200 } });
+        rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.bonds[0].dir).toBeUndefined();
+
+        // Single undo removes the wedged bond entirely (proves the add+dir
+        // collapse from addBondWithDir is intact end-to-end). Restore wedge
+        // mode and try once more to verify.
+        await page.getByTestId('stereo-wedge').click();
+        await canvas.click({ position: { x: 280, y: 200 } });
+        await canvas.click({ position: { x: 420, y: 200 } });
+        rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(2);
+        expect(rd.bonds[1].dir).toBe(1);
+
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        // Wedged bond gone, the older un-wedged bond untouched.
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.bonds[0].dir).toBeUndefined();
+    });
+
     test('interactively added O atom carries chemistry annotations', async ({
         page,
     }) => {

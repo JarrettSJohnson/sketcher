@@ -512,6 +512,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [status, setStatus] = useState<string>('ready');
     const [smilesInput, setSmilesInput] = useState<string>('');
     const [view, setViewState] = useState<View>(DEFAULT_VIEW);
+    // Active stereo mode for the bond tool. When non-NONE, drawing a new bond
+    // commits with that BondDir applied. Mirrors the persistent stereo mode
+    // the Qt sketcher exposes (Wedge / Dash sidebar buttons act as a toggle).
+    const [activeStereo, setActiveStereo] = useState<number>(BOND_DIR_NONE);
+    const activeStereoRef = useRef<number>(BOND_DIR_NONE);
     const [, bumpVersion] = useReducer((v: number) => v + 1, 0);
 
     // Always update both the state (drives redraw) and the ref (so event
@@ -519,6 +524,13 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const setView = useCallback((next: View): void => {
         viewRef.current = next;
         setViewState(next);
+    }, []);
+
+    // Mirror activeStereo into a ref so onCanvasClick (closure-captured) sees
+    // the current mode without waiting for the next render.
+    const setActiveStereoMode = useCallback((dir: number): void => {
+        activeStereoRef.current = dir;
+        setActiveStereo(dir);
     }, []);
 
     // Build the C++ MolModel once per mount, tear it down on unmount.
@@ -691,9 +703,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
             try {
-                model.addBond(pendingRef.current, hit, bondOrder);
+                const dir = activeStereoRef.current;
+                model.addBondWithDir(pendingRef.current, hit, bondOrder, dir);
+                const stereoLabel =
+                    dir === BOND_DIR_WEDGE
+                        ? ' wedge'
+                        : dir === BOND_DIR_DASH
+                          ? ' dash'
+                          : '';
                 setStatus(
-                    `bond: ${pendingRef.current}-${hit} (order ${bondOrder})`,
+                    `bond: ${pendingRef.current}-${hit} (order ${bondOrder}${stereoLabel})`,
                 );
             } catch (err) {
                 setStatus(`bond failed: ${String(err)}`);
@@ -993,15 +1012,24 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setPendingBondAtom(null);
         setStatus('deleted selection');
     };
+    // Stereo buttons act as tool-state pickers AND a one-shot action on the
+    // current selection. Behavior matches the Qt sketcher:
+    //   - If bonds are selected, apply `dir` to each (one undo step).
+    //   - Always toggle the active stereo mode so subsequent bond draws inherit
+    //     it (clicking the active button again clears the mode).
     const applyStereo = (dir: number, label: string): void => {
         const model = modelRef.current;
         if (!model) return;
-        if (!model.hasSelection()) {
-            setStatus('select a bond first');
-            return;
+        if (model && model.hasSelection()) {
+            model.setBondDirForSelectedBonds(dir);
         }
-        model.setBondDirForSelectedBonds(dir);
-        setStatus(label);
+        const next = activeStereoRef.current === dir ? BOND_DIR_NONE : dir;
+        setActiveStereoMode(next);
+        if (next === BOND_DIR_NONE) {
+            setStatus('stereo mode off');
+        } else {
+            setStatus(model.hasSelection() ? label : `${label} (active mode)`);
+        }
     };
     const doLoadInput = (): void => {
         const model = modelRef.current;
@@ -1402,20 +1430,32 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         />
                     </Section>
                     <Section label='Stereo'>
-                        <ActionButton
+                        <ToolButton
                             label='Wedge'
-                            onClick={() => applyStereo(BOND_DIR_WEDGE, 'wedge applied')}
+                            active={activeStereo === BOND_DIR_WEDGE}
+                            onClick={() =>
+                                applyStereo(BOND_DIR_WEDGE, 'wedge applied')
+                            }
                             testid='stereo-wedge'
+                            title='Wedge: applies to selected bonds and persists for new bonds'
                         />
-                        <ActionButton
+                        <ToolButton
                             label='Dash'
-                            onClick={() => applyStereo(BOND_DIR_DASH, 'dash applied')}
+                            active={activeStereo === BOND_DIR_DASH}
+                            onClick={() =>
+                                applyStereo(BOND_DIR_DASH, 'dash applied')
+                            }
                             testid='stereo-dash'
+                            title='Dash: applies to selected bonds and persists for new bonds'
                         />
-                        <ActionButton
+                        <ToolButton
                             label='No stereo'
-                            onClick={() => applyStereo(BOND_DIR_NONE, 'stereo cleared')}
+                            active={false}
+                            onClick={() =>
+                                applyStereo(BOND_DIR_NONE, 'stereo cleared')
+                            }
                             testid='stereo-none'
+                            title='Clear stereo on selected bonds and turn off active stereo mode'
                         />
                     </Section>
                 </aside>
