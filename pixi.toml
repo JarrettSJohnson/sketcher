@@ -22,6 +22,7 @@ wasm-lean-pwtest = "cd test/wasm && npx playwright test --config playwright.lean
 web-install = "cd web && npm install"
 web-dev = "cd web && npm run dev"
 web-build = "cd web && npm run build"
+web-pwtest = "cd test/wasm && npx playwright test --config playwright.react.config.js"
 pre-commit = "pre-commit run --all-files"
 
 [dependencies]

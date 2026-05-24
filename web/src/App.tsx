@@ -8,6 +8,7 @@ import {
     type JSX,
 } from 'react';
 import { loadSketcherLean, type SketcherLeanModule } from './sketcherLean';
+import { Sketcher } from './Sketcher';
 
 interface AtomDesc {
     i: number;
@@ -208,6 +209,10 @@ export function App(): JSX.Element {
                 />
                 <pre style={styles.pre}>{outputJson}</pre>
             </div>
+
+            {moduleReady && moduleRef.current && (
+                <Sketcher module={moduleRef.current} />
+            )}
         </div>
     );
 }

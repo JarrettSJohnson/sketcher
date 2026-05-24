@@ -6,10 +6,30 @@
 // factory. Both the .js loader and the .wasm payload are served from / by
 // the vite middleware in vite.config.ts (dev) or copied to dist/ (prod).
 
+export interface MolModelInstance {
+    addAtom(element: string, x: number, y: number): void;
+    addBond(begin: number, end: number, bondType: number): void;
+    removeAtom(idx: number): void;
+    removeBond(begin: number, end: number): void;
+    clear(): void;
+    undo(): void;
+    redo(): void;
+    numAtoms(): number;
+    numBonds(): number;
+    description(): string;
+    delete(): void;
+}
+
+interface MolModelConstructor {
+    new (): MolModelInstance;
+}
+
 export interface SketcherLeanModule {
     render_description_from_smiles(smiles: string): string;
+    MolModel: MolModelConstructor;
+    mol_model_subscribe(m: MolModelInstance, cb: () => void): number;
+    mol_model_unsubscribe(handle: number): void;
     getExceptionMessage?: (ptr: number) => string[];
-    // MolModel / Counter classes also exist but are unused here.
     [key: string]: unknown;
 }
 
