@@ -227,6 +227,17 @@ target_link_libraries(
           ZLIB::ZLIB
           ${ZSTD_LIB_NAME})
 
+# schrodinger::sketcher_core library — Qt-free C++ core split off from
+# sketcher/ as part of the Qt-removal plan. Built unconditionally so the
+# full Qt sketcher target can consume it as the strangler-fig migration
+# proceeds. PUBLIC deps: rdkit_extensions (for the RDKit symbols the .cpp
+# uses) and Boost::filesystem (the headers-only transitive include path
+# RDKit headers need to compile).
+set(SKETCHER_CORE_TARGET sketcher_core)
+build_schrodinger_library(${SKETCHER_CORE_TARGET})
+target_link_libraries(${SKETCHER_CORE_TARGET} PUBLIC ${RDKIT_EXTENSIONS_TARGET}
+                                                     Boost::filesystem)
+
 if(NOT SKETCHER_LEAN_ONLY)
 # schrodinger::sketcher library
 set(SKETCHER_TARGET sketcher)
@@ -347,17 +358,8 @@ endif() # NOT SKETCHER_LEAN_ONLY
 # Links only rdkit_extensions + RDKit core; no Qt, no SketcherWidget,
 # no ASYNCIFY. Produces sketcher_lean_app/SketcherLean.{wasm,js} + index.html.
 if(EMSCRIPTEN)
-  # Qt-free sketcher_core sources, reused by the lean app and the lean tests.
-  # Inlined into consumers for now — promote to its own library once another
-  # target outside the lean app needs them.
-  set(SKETCHER_CORE_SOURCES
-      src/schrodinger/sketcher_core/undo_stack.cpp
-      src/schrodinger/sketcher_core/undoable_model.cpp
-      src/schrodinger/sketcher_core/mol_model.cpp)
-
   set(LEAN_APP_TARGET sketcher_lean)
-  add_executable(${LEAN_APP_TARGET} src/app/lean_main.cpp
-                                    ${SKETCHER_CORE_SOURCES})
+  add_executable(${LEAN_APP_TARGET} src/app/lean_main.cpp)
   setup_target(${LEAN_APP_TARGET})
   set_target_properties(
     ${LEAN_APP_TARGET}
@@ -375,8 +377,9 @@ if(EMSCRIPTEN)
     -fexceptions
     -sDISABLE_EXCEPTION_CATCHING=0
     -sEXPORT_EXCEPTION_HANDLING_HELPERS)
-  target_link_libraries(${LEAN_APP_TARGET}
-                        PRIVATE Boost::filesystem ${RDKIT_EXTENSIONS_TARGET})
+  target_link_libraries(
+    ${LEAN_APP_TARGET} PRIVATE Boost::filesystem ${SKETCHER_CORE_TARGET}
+                               ${RDKIT_EXTENSIONS_TARGET})
   add_custom_target(
     update_lean_wasm_files ALL
     DEPENDS ${LEAN_APP_TARGET}
@@ -399,14 +402,11 @@ if(SKETCHER_LEAN_ONLY AND EMSCRIPTEN)
   foreach(TEST_SOURCE ${LEAN_TEST_SOURCES})
     cmake_path(GET TEST_SOURCE STEM TEST_STEM)
     set(TEST_TARGET "sketcher_core-${TEST_STEM}")
-    add_executable(${TEST_TARGET} ${TEST_SOURCE} ${SKETCHER_CORE_SOURCES})
+    add_executable(${TEST_TARGET} ${TEST_SOURCE})
     setup_target(${TEST_TARGET})
-    # MolModel pulls in RDKit; the other sketcher_core tests don't, but linking
-    # rdkit_extensions for all of them keeps the cmake loop simple and the
-    # cost is negligible in a wasm test build.
     target_link_libraries(
       ${TEST_TARGET} PRIVATE Boost::unit_test_framework
-                             ${RDKIT_EXTENSIONS_TARGET})
+                             ${SKETCHER_CORE_TARGET})
     set_target_properties(
       ${TEST_TARGET}
       PROPERTIES RUNTIME_OUTPUT_DIRECTORY
