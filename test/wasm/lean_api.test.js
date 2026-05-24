@@ -233,6 +233,49 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
         expect(result.selAfterUndo).toBe(false);
     });
 
+    test('drag-then-commit: setAtomPos previews, moveAtomUndoable round-trips', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('C', 0, 0);
+            m.addAtom('O', 2, 0);
+            m.setAtomSelected(1, true); // selection must survive the move
+
+            let modelFires = 0;
+            let selFires = 0;
+            const h1 = window.Module.mol_model_subscribe(m, () => { ++modelFires; });
+            const h2 = window.Module.mol_model_selection_subscribe(m, () => { ++selFires; });
+
+            // Two preview steps + one undoable commit.
+            m.setAtomPos(0, 1, 1);
+            m.setAtomPos(0, 3, 2);
+            m.moveAtomUndoable(0, 0, 0, 3, 2);
+            const afterCommit = JSON.parse(m.description()).atoms.map(a => [a.x, a.y]);
+            const selAfterCommit = m.isAtomSelected(1);
+
+            m.undo();
+            const afterUndo = JSON.parse(m.description()).atoms.map(a => [a.x, a.y]);
+            const selAfterUndo = m.isAtomSelected(1);
+
+            m.redo();
+            const afterRedo = JSON.parse(m.description()).atoms.map(a => [a.x, a.y]);
+
+            window.Module.mol_model_unsubscribe(h1);
+            window.Module.mol_model_selection_unsubscribe(h2);
+            m.delete();
+            return { afterCommit, selAfterCommit, afterUndo, selAfterUndo,
+                     afterRedo, modelFires, selFires };
+        });
+        expect(result.afterCommit).toEqual([[3, 2], [2, 0]]);
+        expect(result.selAfterCommit).toBe(true);
+        expect(result.afterUndo).toEqual([[0, 0], [2, 0]]);
+        expect(result.selAfterUndo).toBe(true);
+        expect(result.afterRedo).toEqual([[3, 2], [2, 0]]);
+        // 2 previews + 1 commit + 1 undo + 1 redo = 5 modelChanged emissions.
+        expect(result.modelFires).toBe(5);
+        // No selection changes during the move.
+        expect(result.selFires).toBe(0);
+    });
+
     test('selectionChanged fires independently from modelChanged', async ({ page }) => {
         const result = await page.evaluate(() => {
             const m = new window.Module.MolModel();

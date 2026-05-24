@@ -70,6 +70,24 @@ class MolModel : public UndoableModel
     /** Reset to an empty molecule. */
     void clear();
 
+    /**
+     * Set the 2D position of an existing atom *without* pushing an undo
+     * command. Used as the live-preview step of a drag; the caller is
+     * responsible for calling moveAtomUndoable on commit. Fires
+     * modelChanged so observers can repaint. No-op if `idx` is out of range.
+     */
+    void setAtomPos(unsigned int idx, double x, double y);
+
+    /**
+     * Push an undoable atom move from `(from_x, from_y)` to `(to_x, to_y)`.
+     * Unlike addAtom/removeAtom this does NOT clear the selection — moving
+     * an atom doesn't reindex anything, so existing selection indices stay
+     * valid. Backed by a custom command (not a whole-RWMol snapshot) so a
+     * single drag commits one tiny command instead of two RWMol copies.
+     */
+    void moveAtomUndoable(unsigned int idx, double from_x, double from_y,
+                          double to_x, double to_y);
+
     // -- Selection --------------------------------------------------------
     // Selection is transient UI state, not undoable. Any mutation that may
     // reindex atoms/bonds clears it (matching the simplest correct policy

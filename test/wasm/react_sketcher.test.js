@@ -231,6 +231,76 @@ test.describe('React Sketcher', () => {
         expect(rd.bonds.every((b) => b.sel)).toBe(true);
     });
 
+    test('drag-to-move atom: live preview + undoable commit', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Place two atoms.
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+
+        // Capture original coords of atom 0.
+        const before = await snapshot(page);
+        const a0Before = before.atoms[0];
+
+        // Select atom 1 first — moving atom 0 must NOT clear that selection.
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 260, y: 180 } });
+        expect(
+            await page.evaluate(() => window.SketcherModel.isAtomSelected(1)),
+        ).toBe(true);
+
+        // Drag atom 0 to a clearly different pixel position.
+        const box = await canvas.boundingBox();
+        await page.mouse.move(box.x + 120, box.y + 180);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 200, box.y + 250, { steps: 6 });
+        // Mid-drag: preview must have updated the model.
+        const mid = await snapshot(page);
+        expect(mid.atoms[0].x).not.toBeCloseTo(a0Before.x, 3);
+        await page.mouse.move(box.x + 220, box.y + 280, { steps: 3 });
+        await page.mouse.up();
+
+        const after = await snapshot(page);
+        expect(after.atoms[0].x).not.toBeCloseTo(a0Before.x, 3);
+        expect(after.atoms[0].y).not.toBeCloseTo(a0Before.y, 3);
+        // Atom 1's selection survives the move.
+        expect(
+            await page.evaluate(() => window.SketcherModel.isAtomSelected(1)),
+        ).toBe(true);
+
+        // Undo restores the original position.
+        await page.getByTestId('undo').click();
+        const undone = await snapshot(page);
+        expect(undone.atoms[0].x).toBeCloseTo(a0Before.x, 3);
+        expect(undone.atoms[0].y).toBeCloseTo(a0Before.y, 3);
+
+        // Redo replays the move.
+        await page.getByTestId('redo').click();
+        const redone = await snapshot(page);
+        expect(redone.atoms[0].x).toBeCloseTo(after.atoms[0].x, 3);
+        expect(redone.atoms[0].y).toBeCloseTo(after.atoms[0].y, 3);
+    });
+
+    test('tiny drag on atom falls through to click-toggle', async ({ page }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+
+        const before = await snapshot(page);
+        await page.getByTestId('tool-select').click();
+        const box = await canvas.boundingBox();
+        // A 1-pixel "drag" should be treated as a click → select toggle.
+        await page.mouse.move(box.x + 120, box.y + 180);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 121, box.y + 181);
+        await page.mouse.up();
+
+        const after = await snapshot(page);
+        expect(after.atoms[0].x).toBeCloseTo(before.atoms[0].x, 3);
+        expect(after.atoms[0].y).toBeCloseTo(before.atoms[0].y, 3);
+        expect(after.atoms[0].sel).toBe(true);
+    });
+
     test('select-all selects everything and a mutation clears selection', async ({
         page,
     }) => {

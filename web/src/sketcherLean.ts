@@ -12,6 +12,14 @@ export interface MolModelInstance {
     removeAtom(idx: number): void;
     removeBond(begin: number, end: number): void;
     clear(): void;
+    setAtomPos(idx: number, x: number, y: number): void;
+    moveAtomUndoable(
+        idx: number,
+        fromX: number,
+        fromY: number,
+        toX: number,
+        toY: number,
+    ): void;
     undo(): void;
     redo(): void;
     numAtoms(): number;

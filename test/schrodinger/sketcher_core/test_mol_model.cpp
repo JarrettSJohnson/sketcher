@@ -336,3 +336,74 @@ BOOST_AUTO_TEST_CASE(testDeleteSelectedIsNoOpWhenNothingSelected)
     BOOST_CHECK_EQUAL(stack.count(), count_before);
     BOOST_CHECK_EQUAL(m.numAtoms(), 2u);
 }
+
+BOOST_AUTO_TEST_CASE(testSetAtomPosUpdatesCoordsAndIsNotUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 1, 2);
+    int fires = 0;
+    auto conn = m.modelChanged.connect([&fires] { ++fires; });
+    const auto count_before = stack.count();
+
+    m.setAtomPos(0, 9, -4);
+    BOOST_CHECK_EQUAL(fires, 1); // direct emit
+    BOOST_CHECK_EQUAL(stack.count(), count_before); // not undoable
+
+    double x = 0, y = 0;
+    m.atomPos(0, x, y);
+    BOOST_CHECK_CLOSE(x, 9.0, 1e-6);
+    BOOST_CHECK_CLOSE(y, -4.0, 1e-6);
+
+    m.setAtomPos(99, 0, 0); // out-of-range is a no-op
+    BOOST_CHECK_EQUAL(fires, 1);
+}
+
+BOOST_AUTO_TEST_CASE(testMoveAtomUndoableRoundTripsPosition)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    // Simulate a drag: preview moves wherever the user drags, then commit.
+    m.setAtomPos(0, 4, 4);
+    m.setAtomPos(0, 7, 1);
+    m.moveAtomUndoable(0, /*from=*/0, 0, /*to=*/7, 1);
+
+    double x = 0, y = 0;
+    m.atomPos(0, x, y);
+    BOOST_CHECK_CLOSE(x, 7.0, 1e-6);
+    BOOST_CHECK_CLOSE(y, 1.0, 1e-6);
+
+    stack.undo();
+    m.atomPos(0, x, y);
+    BOOST_CHECK_CLOSE(x, 0.0, 1e-6);
+    BOOST_CHECK_CLOSE(y, 0.0, 1e-6);
+
+    stack.redo();
+    m.atomPos(0, x, y);
+    BOOST_CHECK_CLOSE(x, 7.0, 1e-6);
+    BOOST_CHECK_CLOSE(y, 1.0, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(testMoveAtomUndoablePreservesSelection)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("O", 1, 0);
+    m.setAtomSelected(0, true);
+    m.setAtomSelected(1, true);
+    int sel_fires = 0;
+    auto conn = m.selectionChanged.connect([&sel_fires] { ++sel_fires; });
+
+    // Moving an atom doesn't reindex anything — selection must survive.
+    m.moveAtomUndoable(0, 0, 0, 5, 5);
+    BOOST_CHECK(m.isAtomSelected(0));
+    BOOST_CHECK(m.isAtomSelected(1));
+    BOOST_CHECK_EQUAL(sel_fires, 0);
+
+    stack.undo();
+    BOOST_CHECK(m.isAtomSelected(0));
+    BOOST_CHECK(m.isAtomSelected(1));
+    BOOST_CHECK_EQUAL(sel_fires, 0);
+}

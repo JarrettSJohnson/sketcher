@@ -132,6 +132,17 @@ interface DragRect {
     additive: boolean;
 }
 
+interface AtomDrag {
+    idx: number;
+    fromX: number; // model coords at drag start (for undo command)
+    fromY: number;
+    startPx: number; // pixel coords at drag start (for threshold check)
+    startPy: number;
+    moved: boolean; // true once we crossed the move threshold
+}
+
+const ATOM_DRAG_THRESHOLD = 3; // pixels — below this, treat as a click
+
 function dragRectBounds(d: DragRect): {
     x1: number;
     y1: number;
@@ -284,6 +295,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // already committed the selection in mouseUp and don't want the click
     // handler to interpret the release as a toggle/clear.
     const suppressNextClickRef = useRef<boolean>(false);
+    // Mouse-driven atom move state. Lives in a ref because we mutate it on
+    // every mousemove (high frequency) and don't want to trigger a React
+    // re-render per pixel — the model.setAtomPos preview already fires
+    // modelChanged which drives the redraw.
+    const atomDragRef = useRef<AtomDrag | null>(null);
 
     const [tool, setTool] = useState<Tool>('atom');
     const [element, setElement] = useState<Element>('C');
@@ -464,6 +480,20 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const rect = canvas.getBoundingClientRect();
             const px = e.clientX - rect.left;
             const py = e.clientY - rect.top;
+            const ad = atomDragRef.current;
+            if (ad) {
+                const dpx = px - ad.startPx;
+                const dpy = py - ad.startPy;
+                if (!ad.moved &&
+                    Math.abs(dpx) < ATOM_DRAG_THRESHOLD &&
+                    Math.abs(dpy) < ATOM_DRAG_THRESHOLD) {
+                    return; // still within "click" tolerance
+                }
+                ad.moved = true;
+                const { x, y } = modelFromPixel(canvas, px, py);
+                model.setAtomPos(ad.idx, x, y);
+                return;
+            }
             if (dragRect) {
                 setDragRect({ ...dragRect, curPx: px, curPy: py });
                 return;
@@ -502,9 +532,24 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             } catch {
                 rd = BLANK_DESC;
             }
-            // If the press lands on an atom or bond, let the click handler
-            // do its toggle — only empty-area presses start a rectangle.
-            if (nearestAtomIndex(canvas, rd.atoms, px, py) >= 0) return;
+            const atomHit = nearestAtomIndex(canvas, rd.atoms, px, py);
+            if (atomHit >= 0) {
+                // Press on an atom: prepare a drag-to-move. If the user just
+                // releases without crossing the threshold, the click handler
+                // will treat it as a select toggle.
+                const a = rd.atoms.find((x) => x.i === atomHit);
+                if (!a) return;
+                atomDragRef.current = {
+                    idx: atomHit,
+                    fromX: a.x,
+                    fromY: a.y,
+                    startPx: px,
+                    startPy: py,
+                    moved: false,
+                };
+                return;
+            }
+            // Press on a bond: let onClick handle the bond toggle.
             if (nearestBondIndex(canvas, rd, px, py) >= 0) return;
 
             setDragRect({
@@ -520,6 +565,30 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
 
     const onCanvasMouseUp = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
+            const ad = atomDragRef.current;
+            if (ad) {
+                atomDragRef.current = null;
+                if (!ad.moved) {
+                    // Below threshold: let the click handler do its toggle.
+                    return;
+                }
+                const canvas = canvasRef.current;
+                const model = modelRef.current;
+                if (!canvas || !model) return;
+                const rect = canvas.getBoundingClientRect();
+                const px = e.clientX - rect.left;
+                const py = e.clientY - rect.top;
+                const { x: toX, y: toY } = modelFromPixel(canvas, px, py);
+                // setAtomPos previews have already moved the conformer; commit
+                // a single undo command capturing the original→final delta.
+                model.moveAtomUndoable(ad.idx, ad.fromX, ad.fromY, toX, toY);
+                suppressNextClickRef.current = true;
+                setStatus(
+                    `moved atom #${ad.idx} to ` +
+                        `(${toX.toFixed(2)}, ${toY.toFixed(2)})`,
+                );
+                return;
+            }
             if (!dragRect) return;
             const canvas = canvasRef.current;
             const model = modelRef.current;
@@ -588,6 +657,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         // Don't commit a drag-select that left the canvas — just cancel it.
         if (dragRect) {
             setDragRect(null);
+        }
+        // Cancel an atom-drag that left the canvas: restore the original
+        // position so the preview doesn't leave the atom stranded.
+        const ad = atomDragRef.current;
+        if (ad) {
+            atomDragRef.current = null;
+            if (ad.moved) {
+                modelRef.current?.setAtomPos(ad.idx, ad.fromX, ad.fromY);
+                setStatus(`move cancelled (atom #${ad.idx})`);
+            }
         }
     }, [dragRect]);
 

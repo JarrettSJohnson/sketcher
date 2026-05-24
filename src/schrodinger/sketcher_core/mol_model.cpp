@@ -135,6 +135,38 @@ void MolModel::clear()
         "Clear");
 }
 
+void MolModel::setAtomPos(unsigned int idx, double x, double y)
+{
+    if (idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    m_mol.getConformer().setAtomPos(idx, RDGeom::Point3D(x, y, 0));
+    // Direct emit (not emitSignal) — previews aren't commands and so don't
+    // run inside AllowEditsScope. Observers must repaint anyway.
+    modelChanged.emit();
+}
+
+void MolModel::moveAtomUndoable(unsigned int idx, double from_x, double from_y,
+                                double to_x, double to_y)
+{
+    if (idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    // Custom command (not snapshot-based) — a drag can leave the conformer
+    // anywhere; redo restores the *destination* position regardless.
+    // Deliberately does NOT clear selection: moving an atom doesn't reindex,
+    // so existing atom/bond indices remain valid.
+    auto redo = [this, idx, to_x, to_y] {
+        m_mol.getConformer().setAtomPos(idx, RDGeom::Point3D(to_x, to_y, 0));
+        emitSignal(modelChanged);
+    };
+    auto undo = [this, idx, from_x, from_y] {
+        m_mol.getConformer().setAtomPos(idx, RDGeom::Point3D(from_x, from_y, 0));
+        emitSignal(modelChanged);
+    };
+    doCommand(std::move(redo), std::move(undo), "Move atom");
+}
+
 // -- Selection ------------------------------------------------------------
 // Direct signal emission (rather than emitSignal) because selection changes
 // are deliberately not commands — they shouldn't go through AllowEditsScope.

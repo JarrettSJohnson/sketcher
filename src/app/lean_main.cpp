@@ -236,6 +236,15 @@ class MolModelJS
     {
         m_model.clear();
     }
+    void setAtomPos(unsigned int idx, double x, double y)
+    {
+        m_model.setAtomPos(idx, x, y);
+    }
+    void moveAtomUndoable(unsigned int idx, double from_x, double from_y,
+                          double to_x, double to_y)
+    {
+        m_model.moveAtomUndoable(idx, from_x, from_y, to_x, to_y);
+    }
     void undo()
     {
         m_stack.undo();
@@ -397,6 +406,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("removeAtom", &MolModelJS::removeAtom)
         .function("removeBond", &MolModelJS::removeBond)
         .function("clear", &MolModelJS::clear)
+        .function("setAtomPos", &MolModelJS::setAtomPos)
+        .function("moveAtomUndoable", &MolModelJS::moveAtomUndoable)
         .function("undo", &MolModelJS::undo)
         .function("redo", &MolModelJS::redo)
         .function("numAtoms", &MolModelJS::numAtoms)
