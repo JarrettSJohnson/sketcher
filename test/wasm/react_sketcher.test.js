@@ -417,6 +417,70 @@ test.describe('React Sketcher', () => {
         expect(rd.bonds[0].dir).toBeUndefined();
     });
 
+    test('Transform buttons rotate and flip the selection as single undo steps', async ({
+        page,
+    }) => {
+        // Load a benzene so we have a known structure to rotate without
+        // worrying about click-pixel-to-model conversion noise.
+        await page.getByTestId('smiles-input').fill('c1ccccc1');
+        await page.getByTestId('smiles-load').click();
+        // Capture initial positions.
+        const before = await snapshot(page);
+        // Sanity: load gave us 6 aromatic carbons.
+        expect(before.atoms).toHaveLength(6);
+
+        // Rotate 90° CCW with no selection — should rotate every atom around
+        // the molecular centroid. Centroid for centered benzene ~= (0, 0)
+        // (the depictor centers structures), so each atom's new (x, y) ~=
+        // (-y_old, x_old) about (0,0).
+        await page.getByTestId('rotate-ccw').click();
+        const rotated = await snapshot(page);
+        // Sum of squared distances from origin is invariant under rotation
+        // (cheap rotation check that doesn't depend on the depictor's exact
+        // atom order or centroid placement).
+        const sumR2 = (atoms) =>
+            atoms.reduce((s, a) => s + a.x * a.x + a.y * a.y, 0);
+        const sumXY = (atoms) =>
+            atoms.reduce((s, a) => s + a.x + a.y, 0);
+        expect(sumR2(rotated.atoms)).toBeCloseTo(sumR2(before.atoms), 4);
+        // Coordinates must actually have changed (rotation isn't a no-op).
+        const samePos = rotated.atoms.every(
+            (a, i) =>
+                Math.abs(a.x - before.atoms[i].x) < 1e-9 &&
+                Math.abs(a.y - before.atoms[i].y) < 1e-9,
+        );
+        expect(samePos).toBe(false);
+
+        // Single undo restores the original layout.
+        await page.getByTestId('undo').click();
+        const undone = await snapshot(page);
+        for (let i = 0; i < before.atoms.length; ++i) {
+            expect(undone.atoms[i].x).toBeCloseTo(before.atoms[i].x, 6);
+            expect(undone.atoms[i].y).toBeCloseTo(before.atoms[i].y, 6);
+        }
+
+        // Flip H: each atom's X-coord must be negated about the centroid.
+        // For a centered benzene the centroid X ~= 0, so X flips sign.
+        await page.getByTestId('flip-horizontal').click();
+        const flipped = await snapshot(page);
+        // sum of all X+Y is invariant under flip about centroid (each atom's
+        // displacement from centroid is negated, so the sum is preserved).
+        expect(sumXY(flipped.atoms)).toBeCloseTo(sumXY(before.atoms), 4);
+        await page.getByTestId('undo').click();
+        const undoneFlip = await snapshot(page);
+        for (let i = 0; i < before.atoms.length; ++i) {
+            expect(undoneFlip.atoms[i].x).toBeCloseTo(before.atoms[i].x, 6);
+            expect(undoneFlip.atoms[i].y).toBeCloseTo(before.atoms[i].y, 6);
+        }
+
+        // Rotate-on-empty is a friendly no-op with a status message.
+        await page.getByTestId('clear').click();
+        await page.getByTestId('rotate-cw').click();
+        await expect(page.getByTestId('sketcher-status')).toContainText(
+            'nothing to rotate',
+        );
+    });
+
     test('active stereo mode applies to newly-drawn bonds until toggled off', async ({
         page,
     }) => {

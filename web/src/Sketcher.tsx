@@ -1168,6 +1168,32 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setStatus('cleaned up layout');
     };
 
+    // Rotate / flip apply to the current selection (or the whole mol when
+    // nothing is selected — mirrors the Qt sketcher's behavior). Both go
+    // through a single undo step so the user can Ctrl+Z to revert.
+    const doRotate = (angleRad: number, label: string): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        if (model.numAtoms() === 0) {
+            setStatus('nothing to rotate — sketch something first');
+            return;
+        }
+        model.rotateSelectedAtoms(angleRad);
+        const scope = model.hasSelection() ? 'selection' : 'all atoms';
+        setStatus(`${label} (${scope})`);
+    };
+    const doFlip = (horizontal: boolean, label: string): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        if (model.numAtoms() === 0) {
+            setStatus('nothing to flip — sketch something first');
+            return;
+        }
+        model.flipSelectedAtoms(horizontal);
+        const scope = model.hasSelection() ? 'selection' : 'all atoms';
+        setStatus(`${label} (${scope})`);
+    };
+
     const doFit = (): void => {
         const model = modelRef.current;
         const canvas = canvasRef.current;
@@ -1427,6 +1453,36 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             onClick={doFit}
                             testid='fit-to-screen'
                             title='Fit the structure to the canvas'
+                        />
+                    </Section>
+                    <Section label='Transform'>
+                        <ActionButton
+                            label='↻ 90°'
+                            onClick={() =>
+                                doRotate(-Math.PI / 2, 'rotated 90° CW')
+                            }
+                            testid='rotate-cw'
+                            title='Rotate selection 90° clockwise (whole mol if no selection)'
+                        />
+                        <ActionButton
+                            label='↺ 90°'
+                            onClick={() =>
+                                doRotate(Math.PI / 2, 'rotated 90° CCW')
+                            }
+                            testid='rotate-ccw'
+                            title='Rotate selection 90° counter-clockwise (whole mol if no selection)'
+                        />
+                        <ActionButton
+                            label='Flip H'
+                            onClick={() => doFlip(true, 'flipped horizontal')}
+                            testid='flip-horizontal'
+                            title='Flip selection left↔right (whole mol if no selection)'
+                        />
+                        <ActionButton
+                            label='Flip V'
+                            onClick={() => doFlip(false, 'flipped vertical')}
+                            testid='flip-vertical'
+                            title='Flip selection top↔bottom (whole mol if no selection)'
                         />
                     </Section>
                     <Section label='Stereo'>

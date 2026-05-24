@@ -392,6 +392,62 @@ test.describe('Phase 0 Qt-free MolModel via embind', () => {
         expect(result.afterFirstUndo).toEqual([undefined, undefined]);
     });
 
+    test('rotateSelectedAtoms rotates the selection around its centroid as one undo step', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('C', 0, 0);
+            m.addAtom('C', 2, 0);
+            m.addAtom('C', 1, 3);
+            m.setAtomSelected(0, true);
+            m.setAtomSelected(1, true);
+            // CCW pi/2 around centroid (1, 0): (0,0)->(1,-1); (2,0)->(1,1).
+            m.rotateSelectedAtoms(Math.PI / 2);
+            const after = JSON.parse(m.description()).atoms;
+            m.undo();
+            const undone = JSON.parse(m.description()).atoms;
+            m.delete();
+            return { after, undone };
+        });
+        // Atom 2 is untouched (not in selection).
+        expect(result.after[2].x).toBeCloseTo(1, 6);
+        expect(result.after[2].y).toBeCloseTo(3, 6);
+        expect(result.after[0].x).toBeCloseTo(1, 6);
+        expect(result.after[0].y).toBeCloseTo(-1, 6);
+        expect(result.after[1].x).toBeCloseTo(1, 6);
+        expect(result.after[1].y).toBeCloseTo(1, 6);
+        // One undo restores the original positions.
+        expect(result.undone[0].x).toBeCloseTo(0, 6);
+        expect(result.undone[0].y).toBeCloseTo(0, 6);
+        expect(result.undone[1].x).toBeCloseTo(2, 6);
+        expect(result.undone[1].y).toBeCloseTo(0, 6);
+    });
+
+    test('flipSelectedAtoms flips horizontally / vertically around the centroid', async ({ page }) => {
+        const result = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.addAtom('C', 0, 1);
+            m.addAtom('C', 4, 3);
+            // Whole-mol flip (no selection) about centroid (2, 2).
+            m.flipSelectedAtoms(true); // horizontal: negate X about cx=2
+            const hor = JSON.parse(m.description()).atoms;
+            m.undo();
+            m.flipSelectedAtoms(false); // vertical: negate Y about cy=2
+            const ver = JSON.parse(m.description()).atoms;
+            m.delete();
+            return { hor, ver };
+        });
+        // (0,1) -> (4,1); (4,3) -> (0,3) after horizontal flip.
+        expect(result.hor[0].x).toBeCloseTo(4, 6);
+        expect(result.hor[0].y).toBeCloseTo(1, 6);
+        expect(result.hor[1].x).toBeCloseTo(0, 6);
+        expect(result.hor[1].y).toBeCloseTo(3, 6);
+        // After undo + vertical flip: (0,1) -> (0,3); (4,3) -> (4,1).
+        expect(result.ver[0].x).toBeCloseTo(0, 6);
+        expect(result.ver[0].y).toBeCloseTo(3, 6);
+        expect(result.ver[1].x).toBeCloseTo(4, 6);
+        expect(result.ver[1].y).toBeCloseTo(1, 6);
+    });
+
     test('addBondWithDir applies dir on creation and collapses to one undo step', async ({ page }) => {
         const result = await page.evaluate(() => {
             const m = new window.Module.MolModel();

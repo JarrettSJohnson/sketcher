@@ -527,6 +527,104 @@ void MolModel::cleanUp()
         "Clean up");
 }
 
+namespace
+{
+/**
+ * Atoms to transform for rotate/flip: the current selection when one exists,
+ * otherwise every atom in the mol. Returns an empty vector when the mol is
+ * empty; callers should treat that as a no-op.
+ */
+std::vector<unsigned int>
+transform_target_indices(const RDKit::RWMol& mol,
+                         const std::unordered_set<unsigned int>& selected)
+{
+    if (mol.getNumAtoms() == 0) {
+        return {};
+    }
+    std::vector<unsigned int> indices;
+    if (!selected.empty()) {
+        indices.assign(selected.begin(), selected.end());
+        std::sort(indices.begin(), indices.end());
+    } else {
+        indices.reserve(mol.getNumAtoms());
+        for (unsigned int i = 0; i < mol.getNumAtoms(); ++i) {
+            indices.push_back(i);
+        }
+    }
+    return indices;
+}
+} // namespace
+
+void MolModel::rotateSelectedAtoms(double angle_rad)
+{
+    auto indices = transform_target_indices(m_mol, m_selected_atoms);
+    if (indices.empty()) {
+        return;
+    }
+    const auto& conf = m_mol.getConformer();
+    double cx = 0.0;
+    double cy = 0.0;
+    for (auto i : indices) {
+        const auto& p = conf.getAtomPos(i);
+        cx += p.x;
+        cy += p.y;
+    }
+    cx /= static_cast<double>(indices.size());
+    cy /= static_cast<double>(indices.size());
+
+    const double cos_a = std::cos(angle_rad);
+    const double sin_a = std::sin(angle_rad);
+    std::vector<double> from_xs(indices.size());
+    std::vector<double> from_ys(indices.size());
+    std::vector<double> to_xs(indices.size());
+    std::vector<double> to_ys(indices.size());
+    for (size_t k = 0; k < indices.size(); ++k) {
+        const auto& p = conf.getAtomPos(indices[k]);
+        from_xs[k] = p.x;
+        from_ys[k] = p.y;
+        const double dx = p.x - cx;
+        const double dy = p.y - cy;
+        to_xs[k] = cx + dx * cos_a - dy * sin_a;
+        to_ys[k] = cy + dx * sin_a + dy * cos_a;
+    }
+    // moveAtomsUndoable already wraps the batch in a macro, so the user
+    // experiences this as a single Ctrl+Z step.
+    moveAtomsUndoable(indices, from_xs, from_ys, to_xs, to_ys);
+}
+
+void MolModel::flipSelectedAtoms(bool horizontal)
+{
+    auto indices = transform_target_indices(m_mol, m_selected_atoms);
+    if (indices.empty()) {
+        return;
+    }
+    const auto& conf = m_mol.getConformer();
+    double cx = 0.0;
+    double cy = 0.0;
+    for (auto i : indices) {
+        const auto& p = conf.getAtomPos(i);
+        cx += p.x;
+        cy += p.y;
+    }
+    cx /= static_cast<double>(indices.size());
+    cy /= static_cast<double>(indices.size());
+
+    std::vector<double> from_xs(indices.size());
+    std::vector<double> from_ys(indices.size());
+    std::vector<double> to_xs(indices.size());
+    std::vector<double> to_ys(indices.size());
+    for (size_t k = 0; k < indices.size(); ++k) {
+        const auto& p = conf.getAtomPos(indices[k]);
+        from_xs[k] = p.x;
+        from_ys[k] = p.y;
+        // "horizontal" flip = mirror left↔right = negate X about the centroid.
+        // "vertical" flip = mirror top↔bottom = negate Y about the centroid.
+        to_xs[k] = horizontal ? (2.0 * cx - p.x) : p.x;
+        to_ys[k] = horizontal ? p.y : (2.0 * cy - p.y);
+    }
+    moveAtomsUndoable(indices, from_xs, from_ys, to_xs, to_ys);
+}
+
 std::string MolModel::toMolBlock(bool v3000) const
 {
     if (m_mol.getNumAtoms() == 0) {

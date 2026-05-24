@@ -340,6 +340,14 @@ class MolModelJS
     {
         m_model.addRing(size, cx, cy, aromatic);
     }
+    void rotateSelectedAtoms(double angle_rad)
+    {
+        m_model.rotateSelectedAtoms(angle_rad);
+    }
+    void flipSelectedAtoms(bool horizontal)
+    {
+        m_model.flipSelectedAtoms(horizontal);
+    }
     void adjustChargeOnSelectedAtoms(int delta)
     {
         m_model.adjustChargeOnSelectedAtoms(delta);
@@ -549,6 +557,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("setBondDirForSelectedBonds",
                   &MolModelJS::setBondDirForSelectedBonds)
         .function("addRing", &MolModelJS::addRing)
+        .function("rotateSelectedAtoms", &MolModelJS::rotateSelectedAtoms)
+        .function("flipSelectedAtoms", &MolModelJS::flipSelectedAtoms)
         .function("adjustChargeOnSelectedAtoms",
                   &MolModelJS::adjustChargeOnSelectedAtoms)
         .function("loadFromSmiles", &MolModelJS::loadFromSmiles)

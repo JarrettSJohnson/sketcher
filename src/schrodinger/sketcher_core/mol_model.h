@@ -216,6 +216,23 @@ class MolModel : public UndoableModel
      */
     void cleanUp();
 
+    /**
+     * Rotate every selected atom by `angle_rad` (counterclockwise, since the
+     * model-space Y axis points up) around the centroid of the selection.
+     * When no atoms are selected, rotates the whole mol around its centroid.
+     * Single undo step. No-op on empty mol. Preserves selection.
+     */
+    void rotateSelectedAtoms(double angle_rad);
+
+    /**
+     * Flip every selected atom across a horizontal (when `horizontal` is true:
+     * mirror left↔right, i.e. negate X about the centroid X) or vertical
+     * (mirror top↔bottom: negate Y about the centroid Y) axis through the
+     * selection centroid. When no atoms are selected, flips the whole mol.
+     * Single undo step. No-op on empty mol. Preserves selection.
+     */
+    void flipSelectedAtoms(bool horizontal);
+
     // -- Selection --------------------------------------------------------
     // Selection is transient UI state, not undoable. Any mutation that may
     // reindex atoms/bonds clears it (matching the simplest correct policy

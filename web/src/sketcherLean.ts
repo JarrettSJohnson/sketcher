@@ -45,6 +45,18 @@ export interface MolModelInstance {
     setBondDirUndoable(begin: number, end: number, dir: number): void;
     setBondDirForSelectedBonds(dir: number): void;
     addRing(size: number, cx: number, cy: number, aromatic: boolean): void;
+    /**
+     * Rotate selected atoms (or all atoms when nothing is selected) by
+     * angle_rad counterclockwise around their centroid. Single undo step.
+     */
+    rotateSelectedAtoms(angleRad: number): void;
+    /**
+     * Flip selected atoms (or all atoms when nothing is selected) across a
+     * horizontal axis (left↔right when horizontal=true) or vertical axis
+     * (top↔bottom when horizontal=false) through the centroid. Single undo
+     * step.
+     */
+    flipSelectedAtoms(horizontal: boolean): void;
     adjustChargeOnSelectedAtoms(delta: number): void;
     /** Replace mol with parsed SMILES. Throws if SMILES is malformed. */
     loadFromSmiles(smiles: string): void;

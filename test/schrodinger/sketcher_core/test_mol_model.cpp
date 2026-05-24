@@ -532,6 +532,108 @@ BOOST_AUTO_TEST_CASE(testAddBondWithDirNoneFallsThroughToAddBond)
     BOOST_CHECK_EQUAL(stack.count(), count_after_atoms + 1);
 }
 
+BOOST_AUTO_TEST_CASE(testRotateSelectedAtoms90CWAroundCentroidAndUndo)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    // Three atoms with known centroid at (1, 1).
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 2, 0);
+    m.addAtom("C", 1, 3);
+    // Select only the first two — centroid of selection is (1, 0).
+    m.setAtomSelected(0, true);
+    m.setAtomSelected(1, true);
+
+    const auto count_before = stack.count();
+    // CW 90° in math convention is -pi/2 (since Y points up in model coords).
+    m.rotateSelectedAtoms(-M_PI_2);
+
+    // Selection centroid was (1, 0): atom 0 (0,0) rotates to (1, 1); atom 1
+    // (2, 0) rotates to (1, -1). Atom 2 is untouched.
+    auto pos = [&](unsigned i) { return m.mol().getConformer().getAtomPos(i); };
+    BOOST_CHECK_CLOSE(pos(0).x, 1.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(0).y, 1.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(1).x, 1.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(1).y, -1.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(2).x, 1.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(2).y, 3.0, 1e-6);
+    // Selection survives the rotation — rotating doesn't reindex.
+    BOOST_CHECK(m.isAtomSelected(0));
+    BOOST_CHECK(m.isAtomSelected(1));
+    // Single undo step on the stack — rotate wraps moveAtomsUndoable's macro.
+    BOOST_CHECK_EQUAL(stack.count(), count_before + 1);
+
+    stack.undo();
+    BOOST_CHECK_CLOSE(pos(0).x, 0.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(0).y, 0.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(1).x, 2.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(1).y, 0.0, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(testRotateWithNoSelectionRotatesEntireMol)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 2, 0);
+    // Centroid is (1, 0). Rotate +pi/2 (CCW): (0,0) -> (1, -1), (2,0) -> (1, 1).
+    m.rotateSelectedAtoms(M_PI_2);
+    auto pos = [&](unsigned i) { return m.mol().getConformer().getAtomPos(i); };
+    BOOST_CHECK_CLOSE(pos(0).x, 1.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(0).y, -1.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(1).x, 1.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(1).y, 1.0, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(testFlipHorizontalMirrorsAcrossCentroidX)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 1); // centroid x = 1
+    m.addAtom("C", 2, 3);
+    const auto count_before = stack.count();
+
+    m.flipSelectedAtoms(true);
+    auto pos = [&](unsigned i) { return m.mol().getConformer().getAtomPos(i); };
+    // (0,1) -> (2, 1); (2, 3) -> (0, 3); Y unchanged.
+    BOOST_CHECK_CLOSE(pos(0).x, 2.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(0).y, 1.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(1).x, 0.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(1).y, 3.0, 1e-6);
+    // Single undo step.
+    BOOST_CHECK_EQUAL(stack.count(), count_before + 1);
+
+    stack.undo();
+    BOOST_CHECK_CLOSE(pos(0).x, 0.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(1).x, 2.0, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(testFlipVerticalMirrorsAcrossCentroidY)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 1, 0);
+    m.addAtom("C", 3, 2);
+    m.flipSelectedAtoms(false);
+    auto pos = [&](unsigned i) { return m.mol().getConformer().getAtomPos(i); };
+    // centroid y = 1; (1, 0) -> (1, 2); (3, 2) -> (3, 0).
+    BOOST_CHECK_CLOSE(pos(0).x, 1.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(0).y, 2.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(1).x, 3.0, 1e-6);
+    BOOST_CHECK_CLOSE(pos(1).y, 0.0, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(testRotateAndFlipAreNoOpsOnEmptyMol)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    const auto count_before = stack.count();
+    m.rotateSelectedAtoms(M_PI_2);
+    m.flipSelectedAtoms(true);
+    m.flipSelectedAtoms(false);
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+}
+
 BOOST_AUTO_TEST_CASE(testPropertyCacheRefreshExposesImplicitHs)
 {
     // doMutation refreshes the implicit-valence cache so callers can read
