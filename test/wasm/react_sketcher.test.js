@@ -166,6 +166,71 @@ test.describe('React Sketcher', () => {
         expect(rd.atoms.some((a) => a.sel)).toBe(false);
     });
 
+    test('rubber-band drag selects atoms inside the rectangle', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+
+        await page.getByTestId('tool-select').click();
+        // Drag a rectangle that encloses only the first two atoms.
+        const box = await canvas.boundingBox();
+        const startX = box.x + 60;
+        const startY = box.y + 100;
+        const endX = box.x + 320;
+        const endY = box.y + 260;
+        await page.mouse.move(startX, startY);
+        await page.mouse.down();
+        await page.mouse.move(startX + 30, startY + 30, { steps: 4 });
+        await page.mouse.move(endX, endY, { steps: 6 });
+        await page.mouse.up();
+
+        let rd = await snapshot(page);
+        expect(rd.atoms.map((a) => !!a.sel)).toEqual([true, true, false]);
+
+        // Plain drag elsewhere replaces the selection (does not add).
+        await page.mouse.move(box.x + 360, box.y + 100);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 470, box.y + 260, { steps: 6 });
+        await page.mouse.up();
+        rd = await snapshot(page);
+        expect(rd.atoms.map((a) => !!a.sel)).toEqual([false, false, true]);
+
+        // Shift-drag adds to the existing selection.
+        await page.keyboard.down('Shift');
+        await page.mouse.move(box.x + 60, box.y + 100);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 200, box.y + 260, { steps: 6 });
+        await page.mouse.up();
+        await page.keyboard.up('Shift');
+        rd = await snapshot(page);
+        expect(rd.atoms.map((a) => !!a.sel)).toEqual([true, false, true]);
+    });
+
+    test('rubber-band drag selects a bond when both endpoints fall inside', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-bond').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+
+        await page.getByTestId('tool-select').click();
+        const box = await canvas.boundingBox();
+        await page.mouse.move(box.x + 60, box.y + 100);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 320, box.y + 260, { steps: 6 });
+        await page.mouse.up();
+
+        const rd = await snapshot(page);
+        expect(rd.atoms.every((a) => a.sel)).toBe(true);
+        expect(rd.bonds.every((b) => b.sel)).toBe(true);
+    });
+
     test('select-all selects everything and a mutation clears selection', async ({
         page,
     }) => {

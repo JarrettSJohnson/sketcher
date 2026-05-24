@@ -124,11 +124,34 @@ function nearestBondIndex(
     return bestIdx;
 }
 
+interface DragRect {
+    startPx: number;
+    startPy: number;
+    curPx: number;
+    curPy: number;
+    additive: boolean;
+}
+
+function dragRectBounds(d: DragRect): {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+} {
+    return {
+        x1: Math.min(d.startPx, d.curPx),
+        y1: Math.min(d.startPy, d.curPy),
+        x2: Math.max(d.startPx, d.curPx),
+        y2: Math.max(d.startPy, d.curPy),
+    };
+}
+
 function drawSketch(
     canvas: HTMLCanvasElement,
     rd: RenderDesc,
     pendingAtomIdx: number | null,
     hoverAtomIdx: number | null,
+    dragRect: DragRect | null,
 ): void {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -234,6 +257,17 @@ function drawSketch(
             ctx.fillText(a.el, px, py);
         }
     }
+
+    if (dragRect) {
+        const { x1, y1, x2, y2 } = dragRectBounds(dragRect);
+        ctx.fillStyle = 'rgba(29, 78, 216, 0.10)';
+        ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+        ctx.strokeStyle = '#1d4ed8';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeRect(x1 + 0.5, y1 + 0.5, x2 - x1 - 1, y2 - y1 - 1);
+        ctx.setLineDash([]);
+    }
 }
 
 interface SketcherProps {
@@ -246,12 +280,17 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const subscriptionRef = useRef<number | null>(null);
     const selectionSubscriptionRef = useRef<number | null>(null);
     const pendingRef = useRef<number | null>(null);
+    // Suppress the click event that fires after a drag-select mouseUp — we
+    // already committed the selection in mouseUp and don't want the click
+    // handler to interpret the release as a toggle/clear.
+    const suppressNextClickRef = useRef<boolean>(false);
 
     const [tool, setTool] = useState<Tool>('atom');
     const [element, setElement] = useState<Element>('C');
     const [bondOrder, setBondOrder] = useState<BondOrder>(1);
     const [pendingBondAtom, setPendingBondAtom] = useState<number | null>(null);
     const [hoverAtom, setHoverAtom] = useState<number | null>(null);
+    const [dragRect, setDragRect] = useState<DragRect | null>(null);
     const [status, setStatus] = useState<string>('ready');
     const [, bumpVersion] = useReducer((v: number) => v + 1, 0);
 
@@ -309,7 +348,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         } catch {
             rd = BLANK_DESC;
         }
-        drawSketch(canvas, rd, pendingBondAtom, hoverAtom);
+        drawSketch(canvas, rd, pendingBondAtom, hoverAtom, dragRect);
     });
 
     // Keep a ref in sync so the cleanup callback (which doesn't re-create on
@@ -320,6 +359,13 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
 
     const onCanvasClick = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
+            if (suppressNextClickRef.current) {
+                // The click event fires immediately after a drag-select
+                // mouseUp; ignore it here so we don't override the rectangle
+                // selection we just committed.
+                suppressNextClickRef.current = false;
+                return;
+            }
             const canvas = canvasRef.current;
             const model = modelRef.current;
             if (!canvas || !model) return;
@@ -415,13 +461,17 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const canvas = canvasRef.current;
             const model = modelRef.current;
             if (!canvas || !model) return;
+            const rect = canvas.getBoundingClientRect();
+            const px = e.clientX - rect.left;
+            const py = e.clientY - rect.top;
+            if (dragRect) {
+                setDragRect({ ...dragRect, curPx: px, curPy: py });
+                return;
+            }
             if (tool !== 'bond') {
                 if (hoverAtom !== null) setHoverAtom(null);
                 return;
             }
-            const rect = canvas.getBoundingClientRect();
-            const px = e.clientX - rect.left;
-            const py = e.clientY - rect.top;
             let atoms: AtomDesc[] = [];
             try {
                 atoms = (JSON.parse(model.description()) as RenderDesc).atoms;
@@ -432,8 +482,114 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const next = hit >= 0 ? hit : null;
             if (next !== hoverAtom) setHoverAtom(next);
         },
-        [tool, hoverAtom],
+        [tool, hoverAtom, dragRect],
     );
+
+    const onCanvasMouseDown = useCallback(
+        (e: ReactMouseEvent<HTMLCanvasElement>): void => {
+            if (tool !== 'select') return;
+            if (e.button !== 0) return;
+            const canvas = canvasRef.current;
+            const model = modelRef.current;
+            if (!canvas || !model) return;
+            const rect = canvas.getBoundingClientRect();
+            const px = e.clientX - rect.left;
+            const py = e.clientY - rect.top;
+
+            let rd: RenderDesc = BLANK_DESC;
+            try {
+                rd = JSON.parse(model.description()) as RenderDesc;
+            } catch {
+                rd = BLANK_DESC;
+            }
+            // If the press lands on an atom or bond, let the click handler
+            // do its toggle — only empty-area presses start a rectangle.
+            if (nearestAtomIndex(canvas, rd.atoms, px, py) >= 0) return;
+            if (nearestBondIndex(canvas, rd, px, py) >= 0) return;
+
+            setDragRect({
+                startPx: px,
+                startPy: py,
+                curPx: px,
+                curPy: py,
+                additive: e.shiftKey,
+            });
+        },
+        [tool],
+    );
+
+    const onCanvasMouseUp = useCallback(
+        (e: ReactMouseEvent<HTMLCanvasElement>): void => {
+            if (!dragRect) return;
+            const canvas = canvasRef.current;
+            const model = modelRef.current;
+            if (!canvas || !model) {
+                setDragRect(null);
+                return;
+            }
+            const { x1, y1, x2, y2 } = dragRectBounds(dragRect);
+            const w = x2 - x1;
+            const h = y2 - y1;
+            const isRealDrag = w > 3 && h > 3;
+            setDragRect(null);
+            if (!isRealDrag) {
+                // Treat a tiny drag as a click — let onClick handle it.
+                return;
+            }
+            // Suppress the click event that React will fire next from this
+            // same mouse gesture.
+            suppressNextClickRef.current = true;
+
+            let rd: RenderDesc = BLANK_DESC;
+            try {
+                rd = JSON.parse(model.description()) as RenderDesc;
+            } catch {
+                rd = BLANK_DESC;
+            }
+            if (!dragRect.additive) {
+                model.clearSelection();
+            }
+            let nSelected = 0;
+            const atomInRect = new Array<boolean>(rd.atoms.length).fill(false);
+            for (const a of rd.atoms) {
+                const { px, py } = pixelFromModel(canvas, a.x, a.y);
+                if (px >= x1 && px <= x2 && py >= y1 && py <= y2) {
+                    atomInRect[a.i] = true;
+                    if (!model.isAtomSelected(a.i)) {
+                        model.setAtomSelected(a.i, true);
+                    }
+                    ++nSelected;
+                }
+            }
+            // Select a bond when both endpoints fell inside the rectangle.
+            // Strict containment avoids surprising partial selections.
+            let nBondsSelected = 0;
+            for (let i = 0; i < rd.bonds.length; ++i) {
+                const b = rd.bonds[i];
+                if (atomInRect[b.a] && atomInRect[b.b]) {
+                    if (!model.isBondSelected(i)) {
+                        model.setBondSelected(i, true);
+                    }
+                    ++nBondsSelected;
+                }
+            }
+            setStatus(
+                `rectangle: ${nSelected} atom${nSelected === 1 ? '' : 's'}, ` +
+                    `${nBondsSelected} bond${nBondsSelected === 1 ? '' : 's'}` +
+                    (dragRect.additive ? ' (added)' : ''),
+            );
+            void e; // silence unused-param lint without changing the signature
+        },
+        [dragRect],
+    );
+
+    const onCanvasMouseLeave = useCallback((): void => {
+        setHoverAtom(null);
+        // Don't commit a drag-select that left the canvas — just cancel it.
+        if (dragRect) {
+            setDragRect(null);
+        }
+    }, [dragRect]);
 
     const doUndo = (): void => {
         modelRef.current?.undo();
@@ -547,8 +703,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     height={CANVAS_H}
                     style={styles.canvas}
                     onClick={onCanvasClick}
+                    onMouseDown={onCanvasMouseDown}
                     onMouseMove={onCanvasMove}
-                    onMouseLeave={() => setHoverAtom(null)}
+                    onMouseUp={onCanvasMouseUp}
+                    onMouseLeave={onCanvasMouseLeave}
                     data-testid='sketcher-canvas'
                 />
                 <div style={styles.statusBox} data-testid='sketcher-status'>
