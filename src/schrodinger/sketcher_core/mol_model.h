@@ -213,6 +213,19 @@ class MolModel : public UndoableModel
     std::string toMolBlock(bool v3000) const;
 
     /**
+     * Serialize just the current selection as an MDL MOL block. Auto-extends
+     * the selection so any selected bond has both endpoints in the kept set
+     * (mirrors Qt `MolModel::getSelectedMolForExport`,
+     * model/mol_model.cpp:240-271). Returns "" when nothing is selected or
+     * the writer fails. The live selection is not mutated — extension only
+     * runs against a local copy. Bonds whose both endpoints land in the
+     * selection survive even if the bond itself wasn't selected (matches
+     * RDKit's `removeAtom`-keeps-incident-bonds-where-both-survive policy
+     * that Qt relies on).
+     */
+    std::string toMolBlockForSelection(bool v3000) const;
+
+    /**
      * Promote every implicit hydrogen to an explicit atom with a generated
      * 2D position. Single undo step. No-op when the mol is empty; safe to
      * call repeatedly (a fully-explicit mol just stays that way).

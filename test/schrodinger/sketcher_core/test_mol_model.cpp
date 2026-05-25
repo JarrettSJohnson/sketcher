@@ -916,6 +916,44 @@ BOOST_AUTO_TEST_CASE(testToMolBlockV3000HasV3000Tag)
     BOOST_CHECK(mb.find("M  V30 COUNTS 3 2") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(testToMolBlockForSelectionEmptyWhenNothingSelected)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    BOOST_CHECK_EQUAL(m.toMolBlockForSelection(/*v3000=*/true), "");
+}
+
+BOOST_AUTO_TEST_CASE(testToMolBlockForSelectionExportsSelectedAtomsOnly)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    // CCO: idx 0=C, 1=C, 2=O, bonds 0=(0-1), 1=(1-2). Select the C–C bond's
+    // two atoms but NOT the O. Expected output: a 2-atom / 1-bond fragment.
+    m.loadFromSmiles("CCO");
+    m.setAtomSelected(0, true);
+    m.setAtomSelected(1, true);
+    const auto mb = m.toMolBlockForSelection(/*v3000=*/true);
+    BOOST_CHECK(mb.find("V3000") != std::string::npos);
+    BOOST_CHECK(mb.find("M  V30 COUNTS 2 1") != std::string::npos);
+    // Live selection survives — toMolBlockForSelection is read-only.
+    BOOST_CHECK(m.isAtomSelected(0));
+    BOOST_CHECK(m.isAtomSelected(1));
+    BOOST_CHECK(!m.isAtomSelected(2));
+}
+
+BOOST_AUTO_TEST_CASE(testToMolBlockForSelectionAutoExtendsSelectedBondEndpoints)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    // Select only the C–O bond (idx 1); its endpoints (1, 2) should be
+    // auto-included even though they aren't explicitly in m_selected_atoms.
+    m.setBondSelected(1, true);
+    const auto mb = m.toMolBlockForSelection(/*v3000=*/true);
+    BOOST_CHECK(mb.find("M  V30 COUNTS 2 1") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(testLoadFromTextRoundTripsMolBlock)
 {
     UndoStack stack;

@@ -2242,6 +2242,26 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             setStatus(`paste failed: ${msg || 'unrecognized format'}`);
         }
     };
+    const doCut = async (): Promise<void> => {
+        // Qt's CutCopyActionManager (cut_copy_action_manager.cpp:131-135)
+        // does copy(SELECTION) followed by removeSelected on the model. The
+        // copy uses MDL_MOLV3000 by default. Selection auto-extends to bond
+        // endpoints inside toMolBlockForSelection.
+        const model = modelRef.current;
+        if (!model) return;
+        if (!model.hasSelection()) {
+            setStatus('nothing to cut — select something first');
+            return;
+        }
+        const mb = model.toMolBlockForSelection(true);
+        if (!mb) {
+            setStatus('nothing to cut — select something first');
+            return;
+        }
+        await writeToClipboard(mb, 'MOL V3000');
+        model.deleteSelected();
+        setPendingBondAtom(null);
+    };
 
     // Import-from-File: programmatically open the hidden <input type=file>
     // and pipe the chosen file's text through loadFromText. Qt opens a
@@ -2658,11 +2678,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
             if (mod && lower === 'x') {
-                // Cut needs a model.toMolBlockForSelection (selection-aware
-                // export) + removeSelected primitive (Qt:
-                // sketcher_widget.cpp:561-564). Deferred to a follow-up.
+                // Qt's CutCopyActionManager (cut_copy_action_manager.cpp:131)
+                // does Copy(MOLV3000) + removeSelected. Cut is enabled only
+                // when there's a selection (Qt: cut_copy_action_manager.cpp:55).
                 e.preventDefault();
-                comingSoon('Cut');
+                void doCut();
                 return;
             }
 

@@ -1241,6 +1241,87 @@ test.describe('React Sketcher', () => {
         expect(after.atoms).toHaveLength(1);
     });
 
+    test('Ctrl+X cuts the selection to the clipboard as MOL V3000 and removes it from the model', async ({ page }) => {
+        // Qt's CutCopyActionManager (cut_copy_action_manager.cpp:131-135)
+        // does copy(MOLV3000) + removeSelected. Round-trip: load CCO, select
+        // all, Ctrl+X — clipboard should hold a V3000 MOL of the 3-atom
+        // fragment, and the sketch should be empty after the cut.
+        await loadText(page, 'CCO');
+        await page.getByTestId('select-all').click();
+
+        const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+        await page.keyboard.press(`${modifier}+x`);
+
+        // Clipboard now holds the MOL V3000 block.
+        const clip = await page.evaluate(() => navigator.clipboard.readText());
+        expect(clip).toContain('V3000');
+        expect(clip).toMatch(/COUNTS 3 2/);
+
+        // Sketch is empty.
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(0);
+        expect(rd.bonds).toHaveLength(0);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/copied MOL V3000/);
+
+        // Undo restores the cut atoms (deleteSelected is undoable).
+        await page.getByTestId('undo').click();
+        const restored = await snapshot(page);
+        expect(restored.atoms).toHaveLength(3);
+        expect(restored.bonds).toHaveLength(2);
+    });
+
+    test('Ctrl+X with no selection surfaces a friendly hint, no clipboard write, no model change', async ({ page }) => {
+        // Qt's m_cut_action->setEnabled(has_contents && has_selection)
+        // (cut_copy_action_manager.cpp:55). Without a selection the action
+        // is disabled. We surface a friendly status instead.
+        await loadText(page, 'CCO');
+        await page.evaluate(() => navigator.clipboard.writeText('sentinel'));
+
+        const before = await snapshot(page);
+        expect(before.atoms).toHaveLength(3);
+
+        const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+        await page.keyboard.press(`${modifier}+x`);
+
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/nothing to cut/);
+
+        // Clipboard untouched.
+        const clip = await page.evaluate(() => navigator.clipboard.readText());
+        expect(clip).toBe('sentinel');
+
+        // Model untouched.
+        const after = await snapshot(page);
+        expect(after.atoms).toHaveLength(3);
+    });
+
+    test('Ctrl+X with a partial selection cuts only the selected fragment, leaving the rest', async ({ page }) => {
+        // Qt's getSelectedMolForExport (mol_model.cpp:240-271) auto-extends
+        // selection from selected bonds to their endpoints, then removes
+        // unselected atoms. The lean toMolBlockForSelection mirrors this.
+        // Drive selection programmatically through the exposed model so the
+        // test doesn't depend on layout coords.
+        await loadText(page, 'CCO');
+        await page.evaluate(() => {
+            const m = window.SketcherModel;
+            m.clearSelection();
+            m.setAtomSelected(2, true); // the O
+        });
+
+        const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+        await page.keyboard.press(`${modifier}+x`);
+
+        const clip = await page.evaluate(() => navigator.clipboard.readText());
+        expect(clip).toContain('V3000');
+        expect(clip).toMatch(/COUNTS 1 0/);
+
+        // The two unselected carbons remain.
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+        expect(rd.atoms.every((a) => a.el === 'C')).toBe(true);
+    });
+
     test('charge +/- buttons adjust selected-atom formal charge', async ({ page }) => {
         const canvas = page.getByTestId('sketcher-canvas');
         await page.getByTestId('element-N').click();
@@ -1809,7 +1890,7 @@ test.describe('React Sketcher', () => {
         expect(rd.atoms[0].q).toBe(-1);
     });
 
-    test('stub shortcuts (Ctrl+X, 0 bond) surface a status; D/T without selection surfaces a friendly hint', async ({
+    test('stub shortcuts (0 bond) surface a status; D/T without selection surfaces a friendly hint', async ({
         page,
     }) => {
         const status = page.getByTestId('sketcher-status');
@@ -1824,9 +1905,9 @@ test.describe('React Sketcher', () => {
         // mentions Deuterium / Tritium so users can tell what the shortcut
         // would do. Ctrl+C was a stub before batch 16 (now copies as MOL
         // V3000); Ctrl+V was a stub before batch 17 (now pastes via
-        // clipboard-read + AUTO_DETECT).
+        // clipboard-read + AUTO_DETECT); Ctrl+X was a stub before batch 18
+        // (now cuts via toMolBlockForSelection + deleteSelected).
         const checks = [
-            ['ControlOrMeta+x', /Cut/],
             ['d', /Deuterium.*select atoms first/],
             ['t', /Tritium.*select atoms first/],
             ['0', /Zero bond/],

@@ -89,6 +89,12 @@ export interface MolModelInstance {
     toSmiles(): string;
     /** MDL MOL block (V3000 if `v3000` else V2000); empty for empty mol. */
     toMolBlock(v3000: boolean): string;
+    /**
+     * MDL MOL block of just the current selection. Auto-extends selection so
+     * every selected bond keeps both endpoints. Returns "" when nothing is
+     * selected. Used by Ctrl+X (Cut) and Copy when a selection is present.
+     */
+    toMolBlockForSelection(v3000: boolean): string;
     /** Promote every implicit hydrogen to an explicit atom. Single undo step. */
     addHydrogens(): void;
     /** Strip explicit hydrogens back to implicit. Single undo step. */

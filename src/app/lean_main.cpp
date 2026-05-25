@@ -389,6 +389,10 @@ class MolModelJS
     {
         return m_model.toMolBlock(v3000);
     }
+    std::string toMolBlockForSelection(bool v3000) const
+    {
+        return m_model.toMolBlockForSelection(v3000);
+    }
     void addHydrogens()
     {
         m_model.addHydrogens();
@@ -590,6 +594,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("loadFromText", &MolModelJS::loadFromText)
         .function("toSmiles", &MolModelJS::toSmiles)
         .function("toMolBlock", &MolModelJS::toMolBlock)
+        .function("toMolBlockForSelection",
+                  &MolModelJS::toMolBlockForSelection)
         .function("addHydrogens", &MolModelJS::addHydrogens)
         .function("removeHydrogens", &MolModelJS::removeHydrogens)
         .function("aromatize", &MolModelJS::aromatize)

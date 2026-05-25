@@ -770,6 +770,55 @@ std::string MolModel::toMolBlock(bool v3000) const
     }
 }
 
+std::string MolModel::toMolBlockForSelection(bool v3000) const
+{
+    if (!hasSelection()) {
+        return "";
+    }
+    // Expand the selection so every selected bond has both endpoints in the
+    // kept set. RDKit's MolBlock writers refuse to emit a bond with a missing
+    // endpoint, so Qt does this same expansion (mol_model.cpp:244-250).
+    std::unordered_set<unsigned int> keep_atoms = m_selected_atoms;
+    for (auto bond_idx : m_selected_bonds) {
+        if (bond_idx >= m_mol.getNumBonds()) {
+            continue;
+        }
+        const auto* b = m_mol.getBondWithIdx(bond_idx);
+        keep_atoms.insert(b->getBeginAtomIdx());
+        keep_atoms.insert(b->getEndAtomIdx());
+    }
+    if (keep_atoms.empty()) {
+        return "";
+    }
+    RDKit::RWMol mol_copy(m_mol);
+    // Remove unselected atoms in descending index order so earlier indices
+    // stay valid. RWMol::removeAtom drops incident bonds automatically, so
+    // bonds whose both endpoints survive are preserved (this is the policy
+    // Qt's getSelectedMolForExport relies on — it never explicitly removes
+    // bonds, only atoms).
+    std::vector<unsigned int> drop_desc;
+    drop_desc.reserve(mol_copy.getNumAtoms());
+    for (unsigned int i = 0; i < mol_copy.getNumAtoms(); ++i) {
+        if (keep_atoms.count(i) == 0) {
+            drop_desc.push_back(i);
+        }
+    }
+    std::sort(drop_desc.begin(), drop_desc.end(), std::greater<unsigned int>());
+    for (auto idx : drop_desc) {
+        mol_copy.removeAtom(idx);
+    }
+    if (mol_copy.getNumAtoms() == 0) {
+        return "";
+    }
+    try {
+        const auto fmt = v3000 ? rdkit_extensions::Format::MDL_MOLV3000
+                               : rdkit_extensions::Format::MDL_MOLV2000;
+        return rdkit_extensions::to_string(mol_copy, fmt);
+    } catch (...) {
+        return "";
+    }
+}
+
 // -- Selection ------------------------------------------------------------
 // Direct signal emission (rather than emitSignal) because selection changes
 // are deliberately not commands — they shouldn't go through AllowEditsScope.
