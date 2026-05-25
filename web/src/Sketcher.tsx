@@ -993,7 +993,6 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [selectShape, setSelectShape] = useState<SelectShape>('rect');
     const selectShapeRef = useRef<SelectShape>('rect');
     const [status, setStatus] = useState<string>('ready');
-    const [smilesInput, setSmilesInput] = useState<string>('');
     const [view, setViewState] = useState<View>(DEFAULT_VIEW);
     const [moreMenuOpen, setMoreMenuOpen] = useState<boolean>(false);
     // Top-bar Import / Export dropdowns + their modals. Mirrors Qt's
@@ -2123,38 +2122,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         pickBondMode(mode);
         setStatus(`bond mode: ${label}`);
     };
-    const doLoadInput = (): void => {
-        const model = modelRef.current;
-        if (!model) return;
-        // Pass the raw text through — MOL blocks start with an empty title
-        // line, so stripping leading whitespace breaks the 3-header-line
-        // contract SDMolSupplier expects.
-        if (!smilesInput.trim()) {
-            setStatus('paste a SMILES or MOL block first');
-            return;
-        }
-        try {
-            // loadFromText auto-detects SMILES / MOL V2000 / MOL V3000 /
-            // SMARTS / InChI — one entry point covers every text format
-            // the user might paste.
-            model.loadFromText(smilesInput);
-            setPendingBondAtom(null);
-            const kind = smilesInput.includes('\n') ||
-                smilesInput.includes('V2000') ||
-                smilesInput.includes('V3000')
-                ? 'MOL'
-                : 'SMILES';
-            setStatus(`loaded ${kind} (${model.numAtoms()} atoms)`);
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            setStatus(`load failed: ${msg || 'unrecognized format'}`);
-        }
-    };
-    const writeToClipboardWithFallback = async (
+    const writeToClipboard = async (
         text: string,
         kind: string,
     ): Promise<void> => {
-        setSmilesInput(text);
         try {
             await navigator.clipboard.writeText(text);
             // Status carries kind + short preview (full text would overflow).
@@ -2162,9 +2133,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             setStatus(`copied ${kind}: ${preview}`);
         } catch {
             // Clipboard write can fail in non-secure contexts / headless
-            // browsers. The input still shows the text so the user can
-            // copy manually.
-            setStatus(`${kind} in input field — copy manually`);
+            // browsers without permission. Surface the failure so the user
+            // can fall back to Export → Save Image / Import → Paste in Text.
+            setStatus(`copy ${kind} failed — clipboard access denied`);
         }
     };
     const doCopySmiles = async (): Promise<void> => {
@@ -2175,19 +2146,29 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             setStatus('nothing to copy — sketch something first');
             return;
         }
-        await writeToClipboardWithFallback(smi, 'SMILES');
+        await writeToClipboard(smi, 'SMILES');
     };
-    const doCopyMolBlock = async (): Promise<void> => {
+    const doCopyMolBlockV2000 = async (): Promise<void> => {
         const model = modelRef.current;
         if (!model) return;
-        // V2000 is the more widely supported flavor for round-tripping into
-        // older tools; V3000 export can come later if users want it.
         const mb = model.toMolBlock(false);
         if (!mb) {
             setStatus('nothing to copy — sketch something first');
             return;
         }
-        await writeToClipboardWithFallback(mb, 'MOL');
+        await writeToClipboard(mb, 'MOL');
+    };
+    const doCopyMolBlockV3000 = async (): Promise<void> => {
+        // Qt's CutCopyActionManager default format is MDL_MOLV3000
+        // (cut_copy_action_manager.cpp:16), so Ctrl+C maps here.
+        const model = modelRef.current;
+        if (!model) return;
+        const mb = model.toMolBlock(true);
+        if (!mb) {
+            setStatus('nothing to copy — sketch something first');
+            return;
+        }
+        await writeToClipboard(mb, 'MOL V3000');
     };
 
     // Import-from-File: programmatically open the hidden <input type=file>
@@ -2590,12 +2571,20 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             if (mod && lower === 'f') {
                 e.preventDefault(); doFit(); return;
             }
-            if (mod && (lower === 'x' || lower === 'c' || lower === 'v')) {
-                // Cut / Copy / Paste — Qt routes through cut_copy_action_manager
-                // which isn't ported yet. Stub so the user can tell the
-                // shortcut was recognized.
+            if (mod && lower === 'c') {
+                // Qt's CutCopyActionManager (cut_copy_action_manager.cpp:16)
+                // defaults Ctrl+C to MDL_MOLV3000 for atomistic mode. Match.
                 e.preventDefault();
-                const which = lower === 'x' ? 'Cut' : lower === 'c' ? 'Copy' : 'Paste';
+                void doCopyMolBlockV3000();
+                return;
+            }
+            if (mod && (lower === 'x' || lower === 'v')) {
+                // Cut needs a model.toMolBlockForSelection + removeSelected
+                // primitive (Qt: sketcher_widget.cpp:561-564); Paste needs
+                // clipboard-read + AUTO_DETECT routed through loadFromText.
+                // Both deferred to a follow-up batch.
+                e.preventDefault();
+                const which = lower === 'x' ? 'Cut' : 'Paste';
                 comingSoon(which);
                 return;
             }
@@ -2781,6 +2770,20 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 onClick={() => { setMoreMenuOpen(false); doAddHydrogens(); }} />
             <MoreItem label='Remove Explicit Hydrogens' testid='hydrogens-remove'
                 onClick={() => { setMoreMenuOpen(false); doRemoveHydrogens(); }} />
+            <div style={styles.moreDivider} />
+            {/* Copy As — Qt's CutCopyActionManager builds this submenu
+                dynamically from get_standard_export_formats() with 11
+                formats (file_import_export.cpp:75-90). We expose the
+                three the lean MolModel supports today (SMILES + MOL
+                V2000 + MOL V3000); InChI/SMARTS/PDB/XYZ/Maestro/Marvin
+                need new lean exporters and are tracked as follow-ups. */}
+            <div style={styles.moreSectionLabel}>Copy As</div>
+            <MoreItem label='SMILES' testid='copy-as-smiles'
+                onClick={() => { setMoreMenuOpen(false); void doCopySmiles(); }} />
+            <MoreItem label='MOL V2000' testid='copy-as-mol-v2000'
+                onClick={() => { setMoreMenuOpen(false); void doCopyMolBlockV2000(); }} />
+            <MoreItem label='MOL V3000' testid='copy-as-mol-v3000'
+                onClick={() => { setMoreMenuOpen(false); void doCopyMolBlockV3000(); }} />
         </div>
     );
 
@@ -3231,43 +3234,6 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         onMouseLeave={onCanvasMouseLeave}
                         data-testid='sketcher-canvas'
                     />
-                    <div style={styles.smilesBar}>
-                        <textarea
-                            value={smilesInput}
-                            onChange={(e) => setSmilesInput(e.target.value)}
-                            onKeyDown={(e) => {
-                                // Cmd/Ctrl+Enter triggers Load; plain Enter
-                                // inserts a newline so multi-line MOL blocks
-                                // can be pasted naturally.
-                                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                                    e.preventDefault();
-                                    doLoadInput();
-                                }
-                            }}
-                            placeholder='Paste SMILES (c1ccccc1) or MOL block — Cmd+Enter to Load'
-                            style={{
-                                ...styles.smilesInput,
-                                height: smilesInput.includes('\n') ? 96 : 26,
-                            }}
-                            data-testid='smiles-input'
-                            spellCheck={false}
-                            rows={smilesInput.includes('\n') ? 6 : 1}
-                        />
-                        <div style={styles.smilesButtons}>
-                            <button type='button' style={styles.smilesBtn}
-                                data-testid='smiles-load'
-                                onClick={doLoadInput}
-                                title='Parse input (SMILES or MOL) into the sketch — Cmd+Enter'>Load</button>
-                            <button type='button' style={styles.smilesBtn}
-                                data-testid='smiles-copy'
-                                onClick={() => { void doCopySmiles(); }}
-                                title='Write current sketch SMILES to clipboard'>Copy SMILES</button>
-                            <button type='button' style={styles.smilesBtn}
-                                data-testid='mol-copy'
-                                onClick={() => { void doCopyMolBlock(); }}
-                                title='Write current sketch as a V2000 MOL block to clipboard'>Copy MOL</button>
-                        </div>
-                    </div>
                     <div style={styles.statusBox} data-testid='sketcher-status'>
                         {status}
                     </div>
@@ -4520,42 +4486,5 @@ const styles: Record<string, CSSProperties> = {
         padding: '4px 10px',
         color: '#555',
         minHeight: 22,
-    },
-    smilesBar: {
-        display: 'flex',
-        gap: 6,
-        alignItems: 'flex-start',
-        padding: '6px 8px',
-        background: '#f7f7f7',
-        borderTop: `1px solid ${BORDER_COLOR}`,
-    },
-    smilesInput: {
-        flex: '1 1 auto',
-        font: '12px Menlo, Consolas, monospace',
-        padding: '4px 6px',
-        border: `1px solid ${BORDER_COLOR}`,
-        borderRadius: 3,
-        color: '#222',
-        background: 'white',
-        minWidth: 0,
-        resize: 'vertical',
-        verticalAlign: 'top',
-    },
-    smilesButtons: {
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 4,
-        flex: '0 0 auto',
-    },
-    smilesBtn: {
-        font: 'inherit',
-        fontSize: 12,
-        padding: '4px 10px',
-        minHeight: 24,
-        border: `1px solid ${BORDER_COLOR}`,
-        background: 'white',
-        color: '#222',
-        borderRadius: 3,
-        cursor: 'pointer',
     },
 };

@@ -19,10 +19,34 @@ async function snapshot(page) {
     );
 }
 
-test.beforeEach(async ({ page }) => {
+// Loads a SMILES (or MOL block) into the sketch via the Qt-fidelity
+// Import → Paste in Text modal — the only text-entry path Qt exposes.
+//
+// The .hover() before .click() pins the cursor on the menu item so the
+// wrapper's onMouseLeave-close doesn't fire mid-click (otherwise the menu
+// item detaches from the DOM during Playwright's stability check).
+async function loadText(page, text) {
+    await page.getByTestId('import').click();
+    const item = page.getByTestId('import-paste-in-text');
+    await item.hover();
+    await item.click();
+    await page.getByTestId('paste-text-input').fill(text);
+    await page.getByTestId('paste-text-load').click();
+}
+
+test.beforeEach(async ({ page, context }) => {
+    // Grant clipboard so the Copy-As tests can verify writes via
+    // navigator.clipboard.readText(). Headless Chromium allows
+    // clipboard-write by default but denies clipboard-read without
+    // an explicit grant.
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await page.goto('/');
     await waitForReady(page);
 });
+
+async function readClipboard(page) {
+    return await page.evaluate(() => navigator.clipboard.readText());
+}
 
 test.describe('React Sketcher', () => {
     test('SMILES parser still works inside the React shell', async ({ page }) => {
@@ -529,8 +553,7 @@ test.describe('React Sketcher', () => {
     }) => {
         // Load a benzene so we have a known structure without worrying about
         // click-pixel-to-model conversion noise.
-        await page.getByTestId('smiles-input').fill('c1ccccc1');
-        await page.getByTestId('smiles-load').click();
+        await loadText(page, 'c1ccccc1');
         const before = await snapshot(page);
         expect(before.atoms).toHaveLength(6);
 
@@ -1112,90 +1135,59 @@ test.describe('React Sketcher', () => {
         await expect(page.getByTestId('about-modal')).toHaveCount(0);
     });
 
-    test('SMILES Load parses input and Copy SMILES writes canonical form', async ({ page }) => {
-        const input = page.getByTestId('smiles-input');
-        await input.fill('c1ccccc1');
-        await page.getByTestId('smiles-load').click();
+    test('More Actions: Copy As SMILES writes canonical form to the clipboard', async ({ page }) => {
+        // Qt's CutCopyActionManager populates a "Copy As" submenu from
+        // get_standard_export_formats() (cut_copy_action_manager.cpp:82,
+        // file_import_export.cpp:75-90). React port hangs SMILES /
+        // V2000 / V3000 off More Actions as a flattened section.
+        await loadText(page, 'c1ccccc1');
         const rd = await snapshot(page);
         expect(rd.atoms).toHaveLength(6);
-        expect(rd.bonds).toHaveLength(6);
         expect(rd.atoms.every((a) => a.arom === true)).toBe(true);
 
-        // Copy SMILES populates the input with the canonical form even if
-        // clipboard access is denied (headless Chromium does grant it, but
-        // the input fallback is what the user sees in either case).
-        await page.getByTestId('smiles-copy').click();
-        await expect(input).toHaveValue('c1ccccc1');
+        await page.getByTestId('more-actions-btn').click();
+        await page.getByTestId('copy-as-smiles').click();
+        // Menu closes after picking.
+        await expect(page.getByTestId('more-actions-menu')).toHaveCount(0);
+        const clip = await readClipboard(page);
+        expect(clip).toBe('c1ccccc1');
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/copied SMILES/);
     });
 
-    test('SMILES Load accepts Cmd+Enter and supports undo', async ({ page }) => {
-        const input = page.getByTestId('smiles-input');
-        await input.fill('CCO');
-        // Cmd+Enter triggers Load; plain Enter would insert a newline (textarea
-        // semantics needed for multi-line MOL paste).
+    test('More Actions: Copy As MOL V2000 / V3000 write the right block to the clipboard', async ({ page }) => {
+        await loadText(page, 'CCO');
+
+        await page.getByTestId('more-actions-btn').click();
+        await page.getByTestId('copy-as-mol-v2000').click();
+        let clip = await readClipboard(page);
+        expect(clip).toContain('V2000');
+        // V2000 counts line: 3 atoms, 2 bonds.
+        expect(clip).toContain('  3  2');
+
+        await page.getByTestId('more-actions-btn').click();
+        await page.getByTestId('copy-as-mol-v3000').click();
+        clip = await readClipboard(page);
+        expect(clip).toContain('V3000');
+        expect(clip).toContain('M  V30 COUNTS 3 2');
+    });
+
+    test('Ctrl+C copies the sketch as MDL MOL V3000 (Qt default format)', async ({ page }) => {
+        // Qt's CutCopyActionManager default is MDL_MOLV3000
+        // (cut_copy_action_manager.cpp:16). React port mirrors.
+        await loadText(page, 'CCO');
         const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
-        await input.press(`${modifier}+Enter`);
-        let rd = await snapshot(page);
-        expect(rd.atoms.map((a) => a.el)).toEqual(['C', 'C', 'O']);
-        // Single undo reverts the entire load.
-        await page.getByTestId('undo').click();
-        rd = await snapshot(page);
-        expect(rd.atoms).toHaveLength(0);
+        await page.keyboard.press(`${modifier}+c`);
+        const clip = await readClipboard(page);
+        expect(clip).toContain('V3000');
+        expect(clip).toContain('M  V30 COUNTS 3 2');
     });
 
-    test('SMILES Load on garbage shows an error and leaves the sketch alone', async ({ page }) => {
-        // Pre-populate with one atom so we can confirm the failed load
-        // doesn't wipe existing work.
-        const canvas = page.getByTestId('sketcher-canvas');
-        await canvas.click({ position: { x: 250, y: 180 } });
-        const before = await snapshot(page);
-        expect(before.atoms).toHaveLength(1);
-
-        await page.getByTestId('smiles-input').fill('not a smiles!!!');
-        await page.getByTestId('smiles-load').click();
-        const status = await page.getByTestId('sketcher-status').textContent();
-        expect(status).toMatch(/load failed/i);
-        const after = await snapshot(page);
-        expect(after.atoms).toHaveLength(1);
-    });
-
-    test('Copy MOL writes a V2000 block to the input field', async ({ page }) => {
-        const input = page.getByTestId('smiles-input');
-        await input.fill('CCO');
-        const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
-        await input.press(`${modifier}+Enter`);
-
-        await page.getByTestId('mol-copy').click();
-        const value = await input.inputValue();
-        expect(value).toContain('V2000');
-        // Counts line: 3 atoms, 2 bonds.
-        expect(value).toContain('  3  2');
-    });
-
-    test('paste a MOL block then Load round-trips back to a sketch', async ({ page }) => {
-        // Build a benzene mol block out-of-band, paste it, hit Load, and
-        // verify the canvas now shows six aromatic atoms. MOL blocks start
-        // with an empty title line (a leading "\n") — naive trimming on the
-        // way in would corrupt the SDMolSupplier 3-header-line contract, so
-        // this test also guards against that regression.
-        const molBlock = await page.evaluate(() => {
-            const m = new window.Module.MolModel();
-            m.loadFromSmiles('c1ccccc1');
-            const mb = m.toMolBlock(false);
-            m.delete();
-            return mb;
-        });
-        await page.getByTestId('clear').click();
-
-        const input = page.getByTestId('smiles-input');
-        await input.fill(molBlock);
-        await page.getByTestId('smiles-load').click();
-
-        const rd = await snapshot(page);
-        expect(rd.atoms).toHaveLength(6);
-        expect(rd.bonds).toHaveLength(6);
-        const status = await page.getByTestId('sketcher-status').textContent();
-        expect(status).toMatch(/loaded MOL/);
+    test('Copy As on an empty sketch surfaces a friendly status, no clipboard write', async ({ page }) => {
+        await page.getByTestId('more-actions-btn').click();
+        await page.getByTestId('copy-as-smiles').click();
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/nothing to copy/);
     });
 
     test('charge +/- buttons adjust selected-atom formal charge', async ({ page }) => {
@@ -1228,8 +1220,7 @@ test.describe('React Sketcher', () => {
         // Qt's MoreActionsMenu → Modify All → "Add Explicit Hydrogens" / "Remove
         // Explicit Hydrogens" (sketcher_top_bar_menus.cpp:98-101). We mirror
         // both label and menu placement here.
-        await page.getByTestId('smiles-input').fill('CO');
-        await page.getByTestId('smiles-load').click();
+        await loadText(page, 'CO');
 
         let rd = await snapshot(page);
         expect(rd.atoms).toHaveLength(2);
@@ -1262,8 +1253,7 @@ test.describe('React Sketcher', () => {
     });
 
     test('Kekulize / Aromatize (via More menu) toggle benzene aromaticity end-to-end', async ({ page }) => {
-        await page.getByTestId('smiles-input').fill('c1ccccc1');
-        await page.getByTestId('smiles-load').click();
+        await loadText(page, 'c1ccccc1');
 
         let rd = await snapshot(page);
         expect(rd.bonds.every((b) => b.arom === true)).toBe(true);
@@ -1781,10 +1771,10 @@ test.describe('React Sketcher', () => {
         // now wired through setSelectedAtomsToHydrogenIsotope, but with no
         // selection they surface a "select atoms first" status that still
         // mentions Deuterium / Tritium so users can tell what the shortcut
-        // would do.
+        // would do. Ctrl+C was a stub before batch 16 — now wired to copy
+        // as MOL V3000 (Qt's CutCopyActionManager default).
         const checks = [
             ['ControlOrMeta+x', /Cut/],
-            ['ControlOrMeta+c', /Copy/],
             ['ControlOrMeta+v', /Paste/],
             ['d', /Deuterium.*select atoms first/],
             ['t', /Tritium.*select atoms first/],
@@ -1854,15 +1844,17 @@ test.describe('React Sketcher', () => {
     });
 
     test('shortcuts are suppressed while typing in an input', async ({ page }) => {
-        // SMILES Load input field is a normal <input>; pressing Backspace
-        // there must edit the field, not delete the selection.
+        // Paste-in-Text modal textarea must absorb Backspace as a normal
+        // edit (not route through the global "Delete selected" shortcut).
         const canvas = page.getByTestId('sketcher-canvas');
         await canvas.click({ position: { x: 120, y: 180 } });
         await canvas.click({ position: { x: 260, y: 180 } });
         await page.getByTestId('tool-select').click();
         await canvas.click({ position: { x: 120, y: 180 } });
 
-        const input = page.getByTestId('smiles-input');
+        await page.getByTestId('import').click();
+        await page.getByTestId('import-paste-in-text').click();
+        const input = page.getByTestId('paste-text-input');
         await input.click();
         await input.fill('CCO');
         await page.keyboard.press('Backspace');
@@ -1871,6 +1863,8 @@ test.describe('React Sketcher', () => {
         await expect(input).toHaveValue('CC');
         const rd = await snapshot(page);
         expect(rd.atoms).toHaveLength(2);
+        // Cancel the modal so we don't leak it into later tests.
+        await page.getByTestId('paste-text-cancel').click();
     });
 
     test('erase tool: click atom removes atom + incident bonds in one undo', async ({
@@ -2170,9 +2164,9 @@ test.describe('React Sketcher', () => {
         await page.getByTestId('bond-double').click();
         await expect(page.getByTestId('bond-double-popup')).toBeVisible();
 
-        // Click somewhere outside — the SMILES Load button is a stable
-        // off-popup target that won't itself open a popup.
-        await page.getByTestId('smiles-load').click();
+        // Click somewhere outside — the Undo button is a stable off-popup
+        // target that won't itself open a popup.
+        await page.getByTestId('undo').click();
         await expect(page.getByTestId('bond-double-popup')).toHaveCount(0);
 
         // Slot mode unchanged (still Double, since we never picked Triple).
