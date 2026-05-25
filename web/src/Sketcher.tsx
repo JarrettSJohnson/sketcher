@@ -18,7 +18,18 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 
 type Tool = 'atom' | 'bond' | 'select' | 'move-rotate' | 'erase' | 'ring';
 // SetAtomWidget.ui ships C/H/N/O/P/S/F/Cl/Si on the atomistic panel.
-type Element = 'C' | 'H' | 'N' | 'O' | 'P' | 'S' | 'F' | 'Cl' | 'Si';
+// Element symbol — any RDKit-recognized symbol. The sidebar exposes
+// 8 fixed elements via dedicated buttons; everything else flows through
+// the periodic-table popup + last-picked-element slot.
+type Element = string;
+const FIXED_ELEMENTS: readonly Element[] =
+    ['C', 'H', 'N', 'O', 'P', 'S', 'F', 'Cl'] as const;
+const LAST_PICKED_DEFAULT: Element = 'Si';
+
+// Mirrors Qt's AtomQuery enum (definitions.h). Stubbed for v1: the popup
+// is visually faithful but picking a choice surfaces a coming-soon status
+// since the lean MolModel doesn't expose RDKit::QueryAtom yet.
+type AtomQueryChoice = 'A' | 'AH' | 'Q' | 'QH' | 'M' | 'MH' | 'X' | 'XH';
 // Qt's bond_group is a single radio group covering single/double/triple plus
 // the stereo variants — picking any one button replaces the previously-active
 // bond mode. We mirror that here: BondMode collapses "what order is the next
@@ -666,6 +677,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
 
     const [tool, setTool] = useState<Tool>('atom');
     const [element, setElement] = useState<Element>('C');
+    // Element shown in the last-picked slot (Qt set_atom_widget.cpp:27 —
+    // last_picked_element_btn defaults to Si). Updates whenever the user
+    // picks something outside the 8 fixed buttons via the periodic-table
+    // popup, matching Qt's onModelValuePinged behavior.
+    const [lastPickedElement, setLastPickedElement] =
+        useState<Element>(LAST_PICKED_DEFAULT);
     // Qt's bond_group is one radio group — picking Single clears any active
     // stereo, picking Wedge implies single+wedge. bondMode collapses both.
     const [bondMode, setBondMode] = useState<BondMode>('single');
@@ -704,6 +721,19 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setBondMode(mode);
         setTool('bond');
         setPendingBondAtom(null);
+    }, []);
+
+    // Mirrors Qt set_atom_widget.cpp:92-100 + periodic_table_widget.cpp:51-69.
+    // Sets the active element, switches to atom tool, and — if the picked
+    // element isn't one of the 8 fixed sidebar elements — promotes it to the
+    // last-picked slot so the user can re-arm it without re-opening the PT.
+    const pickElement = useCallback((sym: Element): void => {
+        setElement(sym);
+        setTool('atom');
+        setPendingBondAtom(null);
+        if (!FIXED_ELEMENTS.includes(sym)) {
+            setLastPickedElement(sym);
+        }
     }, []);
 
     // BondMode → (order, dir) for addBondWithDir / setBondDirForSelectedBonds.
@@ -762,6 +792,21 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const BOND_ORDER_CHOICES: PopupChoice<BondMode>[] = [
         { value: 'double', icon: 'bond_double', title: 'Double Bond', testid: 'order-popup-double' },
         { value: 'triple', icon: 'bond_triple', title: 'Triple Bond', testid: 'order-popup-triple' },
+    ];
+    // Atom-query popup (Qt ui/atom_query_popup.ui). 8 choices in a 2×4 grid
+    // with column headers (Any/Hetero/Metal/Halogen). The popup primitive
+    // renders a single horizontal row in this port — close enough for v1
+    // since picking is stubbed anyway (RDKit query atoms aren't ported to
+    // the lean MolModel yet).
+    const ATOM_QUERY_CHOICES: PopupChoice<AtomQueryChoice>[] = [
+        { value: 'A',  label: 'A',  title: 'Any Heavy Atom',     testid: 'atom-query-popup-A' },
+        { value: 'Q',  label: 'Q',  title: 'Any Heteroatom',     testid: 'atom-query-popup-Q' },
+        { value: 'M',  label: 'M',  title: 'Any Metal',          testid: 'atom-query-popup-M' },
+        { value: 'X',  label: 'X',  title: 'Any Halogen',        testid: 'atom-query-popup-X' },
+        { value: 'AH', label: 'AH', title: 'Any Atom',           testid: 'atom-query-popup-AH' },
+        { value: 'QH', label: 'QH', title: 'Any Heteroatom or H',testid: 'atom-query-popup-QH' },
+        { value: 'MH', label: 'MH', title: 'Any Metal or H',     testid: 'atom-query-popup-MH' },
+        { value: 'XH', label: 'XH', title: 'Any Halogen or H',   testid: 'atom-query-popup-XH' },
     ];
 
     // Build the C++ MolModel once per mount, tear it down on unmount.
@@ -2154,31 +2199,39 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     {/* SetAtomWidget — 3 cols, 4 rows. Qt order:
                         row 0 C H N, row 1 O P S, row 2 F Cl <last_picked>,
                         row 3 atom_query (1 col) + periodic_table (2 cols).
-                        The last_picked slot is pinned to Si by default in
-                        this port (no live last-picked tracking yet). */}
+                        The last_picked slot defaults to Si (Qt
+                        set_atom_widget.cpp:27) and updates whenever the
+                        periodic-table popup picks something outside the
+                        fixed 8. */}
                     <div style={styles.elementGrid}>
-                        {(['C','H','N','O','P','S','F','Cl','Si'] as const).map((el) => (
+                        {FIXED_ELEMENTS.map((el) => (
                             <LetterButton key={el} label={el}
                                 color={ELEMENT_COLORS[el]}
                                 active={tool === 'atom' && element === el}
                                 testid={`element-${el}`}
                                 title={`Draw ${el} atoms`}
-                                onClick={() => {
-                                    setElement(el);
-                                    setTool('atom');
-                                    setPendingBondAtom(null);
-                                }} />
+                                onClick={() => pickElement(el)} />
                         ))}
+                        <LetterButton label={lastPickedElement}
+                            color={ELEMENT_COLORS[lastPickedElement]}
+                            active={tool === 'atom' && element === lastPickedElement}
+                            testid='last-picked-element'
+                            title={`Draw ${lastPickedElement} atoms (last picked from periodic table)`}
+                            onClick={() => pickElement(lastPickedElement)} />
                     </div>
                     <div style={styles.atomQueryRow}>
-                        <LetterButton label='A▾' testid='atom-query'
-                            title='Atom Query'
-                            onClick={() => comingSoon('Atom query popup')} />
-                        <IconButton icon='periodic_table'
-                            testid='periodic-table'
-                            title='Periodic Table'
-                            wide
-                            onClick={() => comingSoon('Periodic table')} />
+                        <IconButtonWithPopup<AtomQueryChoice>
+                            icon=''
+                            label='A▾'
+                            testid='atom-query'
+                            title='Atom Query – press & hold to change'
+                            active={false}
+                            choices={ATOM_QUERY_CHOICES}
+                            onClick={() => comingSoon('Atom query (needs RDKit query atom support)')}
+                            onPick={(q) => comingSoon(`Atom query "${q}" (needs RDKit query atom support)`)}
+                        />
+                        <PeriodicTableButton testid='periodic-table'
+                            onPick={pickElement} />
                     </div>
 
                     {/* explicit_h / charge± row */}
@@ -2441,13 +2494,18 @@ function IconButton({
 // emits selectionChanged on button click, closes immediately).
 interface PopupChoice<T extends string> {
     value: T;
-    icon: string;
+    icon?: string;   // omit for text-only choices (e.g. atom-query A/Q/M/X)
+    label?: string;  // text rendered on the button face when icon is unset
     title: string;
     testid: string;
 }
 
 interface IconButtonWithPopupProps<T extends string> {
-    icon: string;
+    // Either `icon` (renders an svg) or `label` (renders bold text) must be
+    // set. The atom-query button (Qt: "A" 14pt bold italic, no icon) uses
+    // `label`; everything else uses `icon`.
+    icon?: string;
+    label?: string;
     onClick: () => void;
     testid: string;
     title?: string;
@@ -2459,7 +2517,7 @@ interface IconButtonWithPopupProps<T extends string> {
 const POPUP_DELAY_MS = 250; // Qt ToolButtonWithPopup::m_popup_delay default
 
 function IconButtonWithPopup<T extends string>({
-    icon, onClick, testid, title, active, choices, onPick,
+    icon, label, onClick, testid, title, active, choices, onPick,
 }: IconButtonWithPopupProps<T>): JSX.Element {
     const [hover, setHover] = useState(false);
     const [popupOpen, setPopupOpen] = useState(false);
@@ -2519,13 +2577,12 @@ function IconButtonWithPopup<T extends string>({
         };
     }, [popupOpen]);
 
-    const src = `/icons/${icon}.svg`;
     return (
         <div ref={wrapperRef} style={{ position: 'relative' }}>
             <button
                 type='button'
                 style={{
-                    ...styles.iconBtn,
+                    ...(label !== undefined ? styles.letterBtn : styles.iconBtn),
                     ...(hover && !active ? styles.iconBtnHover : {}),
                     ...(active ? styles.iconBtnActive : {}),
                     position: 'relative',
@@ -2541,7 +2598,10 @@ function IconButtonWithPopup<T extends string>({
                 aria-expanded={popupOpen}
                 title={title}
             >
-                <img src={src} alt='' draggable={false} style={styles.iconImg} />
+                {label !== undefined
+                    ? label
+                    : <img src={`/icons/${icon}.svg`} alt='' draggable={false}
+                        style={styles.iconImg} />}
                 <span style={styles.popupWedge} aria-hidden='true' />
             </button>
             {popupOpen && (
@@ -2573,11 +2633,12 @@ function PopupChoiceButton<T extends string>({
     choice, onPick,
 }: PopupChoiceButtonProps<T>): JSX.Element {
     const [hover, setHover] = useState(false);
+    const hasLabel = choice.label !== undefined;
     return (
         <button
             type='button'
             style={{
-                ...styles.iconBtn,
+                ...(hasLabel ? styles.letterBtn : styles.iconBtn),
                 ...(hover ? styles.iconBtnHover : {}),
             }}
             onClick={onPick}
@@ -2590,8 +2651,10 @@ function PopupChoiceButton<T extends string>({
             title={`${choice.title} – press & hold to change`}
             role='menuitem'
         >
-            <img src={`/icons/${choice.icon}.svg`} alt='' draggable={false}
-                style={styles.iconImg} />
+            {hasLabel
+                ? choice.label
+                : <img src={`/icons/${choice.icon}.svg`} alt=''
+                    draggable={false} style={styles.iconImg} />}
         </button>
     );
 }
@@ -2628,6 +2691,150 @@ function LetterButton({
             title={title}
         >
             {label}
+        </button>
+    );
+}
+
+// Layout + element-class palette extracted verbatim from
+// src/schrodinger/sketcher/ui/periodic_table_widget.ui — the Qt form file
+// is the source of truth for both row/col positions and the
+// QToolButton[class='…'] CSS bucketing in PERIODIC_TABLE_STYLE.
+// 10 rows × 18 cols. null = empty cell (group 3 in periods 6–7 sits in
+// the lanthanide/actinide rows below).
+type PTCell = readonly [symbol: string, cssClass: string] | null;
+const PT_LAYOUT: readonly (readonly PTCell[])[] = [
+    [['H','hydrogen'], null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, ['He','noble_gases']],
+    [['Li','alkali_metals'], ['Be','alkaline_earth_metals'], null, null, null, null, null, null, null, null, null, null, ['B','metalloids'], ['C','non_metals'], ['N','non_metals'], ['O','non_metals'], ['F','halogens'], ['Ne','noble_gases']],
+    [['Na','alkali_metals'], ['Mg','alkaline_earth_metals'], null, null, null, null, null, null, null, null, null, null, ['Al','other_metals'], ['Si','metalloids'], ['P','non_metals'], ['S','non_metals'], ['Cl','halogens'], ['Ar','noble_gases']],
+    [['K','alkali_metals'], ['Ca','alkaline_earth_metals'], ['Sc','transition_metals'], ['Ti','transition_metals'], ['V','transition_metals'], ['Cr','transition_metals'], ['Mn','transition_metals'], ['Fe','transition_metals'], ['Co','transition_metals'], ['Ni','transition_metals'], ['Cu','transition_metals'], ['Zn','transition_metals'], ['Ga','other_metals'], ['Ge','metalloids'], ['As','metalloids'], ['Se','non_metals'], ['Br','halogens'], ['Kr','noble_gases']],
+    [['Rb','alkali_metals'], ['Sr','alkaline_earth_metals'], ['Y','transition_metals'], ['Zr','transition_metals'], ['Nb','transition_metals'], ['Mo','transition_metals'], ['Tc','transition_metals'], ['Ru','transition_metals'], ['Rh','transition_metals'], ['Pd','transition_metals'], ['Ag','transition_metals'], ['Cd','transition_metals'], ['In','other_metals'], ['Sn','other_metals'], ['Sb','metalloids'], ['Te','metalloids'], ['I','halogens'], ['Xe','noble_gases']],
+    [['Cs','alkali_metals'], ['Ba','alkaline_earth_metals'], null, ['Hf','transition_metals'], ['Ta','transition_metals'], ['W','transition_metals'], ['Re','transition_metals'], ['Os','transition_metals'], ['Ir','transition_metals'], ['Pt','transition_metals'], ['Au','transition_metals'], ['Hg','transition_metals'], ['Tl','other_metals'], ['Pb','other_metals'], ['Bi','other_metals'], ['Po','metalloids'], ['At','halogens'], ['Rn','noble_gases']],
+    [['Fr','alkali_metals'], ['Ra','alkaline_earth_metals'], null, ['Rf','transition_metals'], ['Db','transition_metals'], ['Sg','transition_metals'], ['Bh','transition_metals'], ['Hs','transition_metals'], ['Mt','transition_metals'], ['Ds','transition_metals'], ['Rg','transition_metals'], ['Cn','transition_metals'], ['Nh','other_metals'], ['Fl','other_metals'], ['Mc','other_metals'], ['Lv','other_metals'], ['Ts','halogens'], ['Og','noble_gases']],
+    [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+    [null, null, ['La','lanthanides'], ['Ce','lanthanides'], ['Pr','lanthanides'], ['Nd','lanthanides'], ['Pm','lanthanides'], ['Sm','lanthanides'], ['Eu','lanthanides'], ['Gd','lanthanides'], ['Tb','lanthanides'], ['Dy','lanthanides'], ['Ho','lanthanides'], ['Er','lanthanides'], ['Tm','lanthanides'], ['Yb','lanthanides'], ['Lu','lanthanides'], null],
+    [null, null, ['Ac','actinides'], ['Th','actinides'], ['Pa','actinides'], ['U','actinides'], ['Np','actinides'], ['Pu','actinides'], ['Am','actinides'], ['Cm','actinides'], ['Bk','actinides'], ['Cf','actinides'], ['Es','actinides'], ['Fm','actinides'], ['Md','actinides'], ['No','actinides'], ['Lr','actinides'], null],
+];
+
+// Element-class background colors, copied verbatim from
+// PERIODIC_TABLE_STYLE in sketcher_css_style.h.
+const PT_CLASS_BG: Record<string, string> = {
+    hydrogen: '#b2bcc2',
+    alkali_metals: '#b7d9ec',
+    alkaline_earth_metals: '#8fbed9',
+    transition_metals: '#f2d2c6',
+    other_metals: '#f2d2c6',
+    metalloids: '#e1baad',
+    non_metals: '#f2e8b7',
+    halogens: '#f2e392',
+    noble_gases: '#eccc75',
+    lanthanides: '#cce5c3',
+    actinides: '#afd1a2',
+};
+
+// Qt PeriodicTableWidget: free-floating Qt::Popup, opens on click (no
+// long-press, no popup wedge — setPopupDelay(0), showPopupIndicator(false)
+// upstream). React port renders the popup as an absolutely-positioned grid
+// dropdown beneath the trigger button; outside-click closes it.
+interface PeriodicTableButtonProps {
+    testid: string;
+    onPick: (element: string) => void;
+}
+function PeriodicTableButton({
+    testid, onPick,
+}: PeriodicTableButtonProps): JSX.Element {
+    const [hover, setHover] = useState(false);
+    const [open, setOpen] = useState(false);
+    const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        if (!open) return;
+        function onDocMouseDown(e: globalThis.MouseEvent): void {
+            const target = e.target as Node;
+            if (wrapperRef.current && !wrapperRef.current.contains(target)) {
+                setOpen(false);
+            }
+        }
+        document.addEventListener('mousedown', onDocMouseDown);
+        return () => {
+            document.removeEventListener('mousedown', onDocMouseDown);
+        };
+    }, [open]);
+
+    return (
+        <div ref={wrapperRef} style={{ position: 'relative' }}>
+            <button
+                type='button'
+                style={{
+                    ...styles.iconBtn,
+                    ...styles.iconBtnWide,
+                    ...(hover ? styles.iconBtnHover : {}),
+                }}
+                onClick={() => setOpen((o) => !o)}
+                onMouseEnter={() => setHover(true)}
+                onMouseLeave={() => setHover(false)}
+                data-testid={testid}
+                aria-haspopup='dialog'
+                aria-expanded={open}
+                title='Periodic table'
+            >
+                <img src='/icons/periodic_table.svg' alt=''
+                    draggable={false} style={styles.iconImg} />
+            </button>
+            {open && (
+                <div style={styles.periodicTablePopup}
+                    data-testid={`${testid}-popup`}
+                    role='dialog'
+                    aria-label='Periodic table'>
+                    {PT_LAYOUT.map((row, r) =>
+                        row.map((cell, c) => {
+                            if (!cell) return null;
+                            const [sym, cls] = cell;
+                            return (
+                                <PTCellButton key={`${r}-${c}`}
+                                    sym={sym}
+                                    bg={PT_CLASS_BG[cls] ?? '#eee'}
+                                    row={r} col={c}
+                                    onPick={(s) => {
+                                        setOpen(false);
+                                        onPick(s);
+                                    }} />
+                            );
+                        }),
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+interface PTCellButtonProps {
+    sym: string;
+    bg: string;
+    row: number;
+    col: number;
+    onPick: (sym: string) => void;
+}
+function PTCellButton({
+    sym, bg, row, col, onPick,
+}: PTCellButtonProps): JSX.Element {
+    const [hover, setHover] = useState(false);
+    return (
+        <button
+            type='button'
+            style={{
+                ...styles.ptCell,
+                background: bg,
+                gridRow: row + 1,
+                gridColumn: col + 1,
+                ...(hover ? { filter: 'brightness(0.94)' } : {}),
+            }}
+            onClick={() => onPick(sym)}
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
+            data-testid={`pt-${sym}`}
+            title={sym}
+        >
+            {sym}
         </button>
     );
 }
@@ -2831,6 +3038,42 @@ const styles: Record<string, CSSProperties> = {
         display: 'flex',
         gap: 2,
         // Qt popups are 32 px tall × N×32 wide. flex sizes itself.
+    },
+    // Qt PeriodicTableWidget: 395×210 px, 10px font, 21×21 cells. We
+    // anchor it under the trigger and let the sidebar's `overflow:hidden`
+    // *not* clip it — `position: absolute` escapes the parent's grid.
+    periodicTablePopup: {
+        position: 'absolute',
+        top: '100%',
+        left: 0,
+        marginTop: 2,
+        background: 'white',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 3,
+        boxShadow: '0 2px 6px rgba(0,0,0,0.12)',
+        zIndex: 30,
+        padding: 4,
+        display: 'grid',
+        gridTemplateColumns: 'repeat(18, 21px)',
+        gridTemplateRows: 'repeat(10, 21px)',
+        gap: 1,
+        // The sidebar is 117 px; the popup is ~390 px wide so it extends
+        // well past the right edge. That's fine — popups float above.
+    },
+    ptCell: {
+        width: 21,
+        height: 21,
+        padding: 0,
+        border: 'none',
+        borderRadius: 2,
+        fontFamily: 'Arimo, "Helvetica Neue", Arial, sans-serif',
+        fontSize: 10,
+        fontWeight: 400,
+        color: 'black',
+        cursor: 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     iconImg: {
         // Qt iconSize is 30×32; the button itself is 32×32 with 1px margin.

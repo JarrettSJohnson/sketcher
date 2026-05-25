@@ -935,19 +935,22 @@ test.describe('React Sketcher', () => {
     test('newly-wired elements P / S / F / Si place atoms via the icon-driven sidebar', async ({
         page,
     }) => {
-        // The icon-driven SetAtomWidget (set_atom_widget.ui) ships 9 elements
-        // — C/H/N, O/P/S, F/Cl/Si. Coverage previously only exercised C/N/O.
-        // This guards the four newly-wired buttons.
+        // The icon-driven SetAtomWidget (set_atom_widget.ui) ships 8 fixed
+        // elements (C/H/N/O/P/S/F/Cl) and one "last picked from periodic
+        // table" slot whose default is Si (Qt: last_picked_element_btn ->
+        // setElement(Element::SI)). The first three fixed elements (C/H/N)
+        // were exercised already; this guards the rest.
         const canvas = page.getByTestId('sketcher-canvas');
         const placements = [
-            ['P', 120],
-            ['S', 200],
-            ['F', 280],
-            ['Si', 360],
+            ['element-P', 'P', 120],
+            ['element-S', 'S', 200],
+            ['element-F', 'F', 280],
+            // Si lives in the last-picked slot, not as element-Si.
+            ['last-picked-element', 'Si', 360],
         ];
-        for (const [el, x] of placements) {
-            await page.getByTestId(`element-${el}`).click();
-            await expect(page.getByTestId(`element-${el}`)).toHaveAttribute(
+        for (const [testid, , x] of placements) {
+            await page.getByTestId(testid).click();
+            await expect(page.getByTestId(testid)).toHaveAttribute(
                 'aria-pressed',
                 'true',
             );
@@ -1019,17 +1022,16 @@ test.describe('React Sketcher', () => {
     test('coming-soon stubs surface a friendly status message (no silent no-op)', async ({
         page,
     }) => {
-        // Several Qt-side widgets are present for visual fidelity but not yet
-        // ported (atom_query popup, periodic_table, bond_query, atom_chain,
-        // R-group, attachment point, reaction, monomeric mode,
-        // import/export/settings/help). All of them route through
-        // comingSoon() → setStatus(...) so users can tell the button is
-        // intentional rather than broken. (Move/Rotate wired in Batch 3,
-        // Erase wired in Batch 5.)
+        // Several Qt-side widgets are present for visual fidelity but the
+        // underlying action isn't wired yet (atom_query needs RDKit query
+        // atoms, bond_query needs the same, atom_chain, R-group, attachment
+        // point, reaction, monomeric mode, import/export/settings/help).
+        // All route through comingSoon() → setStatus(...) so users can tell
+        // the button is intentional rather than broken. (periodic-table
+        // opens a real popup in Batch 7; covered by its own tests.)
         const status = page.getByTestId('sketcher-status');
         const stubs = [
             ['atom-query', /Atom query/],
-            ['periodic-table', /Periodic table/],
             ['bond-query', /Bond query/],
             ['atom-chain', /Atom chain/],
             ['rgroup', /R-Group/],
@@ -1708,5 +1710,108 @@ test.describe('React Sketcher', () => {
         const rd = await snapshot(page);
         expect(rd.bonds).toHaveLength(1);
         expect(rd.bonds[0].o).toBe(3);
+    });
+
+    test('periodic-table: click opens popup → picking Fe activates atom tool with Fe AND parks Fe in the last-picked slot', async ({
+        page,
+    }) => {
+        // Qt PeriodicTableWidget.onButtonClicked sets DRAW_TOOL=ATOM,
+        // ATOM_TOOL=ELEMENT, ELEMENT=picked. SetAtomWidget watches ELEMENT
+        // and routes anything outside the fixed bimap into
+        // last_picked_element_btn. React port mirrors both.
+        const canvas = page.getByTestId('sketcher-canvas');
+        const last = page.getByTestId('last-picked-element');
+
+        // Default state: last-picked is Si (Qt: last_picked_element_btn
+        // ->setElement(Element::SI)).
+        await expect(last).toHaveText('Si');
+
+        // Click the PT button — popup should appear.
+        await page.getByTestId('periodic-table').click();
+        await expect(page.getByTestId('periodic-table-popup')).toBeVisible();
+
+        // Pick Fe.
+        await page.getByTestId('pt-Fe').click();
+        // Popup closes.
+        await expect(page.getByTestId('periodic-table-popup')).toHaveCount(0);
+
+        // last-picked slot now shows Fe and is active.
+        await expect(last).toHaveText('Fe');
+        await expect(last).toHaveAttribute('aria-pressed', 'true');
+
+        // Clicking the canvas places an Fe atom.
+        await canvas.click({ position: { x: 240, y: 200 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].el).toBe('Fe');
+    });
+
+    test('periodic-table: outside-click closes the popup without committing a pick', async ({
+        page,
+    }) => {
+        const last = page.getByTestId('last-picked-element');
+        await expect(last).toHaveText('Si');
+
+        await page.getByTestId('periodic-table').click();
+        await expect(page.getByTestId('periodic-table-popup')).toBeVisible();
+
+        // Mouse down outside the popup (the canvas works); the popup
+        // should close before the click resolves.
+        await page.getByTestId('sketcher-canvas').click({ position: { x: 50, y: 50 } });
+        await expect(page.getByTestId('periodic-table-popup')).toHaveCount(0);
+
+        // Last-picked unchanged.
+        await expect(last).toHaveText('Si');
+    });
+
+    test('periodic-table: fixed elements (C/H/N/O/P/S/F/Cl) bypass the last-picked slot when picked from the table', async ({
+        page,
+    }) => {
+        // Qt SetAtomWidget::onModelValuePinged checks whether the new
+        // element is in m_button_element_bimap before re-homing it on the
+        // last-picked button. Fluorine is in the bimap → last-picked
+        // stays on its previous element.
+        const last = page.getByTestId('last-picked-element');
+        await expect(last).toHaveText('Si');
+
+        await page.getByTestId('periodic-table').click();
+        await page.getByTestId('pt-F').click();
+        await expect(page.getByTestId('periodic-table-popup')).toHaveCount(0);
+
+        // Last-picked still says Si — F lives on its own fixed button.
+        await expect(last).toHaveText('Si');
+        // Active button is element-F, not last-picked.
+        await expect(page.getByTestId('element-F')).toHaveAttribute('aria-pressed', 'true');
+        await expect(last).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    test('atom-query popup: long-press opens A/AH/Q/QH/M/MH/X/XH; pick still surfaces coming-soon (query atoms need RDKit support)', async ({
+        page,
+    }) => {
+        // Qt AtomQueryPopup renders 8 choices in a 2×4 grid. The
+        // underlying RDKit::QueryAtom plumbing isn't in the lean MolModel
+        // yet, so picks should still route through comingSoon() rather
+        // than silently no-op.
+        const status = page.getByTestId('sketcher-status');
+        const aQueryBtn = page.getByTestId('atom-query');
+
+        // Long-press (>250 ms) opens the popup. Use hover()+mouse.down so
+        // React's onMouseEnter path fires before mouseDown — see Batch 6.
+        await aQueryBtn.hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await expect(page.getByTestId('atom-query-popup')).toBeVisible();
+
+        // All 8 choices present.
+        for (const v of ['A', 'AH', 'Q', 'QH', 'M', 'MH', 'X', 'XH']) {
+            await expect(page.getByTestId(`atom-query-popup-${v}`)).toBeVisible();
+        }
+        await page.mouse.up();
+
+        // Pick "Q" — status should mention Q and coming-soon-ness.
+        await page.getByTestId('atom-query-popup-Q').click();
+        await expect(status).toContainText(/Q/);
+        await expect(status).toContainText(/query atom/i);
+        await expect(page.getByTestId('atom-query-popup')).toHaveCount(0);
     });
 });
