@@ -23,7 +23,10 @@ type Element = 'C' | 'H' | 'N' | 'O' | 'P' | 'S' | 'F' | 'Cl' | 'Si';
 // the stereo variants — picking any one button replaces the previously-active
 // bond mode. We mirror that here: BondMode collapses "what order is the next
 // bond?" and "what stereo dir does it get?" into one selection.
-type BondMode = 'single' | 'double' | 'triple' | 'wedge' | 'dash';
+//   wavy    = single bond with BondDir::UNKNOWN  (stereo_bond_popup single_either)
+//   crossed = double bond with BondDir::EITHERDOUBLE (stereo_bond_popup double_either)
+type BondMode =
+    'single' | 'double' | 'triple' | 'wedge' | 'dash' | 'wavy' | 'crossed';
 
 interface RingSpec {
     size: number;
@@ -81,6 +84,8 @@ interface BondDesc {
 const BOND_DIR_NONE = 0;
 const BOND_DIR_WEDGE = 1;
 const BOND_DIR_DASH = 2;
+const BOND_DIR_EITHERDOUBLE = 5; // crossed double (cis/trans unknown)
+const BOND_DIR_UNKNOWN = 6;       // wavy single (up/down unknown)
 interface RenderDesc {
     atoms: AtomDesc[];
     bonds: BondDesc[];
@@ -378,6 +383,51 @@ function drawSketch(
                 ctx.lineTo(cx - px * halfW, cy - py2 * halfW);
                 ctx.stroke();
             }
+        } else if (dir === BOND_DIR_UNKNOWN && b.o === 1) {
+            // Wavy single bond (cis/trans-unknown stereo). Qt draws a zig-
+            // zag wedge; we approximate with a sine wave along the bond
+            // axis — both read as "stereo direction unknown" at a glance.
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy);
+            const ux = dx / len;
+            const uy = dy / len;
+            const nx = -uy;
+            const ny = ux;
+            const amp = 3; // perpendicular swing in pixels
+            const waves = Math.max(2, Math.round(len / 8));
+            const steps = waves * 8;
+            ctx.lineWidth = BOND_STROKE;
+            ctx.beginPath();
+            ctx.moveTo(p1.px, p1.py);
+            for (let s = 1; s <= steps; ++s) {
+                const t = s / steps;
+                const phase = Math.sin(2 * Math.PI * waves * t);
+                const cx = p1.px + dx * t + nx * amp * phase;
+                const cy = p1.py + dy * t + ny * amp * phase;
+                ctx.lineTo(cx, cy);
+            }
+            ctx.stroke();
+        } else if (dir === BOND_DIR_EITHERDOUBLE && b.o === 2) {
+            // Crossed double bond (cis/trans-unknown). Two symmetric
+            // offset lines with their endpoints swapped → X shape. Qt's
+            // crossDoubleBondLines (bond_item.cpp:557-563).
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy);
+            const ox = (-dy / len) * BOND_DOUBLE_OFFSET;
+            const oy = (dx / len) * BOND_DOUBLE_OFFSET;
+            ctx.lineWidth = BOND_STROKE;
+            // Line A: p1+offset → p2-offset
+            ctx.beginPath();
+            ctx.moveTo(p1.px + ox, p1.py + oy);
+            ctx.lineTo(p2.px - ox, p2.py - oy);
+            ctx.stroke();
+            // Line B: p1-offset → p2+offset
+            ctx.beginPath();
+            ctx.moveTo(p1.px - ox, p1.py - oy);
+            ctx.lineTo(p2.px + ox, p2.py + oy);
+            ctx.stroke();
         } else if (b.arom) {
             // Aromatic: plain solid line PLUS an inner dashed line offset
             // toward the molecule centroid. Replaces both the single-stroke
@@ -426,7 +476,10 @@ function drawSketch(
             ctx.lineTo(p2.px, p2.py);
             ctx.stroke();
         }
-        if (!b.arom && (b.o === 2 || b.o === 3)) {
+        // Crossed double already drew both strokes itself (X shape); skip
+        // the second-stroke pass so we don't double-paint.
+        const isCrossedDouble = dir === BOND_DIR_EITHERDOUBLE && b.o === 2;
+        if (!b.arom && !isCrossedDouble && (b.o === 2 || b.o === 3)) {
             const dx = p2.px - p1.px;
             const dy = p2.py - p1.py;
             const len = Math.hypot(dx, dy);
@@ -616,6 +669,15 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // Qt's bond_group is one radio group — picking Single clears any active
     // stereo, picking Wedge implies single+wedge. bondMode collapses both.
     const [bondMode, setBondMode] = useState<BondMode>('single');
+    // Each stereo / bond-order slot is a Qt ModularToolButton: clicking
+    // applies its currently-selected mode; picking from its popup swaps the
+    // mode AND applies it. The selected mode determines both icon and
+    // active state for that slot. Defaults match Qt
+    // (widget/draw_tools_widget.cpp:29-32): stereo1=SINGLE_UP (wedge),
+    // stereo2=SINGLE_DOWN (dash), bond_order=DOUBLE.
+    const [stereo1Mode, setStereo1Mode] = useState<BondMode>('wedge');
+    const [stereo2Mode, setStereo2Mode] = useState<BondMode>('dash');
+    const [bondOrderMode, setBondOrderMode] = useState<BondMode>('double');
     const [ring, setRing] = useState<RingSpec>(RING_BENZENE);
     const [pendingBondAtom, setPendingBondAtom] = useState<number | null>(null);
     const [hoverAtom, setHoverAtom] = useState<number | null>(null);
@@ -647,13 +709,60 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // BondMode → (order, dir) for addBondWithDir / setBondDirForSelectedBonds.
     const bondModeToOrderAndDir = (mode: BondMode): { order: number; dir: number } => {
         switch (mode) {
-            case 'single': return { order: 1, dir: BOND_DIR_NONE };
-            case 'double': return { order: 2, dir: BOND_DIR_NONE };
-            case 'triple': return { order: 3, dir: BOND_DIR_NONE };
-            case 'wedge':  return { order: 1, dir: BOND_DIR_WEDGE };
-            case 'dash':   return { order: 1, dir: BOND_DIR_DASH };
+            case 'single':  return { order: 1, dir: BOND_DIR_NONE };
+            case 'double':  return { order: 2, dir: BOND_DIR_NONE };
+            case 'triple':  return { order: 3, dir: BOND_DIR_NONE };
+            case 'wedge':   return { order: 1, dir: BOND_DIR_WEDGE };
+            case 'dash':    return { order: 1, dir: BOND_DIR_DASH };
+            case 'wavy':    return { order: 1, dir: BOND_DIR_UNKNOWN };
+            case 'crossed': return { order: 2, dir: BOND_DIR_EITHERDOUBLE };
         }
     };
+
+    // Per-slot icon for the stereo & bond-order ModularToolButtons. Used by
+    // the popup primitive to swap the parent button's display when the user
+    // picks something new from the popup. Icon names mirror Qt's resource
+    // paths (ui/draw_tools_widget.ui + popup .ui files).
+    const bondModeIcon = (mode: BondMode): string => {
+        switch (mode) {
+            case 'single':  return 'bond_single';
+            case 'double':  return 'bond_double';
+            case 'triple':  return 'bond_triple';
+            case 'wedge':   return 'bond_up';
+            case 'dash':    return 'bond_down';
+            case 'wavy':    return 'bond_wiggly';
+            case 'crossed': return 'bond_crossed';
+        }
+    };
+    const bondModeTitle = (mode: BondMode): string => {
+        switch (mode) {
+            case 'single':  return 'Single Bond';
+            case 'double':  return 'Double Bond';
+            case 'triple':  return 'Triple Bond';
+            case 'wedge':   return 'Single Up Bond';
+            case 'dash':    return 'Single Down Bond';
+            case 'wavy':    return 'Single Up or Down Bond';
+            case 'crossed': return 'Double Cis or Trans Bond';
+        }
+    };
+
+    // The 4-choice stereo popup — mirrors ui/stereo_bond_popup.ui order:
+    // up_btn, down_btn, single_either_btn, double_either_btn. Used as the
+    // popup for both stereo slots (Qt: each stereo_bondN_btn has its own
+    // independent StereoBondPopup but they offer the same 4 choices).
+    const STEREO_CHOICES: PopupChoice<BondMode>[] = [
+        { value: 'wedge',   icon: 'bond_up',      title: 'Single Up Bond',          testid: 'stereo-popup-wedge' },
+        { value: 'dash',    icon: 'bond_down',    title: 'Single Down Bond',        testid: 'stereo-popup-dash' },
+        { value: 'wavy',    icon: 'bond_wiggly',  title: 'Single Up or Down Bond',  testid: 'stereo-popup-wavy' },
+        { value: 'crossed', icon: 'bond_crossed', title: 'Double Cis or Trans Bond',testid: 'stereo-popup-crossed' },
+    ];
+    // The bond-order popup — mirrors ui/bond_order_popup.ui (Double, Triple,
+    // Coordinate, Zero). Coordinate / Zero need BondType::DATIVE/ZERO support
+    // in mol_model, which the lean MolModel doesn't expose yet — defer those.
+    const BOND_ORDER_CHOICES: PopupChoice<BondMode>[] = [
+        { value: 'double', icon: 'bond_double', title: 'Double Bond', testid: 'order-popup-double' },
+        { value: 'triple', icon: 'bond_triple', title: 'Triple Bond', testid: 'order-popup-triple' },
+    ];
 
     // Build the C++ MolModel once per mount, tear it down on unmount.
     useEffect(() => {
@@ -1783,17 +1892,21 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             }
 
             // 0/1/2/3 → bond order (Qt sketcher_widget.cpp:1252-1269).
-            if (key === '1' || key === '2') {
+            if (key === '1') {
                 e.preventDefault();
-                const next = key === '1' ? 'single' : 'double';
-                setTool('bond');
-                setBondMode(next);
-                setStatus(`bond mode: ${next}`);
+                pickBondMode('single');
+                setStatus('bond mode: single');
                 return;
             }
-            if (key === '3') {
+            if (key === '2' || key === '3') {
+                // Mirror Qt: pressing the order key also swaps which mode
+                // the bond_order ModularToolButton displays. So '3' sets
+                // the bond-order slot icon to triple AND makes it active.
                 e.preventDefault();
-                comingSoon('Triple bond (needs popup component)');
+                const next: BondMode = key === '2' ? 'double' : 'triple';
+                pickBondMode(next);
+                setBondOrderMode(next);
+                setStatus(`bond mode: ${next}`);
                 return;
             }
             if (key === '0') {
@@ -2087,27 +2200,59 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     <hr style={styles.hr} />
 
                     {/* bond_frame 2×3 — draw_tools_widget.ui:
-                        row 0: single, wedge (stereo_bond1), dash (stereo_bond2)
-                        row 1: bond_order (Double; Triple is the popup option,
-                        deferred), bond_query (popup, deferred), atom_chain
-                        (deferred). All in one bond_group radio (Qt). */}
+                        row 0: single, stereo_bond1 (default Up), stereo_bond2
+                        (default Down) — both are ModularToolButtons with the
+                        4-item StereoBondPopup.
+                        row 1: bond_order (ModularToolButton, default Double,
+                        popup adds Triple), bond_query (popup, deferred),
+                        atom_chain (deferred). All in one bond_group radio (Qt). */}
                     <div style={styles.bondGrid}>
                         <IconButton icon='bond_single' testid='bond-single'
                             title='Single Bond'
                             active={tool === 'bond' && bondMode === 'single'}
                             onClick={() => pickBondModeApplying('single', 'single')} />
-                        <IconButton icon='bond_up' testid='bond-wedge'
-                            title='Up Bond (Wedge)'
-                            active={tool === 'bond' && bondMode === 'wedge'}
-                            onClick={() => pickBondModeApplying('wedge', 'wedge')} />
-                        <IconButton icon='bond_down' testid='bond-dash'
-                            title='Down Bond (Dash)'
-                            active={tool === 'bond' && bondMode === 'dash'}
-                            onClick={() => pickBondModeApplying('dash', 'dash')} />
-                        <IconButton icon='bond_double' testid='bond-double'
-                            title='Double Bond (Triple deferred to popup batch)'
-                            active={tool === 'bond' && bondMode === 'double'}
-                            onClick={() => pickBondModeApplying('double', 'double')} />
+                        {/* testid stays bond-wedge / bond-dash / bond-double
+                            so existing PW tests don't churn — the slot name
+                            reflects the *default* mode each ModularToolButton
+                            ships with (matching Qt). After a popup pick the
+                            slot can display any of its 4 (stereo) or 2 (order)
+                            modes; the testid is stable. */}
+                        <IconButtonWithPopup<BondMode>
+                            icon={bondModeIcon(stereo1Mode)}
+                            testid='bond-wedge'
+                            title={`${bondModeTitle(stereo1Mode)} – press & hold to change`}
+                            active={tool === 'bond' && bondMode === stereo1Mode}
+                            choices={STEREO_CHOICES}
+                            onClick={() => pickBondModeApplying(stereo1Mode, bondModeTitle(stereo1Mode).toLowerCase())}
+                            onPick={(v) => {
+                                setStereo1Mode(v);
+                                pickBondModeApplying(v, bondModeTitle(v).toLowerCase());
+                            }}
+                        />
+                        <IconButtonWithPopup<BondMode>
+                            icon={bondModeIcon(stereo2Mode)}
+                            testid='bond-dash'
+                            title={`${bondModeTitle(stereo2Mode)} – press & hold to change`}
+                            active={tool === 'bond' && bondMode === stereo2Mode}
+                            choices={STEREO_CHOICES}
+                            onClick={() => pickBondModeApplying(stereo2Mode, bondModeTitle(stereo2Mode).toLowerCase())}
+                            onPick={(v) => {
+                                setStereo2Mode(v);
+                                pickBondModeApplying(v, bondModeTitle(v).toLowerCase());
+                            }}
+                        />
+                        <IconButtonWithPopup<BondMode>
+                            icon={bondModeIcon(bondOrderMode)}
+                            testid='bond-double'
+                            title={`${bondModeTitle(bondOrderMode)} – press & hold to change`}
+                            active={tool === 'bond' && bondMode === bondOrderMode}
+                            choices={BOND_ORDER_CHOICES}
+                            onClick={() => pickBondModeApplying(bondOrderMode, bondModeTitle(bondOrderMode).toLowerCase())}
+                            onPick={(v) => {
+                                setBondOrderMode(v);
+                                pickBondModeApplying(v, bondModeTitle(v).toLowerCase());
+                            }}
+                        />
                         <IconButton icon='bond_aromatic' testid='bond-query'
                             title='Bond Query'
                             onClick={() => comingSoon('Bond query popup')} />
@@ -2281,6 +2426,172 @@ function IconButton({
             title={title}
         >
             <img src={src} alt='' draggable={false} style={styles.iconImg} />
+        </button>
+    );
+}
+
+// ModularToolButton equivalent — a 32×32 icon button that opens a popup on
+// long-press (250 ms) OR on click-when-already-active. Wedge indicator at
+// the bottom-right corner shows the popup is available. Picking from the
+// popup fires `onPick(choice)` and closes the popup.
+//
+// Qt sources: widget/modular_tool_button.cpp (icon swap on selectionChanged
+// + click()), widget/tool_button_with_popup.cpp (250 ms popup timer +
+// onClicked-when-checked opens popup), widget/modular_popup.cpp (popup
+// emits selectionChanged on button click, closes immediately).
+interface PopupChoice<T extends string> {
+    value: T;
+    icon: string;
+    title: string;
+    testid: string;
+}
+
+interface IconButtonWithPopupProps<T extends string> {
+    icon: string;
+    onClick: () => void;
+    testid: string;
+    title?: string;
+    active?: boolean;
+    choices: PopupChoice<T>[];
+    onPick: (value: T) => void;
+}
+
+const POPUP_DELAY_MS = 250; // Qt ToolButtonWithPopup::m_popup_delay default
+
+function IconButtonWithPopup<T extends string>({
+    icon, onClick, testid, title, active, choices, onPick,
+}: IconButtonWithPopupProps<T>): JSX.Element {
+    const [hover, setHover] = useState(false);
+    const [popupOpen, setPopupOpen] = useState(false);
+    // Set true when the long-press timer fires — we use this to suppress the
+    // click event that would otherwise follow the mouseup (which would
+    // double-fire onClick on top of the popup we already showed).
+    const longPressFiredRef = useRef(false);
+    const longPressTimerRef = useRef<number | null>(null);
+    const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+    const cancelLongPress = useCallback((): void => {
+        if (longPressTimerRef.current !== null) {
+            window.clearTimeout(longPressTimerRef.current);
+            longPressTimerRef.current = null;
+        }
+    }, []);
+
+    const handleMouseDown = useCallback((): void => {
+        longPressFiredRef.current = false;
+        cancelLongPress();
+        longPressTimerRef.current = window.setTimeout(() => {
+            longPressFiredRef.current = true;
+            setPopupOpen(true);
+        }, POPUP_DELAY_MS);
+    }, [cancelLongPress]);
+
+    const handleClick = useCallback((): void => {
+        if (longPressFiredRef.current) {
+            // Long-press already opened the popup — swallow the trailing click.
+            longPressFiredRef.current = false;
+            return;
+        }
+        if (active) {
+            // Qt ToolButtonWithPopup::onClicked (line 113 in .h): a click
+            // while the button is already checked re-opens the popup so the
+            // user can pick a different sub-option without a second long press.
+            setPopupOpen(true);
+            return;
+        }
+        onClick();
+    }, [active, onClick]);
+
+    // Close popup on outside click. We listen on document mousedown so a
+    // press starting outside the popup closes it before the click resolves
+    // on whatever was actually clicked.
+    useEffect(() => {
+        if (!popupOpen) return;
+        function onDocMouseDown(e: globalThis.MouseEvent): void {
+            const target = e.target as Node;
+            if (wrapperRef.current && !wrapperRef.current.contains(target)) {
+                setPopupOpen(false);
+            }
+        }
+        document.addEventListener('mousedown', onDocMouseDown);
+        return () => {
+            document.removeEventListener('mousedown', onDocMouseDown);
+        };
+    }, [popupOpen]);
+
+    const src = `/icons/${icon}.svg`;
+    return (
+        <div ref={wrapperRef} style={{ position: 'relative' }}>
+            <button
+                type='button'
+                style={{
+                    ...styles.iconBtn,
+                    ...(hover && !active ? styles.iconBtnHover : {}),
+                    ...(active ? styles.iconBtnActive : {}),
+                    position: 'relative',
+                }}
+                onMouseDown={handleMouseDown}
+                onMouseUp={cancelLongPress}
+                onMouseEnter={() => setHover(true)}
+                onMouseLeave={() => { setHover(false); cancelLongPress(); }}
+                onClick={handleClick}
+                data-testid={testid}
+                aria-pressed={active}
+                aria-haspopup='menu'
+                aria-expanded={popupOpen}
+                title={title}
+            >
+                <img src={src} alt='' draggable={false} style={styles.iconImg} />
+                <span style={styles.popupWedge} aria-hidden='true' />
+            </button>
+            {popupOpen && (
+                <div style={styles.iconPopup}
+                    data-testid={`${testid}-popup`}
+                    role='menu'>
+                    {choices.map((c) => (
+                        <PopupChoiceButton
+                            key={c.testid}
+                            choice={c}
+                            onPick={() => {
+                                setPopupOpen(false);
+                                onPick(c.value);
+                            }}
+                        />
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
+interface PopupChoiceButtonProps<T extends string> {
+    choice: PopupChoice<T>;
+    onPick: () => void;
+}
+
+function PopupChoiceButton<T extends string>({
+    choice, onPick,
+}: PopupChoiceButtonProps<T>): JSX.Element {
+    const [hover, setHover] = useState(false);
+    return (
+        <button
+            type='button'
+            style={{
+                ...styles.iconBtn,
+                ...(hover ? styles.iconBtnHover : {}),
+            }}
+            onClick={onPick}
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
+            data-testid={choice.testid}
+            // Qt ModularPopup::getToolTip appends "– press & hold to change"
+            // to every popup item. Mirror that here so a user hovering the
+            // chosen item in the parent button later sees the same hint.
+            title={`${choice.title} – press & hold to change`}
+            role='menuitem'
+        >
+            <img src={`/icons/${choice.icon}.svg`} alt='' draggable={false}
+                style={styles.iconImg} />
         </button>
     );
 }
@@ -2492,6 +2803,35 @@ const styles: Record<string, CSSProperties> = {
     iconBtnWide: { width: ICON_BTN_SIZE * 2 + 2 },
     iconBtnHover: { background: HOVER_BG },
     iconBtnActive: { background: CHECKED_BG },
+    // Bottom-right wedge indicator: signals "there's a popup here, long-
+    // press or click-while-active to open." Qt draws this via QStyle's
+    // CC_ToolButton menu indicator; we use a clip-path triangle on a tiny
+    // square — readable at 32 px, no extra asset.
+    popupWedge: {
+        position: 'absolute',
+        bottom: 2,
+        right: 2,
+        width: 6,
+        height: 6,
+        background: '#777',
+        clipPath: 'polygon(100% 0, 100% 100%, 0 100%)',
+        pointerEvents: 'none',
+    },
+    iconPopup: {
+        position: 'absolute',
+        top: '100%',
+        left: 0,
+        marginTop: 2,
+        background: 'white',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 3,
+        boxShadow: '0 2px 6px rgba(0,0,0,0.12)',
+        zIndex: 20,
+        padding: 2,
+        display: 'flex',
+        gap: 2,
+        // Qt popups are 32 px tall × N×32 wide. flex sizes itself.
+    },
     iconImg: {
         // Qt iconSize is 30×32; the button itself is 32×32 with 1px margin.
         width: 30,

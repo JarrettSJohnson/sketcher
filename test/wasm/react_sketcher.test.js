@@ -1316,7 +1316,7 @@ test.describe('React Sketcher', () => {
         expect(rd.atoms[0].q).toBe(-1);
     });
 
-    test('stub shortcuts (Ctrl+X/C/V, D/T isotope, 0/3 bond) surface a status', async ({
+    test('stub shortcuts (Ctrl+X/C/V, D/T isotope, 0 bond) surface a status', async ({
         page,
     }) => {
         const status = page.getByTestId('sketcher-status');
@@ -1324,6 +1324,9 @@ test.describe('React Sketcher', () => {
         // Need atoms so the shortcuts route to model-aware branches.
         await canvas.click({ position: { x: 200, y: 200 } });
 
+        // 3 (Triple bond) was a stub before batch 6 — now wired through the
+        // bond-order popup primitive, so it sets bondMode to triple instead
+        // of surfacing a "not yet implemented" status.
         const checks = [
             ['ControlOrMeta+x', /Cut/],
             ['ControlOrMeta+c', /Copy/],
@@ -1331,7 +1334,6 @@ test.describe('React Sketcher', () => {
             ['d', /Deuterium/],
             ['t', /Tritium/],
             ['0', /Zero bond/],
-            ['3', /Triple bond/],
         ];
         for (const [combo, pattern] of checks) {
             await page.keyboard.press(combo);
@@ -1563,5 +1565,148 @@ test.describe('React Sketcher', () => {
         expect(rd.atoms).toHaveLength(2);
         // Prior selection survives the empty erase-rect.
         expect(rd.atoms.map((a) => !!a.sel)).toEqual([true, false]);
+    });
+
+    // ---- Batch 6: popup primitive (Qt ModularToolButton + ModularPopup) ----
+
+    test('bond-order popup: click-when-active opens popup; picking Triple swaps the slot icon AND switches bond mode', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Seed two atoms with the default atom tool (bond tool only works
+        // on existing atoms — same pattern as the bond-single round-trip
+        // test earlier in this file).
+        await canvas.click({ position: { x: 120, y: 200 } });
+        await canvas.click({ position: { x: 260, y: 200 } });
+
+        // First click activates the bond-order slot (default = Double).
+        await page.getByTestId('bond-double').click();
+        await expect(page.getByTestId('bond-double')).toHaveAttribute('aria-pressed', 'true');
+        // Popup should NOT be open yet — first click is just "activate".
+        await expect(page.getByTestId('bond-double-popup')).toHaveCount(0);
+
+        // Click-while-checked opens the popup (Qt onClicked at
+        // tool_button_with_popup.h:113).
+        await page.getByTestId('bond-double').click();
+        await expect(page.getByTestId('bond-double-popup')).toBeVisible();
+        await expect(page.getByTestId('order-popup-double')).toBeVisible();
+        await expect(page.getByTestId('order-popup-triple')).toBeVisible();
+
+        // Pick Triple. The popup closes, the slot becomes triple, and
+        // subsequent canvas clicks draw triple bonds.
+        await page.getByTestId('order-popup-triple').click();
+        await expect(page.getByTestId('bond-double-popup')).toHaveCount(0);
+        await expect(page.getByTestId('sketcher-status')).toContainText(/triple/i);
+
+        await canvas.click({ position: { x: 120, y: 200 } });
+        await canvas.click({ position: { x: 260, y: 200 } });
+        const rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.bonds[0].o).toBe(3); // TRIPLE
+    });
+
+    test('stereo popup: pick Wavy → next bond is a wavy single (BondDir::UNKNOWN, serialized dir=6)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Seed two atoms with the default atom tool first.
+        await canvas.click({ position: { x: 120, y: 200 } });
+        await canvas.click({ position: { x: 260, y: 200 } });
+
+        // Activate stereo1 slot, then click again to open popup.
+        await page.getByTestId('bond-wedge').click();
+        await page.getByTestId('bond-wedge').click();
+        await expect(page.getByTestId('bond-wedge-popup')).toBeVisible();
+
+        await page.getByTestId('stereo-popup-wavy').click();
+        await expect(page.getByTestId('bond-wedge-popup')).toHaveCount(0);
+
+        await canvas.click({ position: { x: 120, y: 200 } });
+        await canvas.click({ position: { x: 260, y: 200 } });
+        const rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.bonds[0]).toMatchObject({ o: 1, dir: 6 }); // SINGLE + UNKNOWN
+    });
+
+    test('stereo popup: pick Crossed → next bond is a crossed double (BondDir::EITHERDOUBLE, serialized dir=5)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Seed two atoms with the default atom tool first.
+        await canvas.click({ position: { x: 120, y: 200 } });
+        await canvas.click({ position: { x: 260, y: 200 } });
+
+        await page.getByTestId('bond-dash').click();
+        await page.getByTestId('bond-dash').click();
+        await expect(page.getByTestId('bond-dash-popup')).toBeVisible();
+
+        await page.getByTestId('stereo-popup-crossed').click();
+        await expect(page.getByTestId('bond-dash-popup')).toHaveCount(0);
+
+        await canvas.click({ position: { x: 120, y: 200 } });
+        await canvas.click({ position: { x: 260, y: 200 } });
+        const rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.bonds[0]).toMatchObject({ o: 2, dir: 5 }); // DOUBLE + EITHERDOUBLE
+    });
+
+    test('popup closes on click outside (does not commit a choice)', async ({
+        page,
+    }) => {
+        // Activate then open popup.
+        await page.getByTestId('bond-double').click();
+        await page.getByTestId('bond-double').click();
+        await expect(page.getByTestId('bond-double-popup')).toBeVisible();
+
+        // Click somewhere outside — the SMILES Load button is a stable
+        // off-popup target that won't itself open a popup.
+        await page.getByTestId('smiles-load').click();
+        await expect(page.getByTestId('bond-double-popup')).toHaveCount(0);
+
+        // Slot mode unchanged (still Double, since we never picked Triple).
+        await expect(page.getByTestId('bond-double')).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    test('long-press on stereo button opens popup without first activating the slot', async ({
+        page,
+    }) => {
+        // Sanity: initial bond tool is not active. Long-press should open
+        // the popup regardless. Use hover() + mouse.down + delay + mouse.up
+        // so we cross the 250 ms POPUP_DELAY_MS threshold in Sketcher.tsx.
+        // hover() is more reliable than mouse.move for getting the React
+        // onMouseEnter / hit-test path right.
+        const wedgeBtn = page.getByTestId('bond-wedge');
+        await wedgeBtn.hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350); // > POPUP_DELAY_MS (250)
+        await expect(page.getByTestId('bond-wedge-popup')).toBeVisible();
+        await page.mouse.up();
+        // Popup stays visible after mouseup — Qt behavior; click outside or
+        // pick to close.
+        await expect(page.getByTestId('bond-wedge-popup')).toBeVisible();
+    });
+
+    test('keyboard 3 sets triple mode AND swaps the bond-order slot icon to Triple', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Seed two atoms with the default atom tool BEFORE pressing 3 —
+        // once bond tool is active, empty-canvas clicks no longer add
+        // atoms.
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await canvas.click({ position: { x: 320, y: 200 } });
+
+        await page.keyboard.press('3');
+        await expect(page.getByTestId('sketcher-status')).toContainText(/triple/i);
+        // Bond-order slot should now be the active button (since bondMode
+        // = triple = bondOrderMode after the keypress).
+        await expect(page.getByTestId('bond-double')).toHaveAttribute('aria-pressed', 'true');
+
+        // Click both atoms to commit the bond; it should be triple.
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await canvas.click({ position: { x: 320, y: 200 } });
+        const rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.bonds[0].o).toBe(3);
     });
 });
