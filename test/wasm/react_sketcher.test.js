@@ -1026,6 +1026,92 @@ test.describe('React Sketcher', () => {
         expect(Math.abs(r2 - g2)).toBeLessThan(20);
     });
 
+    test('Help menu: dropdown shows three items in Qt order (Help / Getting Started / About)', async ({
+        page,
+    }) => {
+        // Qt's HelpMenu (menu/sketcher_top_bar_menus.cpp:130-151) exposes
+        // exactly three QActions in this order. We mirror them as plain
+        // MoreItems (not toggles — these are one-shot actions).
+        await page.getByTestId('help').click();
+        const menu = page.getByTestId('help-menu');
+        await expect(menu).toBeVisible();
+        const items = menu.locator('[data-testid^="help-"]');
+        await expect(items).toHaveCount(3);
+        await expect(items.nth(0)).toHaveAttribute('data-testid', 'help-docs');
+        await expect(items.nth(0)).toContainText('Help...');
+        await expect(items.nth(1)).toHaveAttribute('data-testid', 'help-welcome');
+        await expect(items.nth(1)).toContainText('Getting Started...');
+        await expect(items.nth(2)).toHaveAttribute('data-testid', 'help-about');
+        await expect(items.nth(2)).toContainText('About Sketcher...');
+    });
+
+    test('Help menu: Help... opens external docs in a new tab and closes the menu', async ({
+        page,
+    }) => {
+        // Qt's onHelpClicked (widget/sketcher_top_bar.cpp) opens the
+        // 2D Sketcher user manual URL. The web port uses window.open with
+        // _blank + noopener,noreferrer. We assert the popup is requested
+        // (new page event) and that the URL points at the right docs.
+        await page.getByTestId('help').click();
+        await expect(page.getByTestId('help-menu')).toBeVisible();
+        const [popup] = await Promise.all([
+            page.waitForEvent('popup'),
+            page.getByTestId('help-docs').click(),
+        ]);
+        expect(popup.url()).toContain('schrodinger.com');
+        expect(popup.url()).toContain('2d_sketcher');
+        await popup.close();
+        // Menu closes after picking an item.
+        await expect(page.getByTestId('help-menu')).toHaveCount(0);
+    });
+
+    test('Help menu: Getting Started... opens the welcome modal with three tips, OK closes it', async ({
+        page,
+    }) => {
+        // Qt's SketcherWelcomeDialog has three labeled tip blocks (Select
+        // Mode, Chooser Buttons, Mouse Actions). The port mirrors the
+        // tip text verbatim from ui/sketcher_welcome_dialog.ui.
+        await page.getByTestId('help').click();
+        await page.getByTestId('help-welcome').click();
+        const modal = page.getByTestId('welcome-modal');
+        await expect(modal).toBeVisible();
+        await expect(modal).toContainText('Welcome to the Schrödinger Sketcher');
+        await expect(modal).toContainText('Select Mode');
+        await expect(modal).toContainText('Chooser Buttons');
+        await expect(modal).toContainText('Mouse Actions');
+        // Menu closes when we pick the item.
+        await expect(page.getByTestId('help-menu')).toHaveCount(0);
+        await page.getByTestId('welcome-ok').click();
+        await expect(page.getByTestId('welcome-modal')).toHaveCount(0);
+    });
+
+    test('Help menu: About Sketcher... shows the version + EULA link, Close dismisses', async ({
+        page,
+    }) => {
+        // Qt's About2DSketcher dialog shows release/version text, a
+        // "Qt-free Port" line (added by the port to flag the build),
+        // copyright, and a license-agreement hyperlink. The version
+        // string is kept in lock-step with ../../version.json via the
+        // SKETCHER_VERSION constant in Sketcher.tsx.
+        await page.getByTestId('help').click();
+        await page.getByTestId('help-about').click();
+        const modal = page.getByTestId('about-modal');
+        await expect(modal).toBeVisible();
+        await expect(modal).toContainText('About Schrödinger 2D Sketcher');
+        await expect(page.getByTestId('about-version'))
+            .toContainText(/Release \d+\.\d+\.\d+/);
+        await expect(modal).toContainText('Qt-free Port');
+        await expect(modal).toContainText(/©.*Schrödinger/);
+        const eula = page.getByTestId('about-eula');
+        await expect(eula).toBeVisible();
+        await expect(eula).toHaveAttribute('href', /schrodinger\.com/);
+        await expect(eula).toHaveAttribute('target', '_blank');
+        await expect(eula).toHaveAttribute('rel', /noopener/);
+        await expect(page.getByTestId('help-menu')).toHaveCount(0);
+        await page.getByTestId('about-close').click();
+        await expect(page.getByTestId('about-modal')).toHaveCount(0);
+    });
+
     test('SMILES Load parses input and Copy SMILES writes canonical form', async ({ page }) => {
         const input = page.getByTestId('smiles-input');
         await input.fill('c1ccccc1');
@@ -1390,13 +1476,14 @@ test.describe('React Sketcher', () => {
         // Several Qt-side widgets are present for visual fidelity but the
         // underlying action isn't wired yet (atom_query needs RDKit query
         // atoms, bond_query needs the same, R-group, attachment
-        // point, reaction, monomeric mode, help). Import/Export open real
-        // menus now (Batch 12); Save Image opens its own dialog (Batch
-        // 13); Settings is the Configure View dropdown (Batch 14, covered
-        // by its own tests). All remaining stubs route through
-        // comingSoon() → setStatus(...) so users can tell the button is
-        // intentional rather than broken. (periodic-table opens a real
-        // popup in Batch 7; covered by its own tests.)
+        // point, reaction, monomeric mode). Import/Export open real menus
+        // (Batch 12); Save Image opens its own dialog (Batch 13);
+        // Settings is the Configure View dropdown (Batch 14); Help is
+        // its own dropdown (Batch 15) — all covered by their own tests.
+        // The remaining stubs route through comingSoon() → setStatus(...)
+        // so users can tell the button is intentional rather than
+        // broken. (periodic-table opens a real popup in Batch 7; covered
+        // by its own tests.)
         const status = page.getByTestId('sketcher-status');
         const stubs = [
             ['atom-query', /Atom query/],
@@ -1405,7 +1492,6 @@ test.describe('React Sketcher', () => {
             ['attachment-point', /Attachment point/],
             ['reaction', /Reaction/],
             ['mode-monomeric', /Monomeric/],
-            ['help', /Help/],
         ];
         for (const [testid, pattern] of stubs) {
             await page.getByTestId(testid).click();

@@ -287,6 +287,19 @@ const DEFAULT_DISPLAY_OPTIONS: DisplayOptions = {
     useImplicitHydrogens: false,
 };
 
+// Mirrors Qt's SKETCHER_RELEASE/SKETCHER_BUILD substituted from version.h.in
+// at build time. We hardcode a string here to avoid pulling the project-
+// root version.json into the Vite root; keep this aligned with
+// `../../version.json` (worktree root). The MAJOR-MINOR slug is the
+// fragment Qt's onHelpClicked drops into the docs URL
+// (widget/sketcher_top_bar.cpp:293-300).
+const SKETCHER_VERSION = '2026.3.55';
+const SKETCHER_VERSION_SLUG = '2026-3';
+const HELP_DOCS_URL =
+    `https://learn.schrodinger.com/public/2D-Sketcher/${SKETCHER_VERSION_SLUG}` +
+    '/Content/2d-sketcher/2d_sketcher_home.htm';
+const EULA_URL = 'https://www.schrodinger.com/salesagreements';
+
 interface DragShape {
     kind: SelectShape;
     startPx: number;
@@ -1011,6 +1024,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const toggleDisplayOption = (key: keyof DisplayOptions): void => {
         setDisplayOptions((opt) => ({ ...opt, [key]: !opt[key] }));
     };
+    // Help dropdown (Qt's HelpMenu, menu/sketcher_top_bar_menus.cpp:130-151)
+    // + its two modal sub-dialogs (SketcherWelcomeDialog,
+    // About2DSketcher). Modal state mirrors what the Qt dialogs hold.
+    const [helpMenuOpen, setHelpMenuOpen] = useState<boolean>(false);
+    const [welcomeModalOpen, setWelcomeModalOpen] = useState<boolean>(false);
+    const [aboutModalOpen, setAboutModalOpen] = useState<boolean>(false);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const bondModeRef = useRef<BondMode>('single');
     const [, bumpVersion] = useReducer((v: number) => v + 1, 0);
@@ -2278,6 +2297,24 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setExportMenuOpen(false);
         setImageModalOpen(true);
     };
+
+    // Help menu actions — mirror HelpMenu's three QActions
+    // (menu/sketcher_top_bar_menus.cpp:130-151).
+    const openHelpDocs = (): void => {
+        setHelpMenuOpen(false);
+        // Qt uses QDesktopServices::openUrl; the browser equivalent is
+        // window.open with a new tab + noopener for safety.
+        window.open(HELP_DOCS_URL, '_blank', 'noopener,noreferrer');
+        setStatus('opened docs in a new tab');
+    };
+    const openWelcomeModal = (): void => {
+        setHelpMenuOpen(false);
+        setWelcomeModalOpen(true);
+    };
+    const openAboutModal = (): void => {
+        setHelpMenuOpen(false);
+        setAboutModalOpen(true);
+    };
     // Render the current sketch into a fresh offscreen canvas at (w, h) and
     // download as PNG. Mirrors Qt's FileSaveImageDialog → get_image_bytes
     // path, which re-renders the scene at the requested size rather than
@@ -2896,9 +2933,32 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             </div>
                         )}
                     </div>
-                    <IconButton icon='topbar_help'
-                        onClick={() => comingSoon('Help')}
-                        testid='help' title='Help' />
+                    {/* Help dropdown — Qt's HelpMenu (menu/
+                        sketcher_top_bar_menus.cpp:130-151). Same
+                        InstantPopup pattern as Import/Export/Configure
+                        View. */}
+                    <div style={{ position: 'relative' }}
+                        data-testid='help-wrapper'
+                        onMouseLeave={() => setHelpMenuOpen(false)}>
+                        <IconButton icon='topbar_help'
+                            onClick={() => setHelpMenuOpen((v) => !v)}
+                            testid='help' title='Help'
+                            active={helpMenuOpen} />
+                        {helpMenuOpen && (
+                            <div style={styles.moreMenu}
+                                data-testid='help-menu'>
+                                <MoreItem label='Help...'
+                                    testid='help-docs'
+                                    onClick={openHelpDocs} />
+                                <MoreItem label='Getting Started...'
+                                    testid='help-welcome'
+                                    onClick={openWelcomeModal} />
+                                <MoreItem label='About Sketcher...'
+                                    testid='help-about'
+                                    onClick={openAboutModal} />
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
 
@@ -3425,6 +3485,116 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 data-testid='save-image-save'
                                 onClick={doSaveImage}>
                                 Save
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {welcomeModalOpen && (
+                <div style={styles.modalOverlay}
+                    data-testid='welcome-modal'
+                    onClick={(e) => {
+                        if (e.target === e.currentTarget) {
+                            setWelcomeModalOpen(false);
+                        }
+                    }}>
+                    <div style={{ ...styles.modalCard, maxWidth: 520 }}>
+                        <div style={styles.modalTitle}>
+                            Schrödinger Sketcher — Welcome
+                        </div>
+                        <div style={{ font: '12px sans-serif', color: '#333' }}>
+                            Welcome to the Schrödinger Sketcher! Here are some
+                            tips to help you get started:
+                        </div>
+                        <div style={styles.welcomeTip}>
+                            <div style={styles.welcomeTipHeading}>
+                                Select Mode
+                            </div>
+                            <div style={styles.welcomeTipBody}>
+                                When structure has been selected, only the
+                                tools that can be used with the selection
+                                will remain available. Click a tool or use
+                                a keyboard shortcut to take an action on
+                                the selection. To restore normal drawing,
+                                clear the selection.
+                            </div>
+                        </div>
+                        <div style={styles.welcomeTip}>
+                            <div style={styles.welcomeTipHeading}>
+                                Chooser Buttons
+                            </div>
+                            <div style={styles.welcomeTipBody}>
+                                Buttons showing a little triangle in the
+                                bottom right corner offer a choice of
+                                related tools. To use the currently
+                                displayed tool, just click the button. To
+                                choose a different tool, press and hold
+                                the button to open the chooser.
+                            </div>
+                        </div>
+                        <div style={styles.welcomeTip}>
+                            <div style={styles.welcomeTipHeading}>
+                                Mouse Actions
+                            </div>
+                            <div style={styles.welcomeTipBody}>
+                                All the tools work with the left-mouse
+                                button, but you can also translate and
+                                rotate the structure or selected parts of
+                                it by dragging with your right- or
+                                middle-mouse button. Right-clicking on an
+                                atom or bond will bring up a useful
+                                context menu.
+                            </div>
+                        </div>
+                        <div style={styles.modalButtons}>
+                            <button type='button' style={styles.modalBtnPrimary}
+                                data-testid='welcome-ok'
+                                onClick={() => setWelcomeModalOpen(false)}>
+                                OK
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {aboutModalOpen && (
+                <div style={styles.modalOverlay}
+                    data-testid='about-modal'
+                    onClick={(e) => {
+                        if (e.target === e.currentTarget) {
+                            setAboutModalOpen(false);
+                        }
+                    }}>
+                    <div style={{ ...styles.modalCard, maxWidth: 420 }}>
+                        <div style={styles.modalTitle}>
+                            About Schrödinger 2D Sketcher
+                        </div>
+                        <div style={styles.aboutLine}
+                            data-testid='about-version'>
+                            Release {SKETCHER_VERSION}
+                        </div>
+                        <div style={styles.aboutLine}>
+                            Qt-free Port
+                        </div>
+                        <div style={styles.aboutLine}>
+                            © {new Date().getFullYear()} Schrödinger, Inc.
+                        </div>
+                        <div style={{
+                            ...styles.aboutLine,
+                            paddingTop: 4,
+                        }}>
+                            <a href={EULA_URL}
+                                target='_blank'
+                                rel='noopener noreferrer'
+                                data-testid='about-eula'
+                                style={styles.aboutLink}>
+                                License Agreement
+                            </a>
+                        </div>
+                        <div style={styles.modalButtons}>
+                            <button type='button' style={styles.modalBtnPrimary}
+                                data-testid='about-close'
+                                onClick={() => setAboutModalOpen(false)}>
+                                Close
                             </button>
                         </div>
                     </div>
@@ -4299,6 +4469,30 @@ const styles: Record<string, CSSProperties> = {
         borderRadius: 3,
         background: '#3d5d71',
         color: 'white',
+        cursor: 'pointer',
+    },
+    welcomeTip: {
+        borderLeft: '3px solid #3d5d71',
+        paddingLeft: 10,
+        marginTop: 4,
+    },
+    welcomeTipHeading: {
+        font: '600 12px sans-serif',
+        color: '#222',
+        marginBottom: 2,
+    },
+    welcomeTipBody: {
+        font: '12px sans-serif',
+        color: '#444',
+        lineHeight: 1.4,
+    },
+    aboutLine: {
+        font: '12px sans-serif',
+        color: '#333',
+    },
+    aboutLink: {
+        color: '#3d5d71',
+        textDecoration: 'underline',
         cursor: 'pointer',
     },
     canvasColumn: {
