@@ -398,6 +398,67 @@ void MolModel::adjustChargeOnSelectedAtoms(int delta)
               delta > 0 ? "Increase charge" : "Decrease charge");
 }
 
+void MolModel::setSelectedAtomsToHydrogenIsotope(unsigned int isotope)
+{
+    if (m_selected_atoms.empty()) {
+        return;
+    }
+    // Capture full pre-state per atom so undo restores the original element
+    // / isotope / charge / explicit-H exactly, even if redo is replayed
+    // multiple times. Stored as a packed POD so the lambdas can copy cheaply.
+    struct AtomState {
+        unsigned int idx;
+        int atomic_num;
+        unsigned int isotope;
+        int formal_charge;
+        unsigned int num_explicit_hs;
+    };
+    std::vector<AtomState> previous;
+    previous.reserve(m_selected_atoms.size());
+    for (auto idx : m_selected_atoms) {
+        if (idx >= m_mol.getNumAtoms()) {
+            continue;
+        }
+        auto* a = m_mol.getAtomWithIdx(idx);
+        previous.push_back({idx, a->getAtomicNum(), a->getIsotope(),
+                            a->getFormalCharge(), a->getNumExplicitHs()});
+    }
+    if (previous.empty()) {
+        return;
+    }
+    auto refresh_cache = [this] {
+        try {
+            m_mol.updatePropertyCache(/*strict=*/false);
+        } catch (...) {
+        }
+    };
+    auto redo = [this, previous, isotope, refresh_cache] {
+        for (const auto& p : previous) {
+            auto* a = m_mol.getAtomWithIdx(p.idx);
+            a->setAtomicNum(1);
+            a->setIsotope(isotope);
+            // Qt mutates by constructing a fresh RDKit::Atom("H"), which
+            // resets formal charge and explicit-H count to the H defaults.
+            a->setFormalCharge(0);
+            a->setNumExplicitHs(0);
+        }
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    auto undo = [this, previous, refresh_cache] {
+        for (const auto& p : previous) {
+            auto* a = m_mol.getAtomWithIdx(p.idx);
+            a->setAtomicNum(p.atomic_num);
+            a->setIsotope(p.isotope);
+            a->setFormalCharge(p.formal_charge);
+            a->setNumExplicitHs(p.num_explicit_hs);
+        }
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    doCommand(std::move(redo), std::move(undo), "Set isotope");
+}
+
 namespace
 {
 

@@ -157,6 +157,18 @@ class MolModel : public UndoableModel
     void adjustChargeOnSelectedAtoms(int delta);
 
     /**
+     * Replace every selected atom with a hydrogen of the given mass-number
+     * isotope (Deuterium = 2, Tritium = 3, ordinary H = 1, "no specific
+     * isotope" = 0). Mirrors Qt's D/T keyboard shortcuts
+     * (sketcher_widget.cpp:1272-1283), which call mutateAtoms with a fresh
+     * RDKit::Atom("H").setIsotope(N). Resets formal charge + explicit-H
+     * count on the mutated atoms to the H defaults so the implicit-H cache
+     * reflects the new valence. Preserves the selection. Single undo step.
+     * No-op if no atoms are selected.
+     */
+    void setSelectedAtomsToHydrogenIsotope(unsigned int isotope);
+
+    /**
      * Replace the entire mol with the parsed SMILES, computing 2D coords +
      * wedge bonds so the new structure is renderable. Single undo step
      * (snapshot-based); throws std::invalid_argument if the SMILES is

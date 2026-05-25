@@ -65,6 +65,15 @@ export interface MolModelInstance {
      */
     flipSelectedAtoms(horizontal: boolean): void;
     adjustChargeOnSelectedAtoms(delta: number): void;
+    /**
+     * Replace every selected atom with a hydrogen of the given mass-number
+     * isotope (Deuterium = 2, Tritium = 3, ordinary H = 1, "no specific
+     * isotope" = 0). Mirrors Qt's D/T keyboard shortcuts. Resets formal
+     * charge + explicit-H count so the implicit-H cache reflects the new
+     * H valence. Preserves selection. Single undo step. No-op on empty
+     * selection.
+     */
+    setSelectedAtomsToHydrogenIsotope(isotope: number): void;
     /** Replace mol with parsed SMILES. Throws if SMILES is malformed. */
     loadFromSmiles(smiles: string): void;
     /** Replace mol with parsed text (auto-detects SMILES, MOL, etc.). Throws on failure. */

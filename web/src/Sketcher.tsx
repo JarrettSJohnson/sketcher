@@ -2172,12 +2172,20 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             }
 
             // D / T → mutate selected atoms to deuterium / tritium (Qt
-            // sketcher_widget.cpp:1272-1283). MolModel doesn't expose
-            // isotope mutation yet, so stub.
+            // sketcher_widget.cpp:1272-1283). Backed by lean MolModel's
+            // setSelectedAtomsToHydrogenIsotope. No-op on empty selection;
+            // surface a status either way so the user can tell.
             if (lower === 'd' || lower === 't') {
                 e.preventDefault();
-                const iso = lower === 'd' ? 'Deuterium' : 'Tritium';
-                comingSoon(`${iso} isotope (needs MolModel.mutateAtoms)`);
+                const iso = lower === 'd' ? 2 : 3;
+                const label = lower === 'd' ? 'Deuterium' : 'Tritium';
+                const m = modelRef.current;
+                if (!m || !m.hasSelection()) {
+                    setStatus(`${label} (D/T): select atoms first`);
+                    return;
+                }
+                m.setSelectedAtomsToHydrogenIsotope(iso);
+                setStatus(`mutated selection to ${label} (H, isotope ${iso})`);
                 return;
             }
 

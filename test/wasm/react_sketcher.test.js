@@ -1348,7 +1348,7 @@ test.describe('React Sketcher', () => {
         expect(rd.atoms[0].q).toBe(-1);
     });
 
-    test('stub shortcuts (Ctrl+X/C/V, D/T isotope, 0 bond) surface a status', async ({
+    test('stub shortcuts (Ctrl+X/C/V, 0 bond) surface a status; D/T without selection surfaces a friendly hint', async ({
         page,
     }) => {
         const status = page.getByTestId('sketcher-status');
@@ -1357,20 +1357,80 @@ test.describe('React Sketcher', () => {
         await canvas.click({ position: { x: 200, y: 200 } });
 
         // 3 (Triple bond) was a stub before batch 6 — now wired through the
-        // bond-order popup primitive, so it sets bondMode to triple instead
-        // of surfacing a "not yet implemented" status.
+        // bond-order popup primitive. D/T were stubs before batch 10 —
+        // now wired through setSelectedAtomsToHydrogenIsotope, but with no
+        // selection they surface a "select atoms first" status that still
+        // mentions Deuterium / Tritium so users can tell what the shortcut
+        // would do.
         const checks = [
             ['ControlOrMeta+x', /Cut/],
             ['ControlOrMeta+c', /Copy/],
             ['ControlOrMeta+v', /Paste/],
-            ['d', /Deuterium/],
-            ['t', /Tritium/],
+            ['d', /Deuterium.*select atoms first/],
+            ['t', /Tritium.*select atoms first/],
             ['0', /Zero bond/],
         ];
         for (const [combo, pattern] of checks) {
             await page.keyboard.press(combo);
             await expect(status).toContainText(pattern);
         }
+    });
+
+    test('D mutates selected atoms to deuterium (H isotope=2); T to tritium (H isotope=3); undo restores both element and isotope', async ({
+        page,
+    }) => {
+        // Qt sketcher_widget.cpp:1272-1283 — D / T replace selected atoms
+        // with H + isotope 2 / 3. The new lean MolModel API
+        // (setSelectedAtomsToHydrogenIsotope) backs both keys. Undo restores
+        // the original element + isotope + charge + explicit-H count exactly.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+
+        // Select atom 0 only.
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+
+        const before = await snapshot(page);
+        expect(before.atoms[0].el).toBe('C');
+        expect(before.atoms[0].iso ?? 0).toBe(0);
+        expect(before.atoms[1].el).toBe('C');
+
+        // Press D.
+        await page.keyboard.press('d');
+        const afterD = await snapshot(page);
+        expect(afterD.atoms[0].el).toBe('H');
+        expect(afterD.atoms[0].iso).toBe(2);
+        // Atom 1 (unselected) untouched.
+        expect(afterD.atoms[1].el).toBe('C');
+        expect(afterD.atoms[1].iso ?? 0).toBe(0);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/Deuterium.*isotope 2/);
+
+        // Press T — converts the now-deuterium atom 0 to tritium.
+        await page.keyboard.press('t');
+        const afterT = await snapshot(page);
+        expect(afterT.atoms[0].el).toBe('H');
+        expect(afterT.atoms[0].iso).toBe(3);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/Tritium.*isotope 3/);
+
+        // Undo (T → D), undo (D → C). Each step restores element + isotope.
+        await page.keyboard.press('ControlOrMeta+z');
+        const undo1 = await snapshot(page);
+        expect(undo1.atoms[0].el).toBe('H');
+        expect(undo1.atoms[0].iso).toBe(2);
+
+        await page.keyboard.press('ControlOrMeta+z');
+        const undo2 = await snapshot(page);
+        expect(undo2.atoms[0].el).toBe('C');
+        expect(undo2.atoms[0].iso ?? 0).toBe(0);
+
+        // Redo replays D.
+        await page.keyboard.press('ControlOrMeta+Shift+z');
+        const redo = await snapshot(page);
+        expect(redo.atoms[0].el).toBe('H');
+        expect(redo.atoms[0].iso).toBe(2);
     });
 
     test('shortcuts are suppressed while typing in an input', async ({ page }) => {
