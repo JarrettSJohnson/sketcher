@@ -289,13 +289,43 @@ interface DisplayOptions {
     colorHeteroatoms: boolean;
     showStereoLabels: boolean;
     useImplicitHydrogens: boolean;
+    // Qt RenderingSettings (dialog/rendering_settings_dialog.h). Surfaced
+    // through the "Preferences..." (2D Settings) modal; defaults mirror
+    // image_constants.h DEFAULT_FONT_SIZE=18 and constants.h
+    // BOND_DEFAULT_PEN_WIDTH=2.4. The React port uses smaller per-pixel
+    // defaults (13/2) because its canvas zoom level is independent of the
+    // Qt scene scale — what we preserve is "user hasn't touched anything
+    // ⇒ visuals identical to pre-Batch-24".
+    atomFontSize: number;
+    bondLineWidth: number;
+    // Qt's explicit_abs_labels_shown (default false). When true the "abs"
+    // prefix shipped from `atom_chirality_label` (lean_main.cpp) is kept
+    // in the rendered label ("abs (R)"); when false we strip it ("(R)").
+    explicitAbsLabels: boolean;
 }
+const DEFAULT_ATOM_FONT_SIZE = 13;
+const DEFAULT_BOND_LINE_WIDTH = 2;
 const DEFAULT_DISPLAY_OPTIONS: DisplayOptions = {
     showValenceErrors: true,
     colorHeteroatoms: true,
     showStereoLabels: true,
     useImplicitHydrogens: false,
+    atomFontSize: DEFAULT_ATOM_FONT_SIZE,
+    bondLineWidth: DEFAULT_BOND_LINE_WIDTH,
+    explicitAbsLabels: false,
 };
+
+// Matches rdkit_extensions::ABSOLUTE_STEREO_PREFIX = "abs" + HAIR_SPACE
+// (U+200A). The lean WASM bindings emit the raw label including this
+// prefix; the React renderer strips it unless `explicitAbsLabels` is on,
+// mirroring Qt's RenderingSettings.m_explicit_abs_labels_shown default.
+const ABS_STEREO_PREFIX = 'abs ';
+function renderedStereoLabel(label: string, showAbsPrefix: boolean): string {
+    if (showAbsPrefix) return label;
+    return label.startsWith(ABS_STEREO_PREFIX)
+        ? label.substring(ABS_STEREO_PREFIX.length)
+        : label;
+}
 
 // Mirrors Qt's SKETCHER_RELEASE/SKETCHER_BUILD substituted from version.h.in
 // at build time. We hardcode a string here to avoid pulling the project-
@@ -549,8 +579,17 @@ function drawSketch(
     // Original sketcher has no grid — a clean white canvas reads as the
     // working area without competing for attention with the structure.
 
-    const BOND_STROKE = 2;
+    const BOND_STROKE = displayOptions.bondLineWidth;
     const BOND_DOUBLE_OFFSET = 4.5;
+    // Subscript (H count, charge) scales proportionally to atom label so a
+    // doubled font size doesn't leave the subscripts looking shrunken.
+    const ATOM_FONT_PX = displayOptions.atomFontSize;
+    const SUB_FONT_PX = Math.max(7, Math.round(ATOM_FONT_PX * 9 / 13));
+    const ATOM_FONT = `${ATOM_FONT_PX}px sans-serif`;
+    const SUB_FONT = `${SUB_FONT_PX}px sans-serif`;
+    // Charge superscript baseline offset (the original code used py - 4 for
+    // a 13px font); keep proportional so it doesn't drift up at larger sizes.
+    const CHARGE_DY = Math.round(ATOM_FONT_PX * 4 / 13);
 
     // Centroid of all atoms — used to pick the "inside" side for aromatic
     // inner-dashed lines so a benzene ring shows three inward dashes (the
@@ -739,7 +778,7 @@ function drawSketch(
         }
     }
 
-    ctx.font = '13px sans-serif';
+    ctx.font = ATOM_FONT;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     // Valence-error halos: orange dotted ellipse drawn *under* the atom
@@ -817,7 +856,7 @@ function drawSketch(
             ctx.arc(px, py, 2.5, 0, 2 * Math.PI);
             ctx.fill();
         } else {
-            ctx.font = '13px sans-serif';
+            ctx.font = ATOM_FONT;
             ctx.fillText(a.el, px, py);
             // H count: render "H" or "Hn" to the right of non-C labels. Skip
             // for C even when shown for charge — carbons typically suppress
@@ -828,12 +867,12 @@ function drawSketch(
                 const hX = px + labelWidth / 2 + 1;
                 ctx.fillText('H', hX, py);
                 if (a.nh > 1) {
-                    ctx.font = '9px sans-serif';
+                    ctx.font = SUB_FONT;
                     const hWidth = ctx.measureText('H').width;
-                    ctx.fillText(String(a.nh), hX + hWidth + 1, py + 4);
+                    ctx.fillText(String(a.nh), hX + hWidth + 1, py + CHARGE_DY);
                 }
                 ctx.textAlign = 'center';
-                ctx.font = '13px sans-serif';
+                ctx.font = ATOM_FONT;
             }
             // Charge: superscript to the upper-right. "+" / "−" alone for ±1,
             // otherwise "n+" / "n−". Unicode minus sign reads better than "-".
@@ -842,23 +881,23 @@ function drawSketch(
                 const sign = q > 0 ? '+' : '−';
                 const chargeText =
                     Math.abs(q) === 1 ? sign : `${Math.abs(q)}${sign}`;
-                ctx.font = '9px sans-serif';
+                ctx.font = SUB_FONT;
                 ctx.textAlign = 'left';
                 const labelWidth = ctx.measureText(a.el).width;
                 // Push past the H label if one is rendered.
                 let chargeX = px + labelWidth / 2 + 1;
                 if (a.el !== 'C' && typeof a.nh === 'number' && a.nh > 0) {
-                    ctx.font = '13px sans-serif';
+                    ctx.font = ATOM_FONT;
                     chargeX += ctx.measureText('H').width;
                     if (a.nh > 1) {
-                        ctx.font = '9px sans-serif';
+                        ctx.font = SUB_FONT;
                         chargeX += ctx.measureText(String(a.nh)).width + 1;
                     }
-                    ctx.font = '9px sans-serif';
+                    ctx.font = SUB_FONT;
                 }
-                ctx.fillText(chargeText, chargeX, py - 4);
+                ctx.fillText(chargeText, chargeX, py - CHARGE_DY);
                 ctx.textAlign = 'center';
-                ctx.font = '13px sans-serif';
+                ctx.font = ATOM_FONT;
             }
         }
     }
@@ -871,7 +910,10 @@ function drawSketch(
     // ~40px-per-unit scale, ~16px offset reads at roughly the same gap.
     if (displayOptions.showStereoLabels) {
         ctx.save();
-        ctx.font = '10px sans-serif';
+        // Stereo annotation tracks atom-label size at ~10/13 of the main
+        // label (matches the pre-Batch-24 visual default 10/13 px ratio).
+        const stereoFontPx = Math.max(7, Math.round(ATOM_FONT_PX * 10 / 13));
+        ctx.font = `${stereoFontPx}px sans-serif`;
         ctx.fillStyle = '#333333';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
@@ -887,7 +929,10 @@ function drawSketch(
             // Flip dy sign — model y is up, pixel y is down.
             const lx = px + (dx / len) * offset;
             const ly = py - (dy / len) * offset;
-            ctx.fillText(a.stereo, lx, ly);
+            ctx.fillText(
+                renderedStereoLabel(a.stereo, displayOptions.explicitAbsLabels),
+                lx, ly,
+            );
         }
         ctx.restore();
     }
@@ -1016,8 +1061,11 @@ function buildSketchSvg(
     includeBackground: boolean,
 ): string {
     const ctx = measureCanvas.getContext('2d');
-    const BOND_STROKE = 2;
+    const BOND_STROKE = displayOptions.bondLineWidth;
     const BOND_DOUBLE_OFFSET = 4.5;
+    const ATOM_FONT_PX = displayOptions.atomFontSize;
+    const SUB_FONT_PX = Math.max(7, Math.round(ATOM_FONT_PX * 9 / 13));
+    const CHARGE_DY = Math.round(ATOM_FONT_PX * 4 / 13);
     const f = (n: number): string => n.toFixed(2);
     const esc = (s: string): string =>
         s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -1234,27 +1282,28 @@ function buildSketchSvg(
             // canvas (textBaseline='middle', textAlign='center') layout.
             parts.push(
                 `<text x='${f(ax)}' y='${f(ay)}' fill='${labelColor}' ` +
-                `font-family='sans-serif' font-size='13' ` +
+                `font-family='sans-serif' font-size='${ATOM_FONT_PX}' ` +
                 `text-anchor='middle' dominant-baseline='central'>` +
                 `${esc(a.el)}</text>`,
             );
             if (a.el !== 'C' && typeof a.nh === 'number' && a.nh > 0 && ctx) {
-                ctx.font = '13px sans-serif';
+                ctx.font = `${ATOM_FONT_PX}px sans-serif`;
                 const labelWidth = ctx.measureText(a.el).width;
                 const hX = ax + labelWidth / 2 + 1;
                 parts.push(
                     `<text x='${f(hX)}' y='${f(ay)}' fill='${labelColor}' ` +
-                    `font-family='sans-serif' font-size='13' ` +
+                    `font-family='sans-serif' font-size='${ATOM_FONT_PX}' ` +
                     `text-anchor='start' dominant-baseline='central'>` +
                     `H</text>`,
                 );
                 if (a.nh > 1) {
-                    ctx.font = '13px sans-serif';
+                    ctx.font = `${ATOM_FONT_PX}px sans-serif`;
                     const hWidth = ctx.measureText('H').width;
                     parts.push(
-                        `<text x='${f(hX + hWidth + 1)}' y='${f(ay + 4)}' ` +
+                        `<text x='${f(hX + hWidth + 1)}' ` +
+                        `y='${f(ay + CHARGE_DY)}' ` +
                         `fill='${labelColor}' font-family='sans-serif' ` +
-                        `font-size='9' text-anchor='start' ` +
+                        `font-size='${SUB_FONT_PX}' text-anchor='start' ` +
                         `dominant-baseline='central'>` +
                         `${esc(String(a.nh))}</text>`,
                     );
@@ -1266,20 +1315,20 @@ function buildSketchSvg(
                 const chargeText = Math.abs(q) === 1
                     ? sign
                     : `${Math.abs(q)}${sign}`;
-                ctx.font = '13px sans-serif';
+                ctx.font = `${ATOM_FONT_PX}px sans-serif`;
                 const labelWidth = ctx.measureText(a.el).width;
                 let chargeX = ax + labelWidth / 2 + 1;
                 if (a.el !== 'C' && typeof a.nh === 'number' && a.nh > 0) {
                     chargeX += ctx.measureText('H').width;
                     if (a.nh > 1) {
-                        ctx.font = '9px sans-serif';
+                        ctx.font = `${SUB_FONT_PX}px sans-serif`;
                         chargeX += ctx.measureText(String(a.nh)).width + 1;
                     }
                 }
                 parts.push(
-                    `<text x='${f(chargeX)}' y='${f(ay - 4)}' ` +
+                    `<text x='${f(chargeX)}' y='${f(ay - CHARGE_DY)}' ` +
                     `fill='${labelColor}' font-family='sans-serif' ` +
-                    `font-size='9' text-anchor='start' ` +
+                    `font-size='${SUB_FONT_PX}' text-anchor='start' ` +
                     `dominant-baseline='central'>` +
                     `${esc(chargeText)}</text>`,
                 );
@@ -1289,6 +1338,7 @@ function buildSketchSvg(
     // Stereo labels — same direction-from-centroid pick as drawSketch so
     // the SVG and the canvas place the label in matching positions.
     if (displayOptions.showStereoLabels) {
+        const stereoFontPx = Math.max(7, Math.round(ATOM_FONT_PX * 10 / 13));
         for (const a of rd.atoms) {
             if (!a.stereo) continue;
             const { px: ax, py: ay } = px(a.x, a.y);
@@ -1298,11 +1348,13 @@ function buildSketchSvg(
             const offset = 16;
             const lx = ax + (dx / len) * offset;
             const ly = ay - (dy / len) * offset;
+            const text = renderedStereoLabel(
+                a.stereo, displayOptions.explicitAbsLabels);
             parts.push(
                 `<text x='${f(lx)}' y='${f(ly)}' fill='#333333' ` +
-                `font-family='sans-serif' font-size='10' ` +
+                `font-family='sans-serif' font-size='${stereoFontPx}' ` +
                 `text-anchor='middle' dominant-baseline='central'>` +
-                `${esc(a.stereo)}</text>`,
+                `${esc(text)}</text>`,
             );
         }
     }
@@ -1399,9 +1451,21 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [displayOptions, setDisplayOptions] = useState<DisplayOptions>(
         DEFAULT_DISPLAY_OPTIONS,
     );
-    const toggleDisplayOption = (key: keyof DisplayOptions): void => {
+    type BooleanDisplayOption =
+        | 'showValenceErrors'
+        | 'colorHeteroatoms'
+        | 'showStereoLabels'
+        | 'useImplicitHydrogens'
+        | 'explicitAbsLabels';
+    const toggleDisplayOption = (key: BooleanDisplayOption): void => {
         setDisplayOptions((opt) => ({ ...opt, [key]: !opt[key] }));
     };
+    // "Preferences..." (2D Settings) modal — Qt's
+    // RenderingSettingsDialog (dialog/rendering_settings_dialog.h). Holds
+    // the font/line-width controls plus toggles that mirror Configure View
+    // (color heteroatoms, show stereo annotations) so both surfaces stay
+    // in sync against the same `displayOptions` state.
+    const [preferencesOpen, setPreferencesOpen] = useState<boolean>(false);
     // Import menu's checkable "Replace Current Content" toggle — Qt's
     // ImportMenu::m_replace_content_act (menu/sketcher_top_bar_menus.cpp:50)
     // mirrors NEW_STRUCTURES_REPLACE_CONTENT in the SketcherModel and
@@ -3453,15 +3517,19 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                         )
                                     } />
                                 <div style={styles.moreDivider} />
-                                {/* "Preferences..." opens the full
-                                    RenderingSettingsDialog in Qt. That
-                                    dialog has its own batch (font/line/
-                                    color-mode controls); stub for now. */}
+                                {/* "Preferences..." opens Qt's
+                                    RenderingSettingsDialog ("2D Settings").
+                                    Toggles in this submenu (Color
+                                    Heteroatoms / Stereo Labels) and the
+                                    Preferences modal share the same
+                                    `displayOptions` state, matching Qt
+                                    where both surfaces write the same
+                                    SketcherModel keys. */}
                                 <MoreItem label='Preferences...'
                                     testid='view-preferences'
                                     onClick={() => {
                                         setConfigureViewOpen(false);
-                                        comingSoon('Preferences');
+                                        setPreferencesOpen(true);
                                     }} />
                             </div>
                         )}
@@ -4090,6 +4158,132 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             <button type='button' style={styles.modalBtnPrimary}
                                 data-testid='about-close'
                                 onClick={() => setAboutModalOpen(false)}>
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/*
+                Preferences (2D Settings) modal — mirrors
+                ui/rendering_settings_dialog.ui windowTitle "2D Settings".
+                Qt lays this out as a row of font/line-width spinboxes
+                above a 2-column grid of toggle groups; we keep the same
+                grouping (settings shipped today: font size, bond width,
+                show stereo annotations + 'ABS' prefix, color heteroatoms)
+                so users coming from Qt find the same knobs in the same
+                places. Carbon-label modes / color-mode comboboxes are
+                tracked as follow-up batches in project_qt_removal.md.
+              */}
+            {preferencesOpen && (
+                <div style={styles.modalOverlay}
+                    data-testid='preferences-modal'
+                    onClick={(e) => {
+                        if (e.target === e.currentTarget) {
+                            setPreferencesOpen(false);
+                        }
+                    }}>
+                    <div style={{ ...styles.modalCard, maxWidth: 480 }}>
+                        <div style={styles.modalTitle}>2D Settings</div>
+                        <div style={styles.prefsRow}>
+                            <label style={styles.modalLabel}
+                                htmlFor='preferences-font-size'>
+                                Atom font size:
+                            </label>
+                            <input id='preferences-font-size' type='number'
+                                data-testid='preferences-font-size'
+                                style={styles.modalNumber}
+                                min={1} max={200} step={1}
+                                value={displayOptions.atomFontSize}
+                                onChange={(e) => {
+                                    const n = Number(e.target.value);
+                                    if (!Number.isFinite(n)) return;
+                                    const clamped = Math.max(
+                                        1, Math.min(200, Math.round(n)));
+                                    setDisplayOptions((opt) => ({
+                                        ...opt, atomFontSize: clamped,
+                                    }));
+                                }} />
+                            <label style={{ ...styles.modalLabel,
+                                marginLeft: 16 }}
+                                htmlFor='preferences-bond-width'>
+                                Bond line width:
+                            </label>
+                            <input id='preferences-bond-width' type='number'
+                                data-testid='preferences-bond-width'
+                                style={styles.modalNumber}
+                                min={0.1} max={20} step={0.1}
+                                value={displayOptions.bondLineWidth}
+                                onChange={(e) => {
+                                    const n = Number(e.target.value);
+                                    if (!Number.isFinite(n) || n < 0.1) {
+                                        return;
+                                    }
+                                    setDisplayOptions((opt) => ({
+                                        ...opt, bondLineWidth: n,
+                                    }));
+                                }} />
+                        </div>
+                        <div style={styles.prefsSeparator} />
+                        <div style={styles.prefsGrid}>
+                            <div>
+                                <label style={styles.prefsCheckRow}>
+                                    <input type='checkbox'
+                                        data-testid={
+                                            'preferences-color-heteroatoms'}
+                                        checked={
+                                            displayOptions.colorHeteroatoms}
+                                        onChange={() =>
+                                            toggleDisplayOption(
+                                                'colorHeteroatoms')} />
+                                    Color heteroatoms
+                                </label>
+                            </div>
+                            <div>
+                                <label style={styles.prefsCheckRow}>
+                                    <input type='checkbox'
+                                        data-testid={
+                                            'preferences-show-stereo'}
+                                        checked={
+                                            displayOptions.showStereoLabels}
+                                        onChange={() =>
+                                            toggleDisplayOption(
+                                                'showStereoLabels')} />
+                                    Show stereo annotations
+                                </label>
+                                <label style={{ ...styles.prefsCheckRow,
+                                    ...styles.prefsIndented,
+                                    opacity: displayOptions.showStereoLabels
+                                        ? 1 : 0.5 }}>
+                                    <input type='checkbox'
+                                        data-testid='preferences-abs-prefix'
+                                        disabled={
+                                            !displayOptions.showStereoLabels}
+                                        checked={
+                                            displayOptions.explicitAbsLabels}
+                                        onChange={() =>
+                                            toggleDisplayOption(
+                                                'explicitAbsLabels')} />
+                                    Use &lsquo;ABS&rsquo; prefix
+                                </label>
+                            </div>
+                        </div>
+                        <div style={styles.modalButtons}>
+                            <button type='button' style={styles.modalBtn}
+                                data-testid='preferences-reset'
+                                onClick={() => setDisplayOptions((opt) => ({
+                                    ...opt,
+                                    atomFontSize: DEFAULT_ATOM_FONT_SIZE,
+                                    bondLineWidth: DEFAULT_BOND_LINE_WIDTH,
+                                    colorHeteroatoms: true,
+                                    showStereoLabels: true,
+                                    explicitAbsLabels: false,
+                                }))}>
+                                Reset to Defaults
+                            </button>
+                            <button type='button' style={styles.modalBtnPrimary}
+                                data-testid='preferences-close'
+                                onClick={() => setPreferencesOpen(false)}>
                                 Close
                             </button>
                         </div>
@@ -4966,6 +5160,33 @@ const styles: Record<string, CSSProperties> = {
         background: '#3d5d71',
         color: 'white',
         cursor: 'pointer',
+    },
+    prefsRow: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        flexWrap: 'wrap',
+    },
+    prefsSeparator: {
+        height: 1,
+        background: BORDER_COLOR,
+        margin: '4px 0',
+    },
+    prefsGrid: {
+        display: 'grid',
+        gridTemplateColumns: '1fr 1fr',
+        gap: '8px 16px',
+    },
+    prefsCheckRow: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        font: '12px sans-serif',
+        color: '#222',
+        cursor: 'pointer',
+    },
+    prefsIndented: {
+        marginLeft: 18,
     },
     welcomeTip: {
         borderLeft: '3px solid #3d5d71',

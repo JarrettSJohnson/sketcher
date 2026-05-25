@@ -1164,12 +1164,113 @@ test.describe('React Sketcher', () => {
         await expect(page.getByTestId('view-color-heteroatoms'))
             .toHaveAttribute('aria-checked', 'false');
         await expect(menu).toBeVisible();
-        // Preferences closes the menu and surfaces the coming-soon status
-        // (full RenderingSettingsDialog is its own batch).
+        // Preferences closes the menu and opens the 2D Settings modal
+        // (Qt's RenderingSettingsDialog).
         await page.getByTestId('view-preferences').click();
         await expect(page.getByTestId('configure-view-menu')).toHaveCount(0);
-        await expect(page.getByTestId('sketcher-status'))
-            .toContainText(/Preferences/);
+        await expect(page.getByTestId('preferences-modal')).toBeVisible();
+        await page.getByTestId('preferences-close').click();
+        await expect(page.getByTestId('preferences-modal')).toHaveCount(0);
+    });
+
+    test('Preferences modal: font size + bond width + ABS prefix wire end-to-end; Reset restores; Configure View stays in sync', async ({
+        page,
+    }) => {
+        // Qt's RenderingSettingsDialog (dialog/rendering_settings_dialog.h)
+        // is the "2D Settings" dialog launched from Configure View →
+        // Preferences. The port wires four controls today: atom font size,
+        // bond line width, "Use ABS prefix", and (synced with Configure
+        // View) Color Heteroatoms / Show Stereo. The remaining Qt
+        // controls (carbon labels, color modes, undefined-stereo) are
+        // tracked as follow-up batches.
+        await loadText(page, 'F[C@H](Cl)Br');
+
+        // Open via Configure View → Preferences...
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        const modal = page.getByTestId('preferences-modal');
+        await expect(modal).toBeVisible();
+        await expect(modal).toContainText('2D Settings');
+
+        // Defaults reflect DEFAULT_DISPLAY_OPTIONS (font 13, bond 2).
+        const fontInput = page.getByTestId('preferences-font-size');
+        const widthInput = page.getByTestId('preferences-bond-width');
+        await expect(fontInput).toHaveValue('13');
+        await expect(widthInput).toHaveValue('2');
+        await expect(page.getByTestId('preferences-color-heteroatoms'))
+            .toBeChecked();
+        await expect(page.getByTestId('preferences-show-stereo')).toBeChecked();
+        await expect(page.getByTestId('preferences-abs-prefix')).not.toBeChecked();
+
+        // Bump font size + bond width, then close so the modal doesn't
+        // intercept clicks on the export button.
+        await fontInput.fill('22');
+        await widthInput.fill('4');
+        await page.getByTestId('preferences-close').click();
+        await expect(page.getByTestId('preferences-modal')).toHaveCount(0);
+
+        const fs = await import('node:fs/promises');
+        const saveSvg = async () => {
+            await page.getByTestId('export').click();
+            await page.getByTestId('export-save-image').click();
+            await page.getByTestId('save-image-format-select')
+                .selectOption('svg');
+            const dl = page.waitForEvent('download');
+            await page.getByTestId('save-image-save').click();
+            const d = await dl;
+            const body = await fs.readFile(await d.path(), 'utf8');
+            // doSaveImage auto-closes the Save Image modal once the
+            // download blob is queued (Sketcher.tsx setImageModalOpen(false)).
+            await expect(page.getByTestId('save-image-modal'))
+                .toHaveCount(0);
+            return body;
+        };
+        const svgBigFont = await saveSvg();
+        // Atom labels are emitted with the active font size; "F" / "Cl"
+        // / "Br" labels of F[C@H](Cl)Br all render at font-size=22.
+        expect(svgBigFont).toMatch(/font-size='22'/);
+        expect(svgBigFont).toMatch(/stroke-width='4'/);
+
+        // Flip ABS prefix — SVG stereo label switches between "(R)"/"(S)"
+        // and "abs (R)"/"abs (S)" (the hair-space U+200A between "abs"
+        // and the parenthesis is preserved in the SVG body).
+        const absRe = /<text [^>]*>abs[  ]\([RS]\)<\/text>/;
+        const plainStereoRe = /<text [^>]*>\([RS]\)<\/text>/;
+        expect(svgBigFont).toMatch(plainStereoRe);
+        expect(svgBigFont).not.toMatch(absRe);
+
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        await page.getByTestId('preferences-abs-prefix').click();
+        await expect(page.getByTestId('preferences-abs-prefix')).toBeChecked();
+        await page.getByTestId('preferences-close').click();
+        const svgWithAbs = await saveSvg();
+        expect(svgWithAbs).toMatch(absRe);
+
+        // Toggle Color Heteroatoms in the modal — Configure View reflects
+        // the same value (both surfaces write the same displayOption).
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        await page.getByTestId('preferences-color-heteroatoms').click();
+        await expect(page.getByTestId('preferences-color-heteroatoms'))
+            .not.toBeChecked();
+        await page.getByTestId('preferences-close').click();
+        await expect(page.getByTestId('preferences-modal')).toHaveCount(0);
+        await page.getByTestId('settings').click();
+        await expect(page.getByTestId('view-color-heteroatoms'))
+            .toHaveAttribute('aria-checked', 'false');
+
+        // Reset to Defaults restores everything the modal owns. Configure
+        // View is already open from the assertion above; jump straight to
+        // Preferences.
+        await page.getByTestId('view-preferences').click();
+        await page.getByTestId('preferences-reset').click();
+        await expect(page.getByTestId('preferences-font-size')).toHaveValue('13');
+        await expect(page.getByTestId('preferences-bond-width')).toHaveValue('2');
+        await expect(page.getByTestId('preferences-color-heteroatoms'))
+            .toBeChecked();
+        await expect(page.getByTestId('preferences-show-stereo')).toBeChecked();
+        await expect(page.getByTestId('preferences-abs-prefix')).not.toBeChecked();
     });
 
     test('Configure View: turning Heteroatom Colors off renders nitrogen in the carbon mono color', async ({

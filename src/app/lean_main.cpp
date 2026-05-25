@@ -21,6 +21,7 @@
 #include <GraphMol/Chirality.h>
 #include <GraphMol/CIPLabeler/CIPLabeler.h>
 #include <GraphMol/Conformer.h>
+#include <GraphMol/FileParsers/MolFileStereochem.h>
 #include <GraphMol/MolOps.h>
 #include <GraphMol/RWMol.h>
 
@@ -42,12 +43,14 @@ using schrodinger::rdkit_extensions::Format;
 using schrodinger::rdkit_extensions::to_rdkit;
 
 /**
- * Compute the per-atom chirality label for `atom`, mirroring Qt's
- * get_atom_chirality_label (sketcher/rdkit/stereochemistry.cpp:37-66).
- * Reads RDKit::common_properties::atomNote (set by addStereoAnnotations)
- * and strips the leading ABSOLUTE_STEREO_PREFIX so "abs (R)" renders as
- * "(R)" — matches Qt's default explicit_abs_labels_shown=false. Returns
- * empty string when there's no label.
+ * Compute the per-atom chirality label for `atom`. Reads
+ * RDKit::common_properties::atomNote, which `addStereoAnnotations`
+ * populates with the format strings we hand it in apply_stereo_annotations
+ * (`"abs (R)"` for absolute centers, `"or1"` / `"and1"` for enhanced groups).
+ * The raw label is returned with the `ABSOLUTE_STEREO_PREFIX` intact — the
+ * JS render layer decides whether to display it (matches Qt's
+ * `m_explicit_abs_labels_shown` toggle, which is exposed in the React
+ * Preferences modal as "Use 'ABS' prefix").
  */
 std::string atom_chirality_label(const RDKit::Atom& atom)
 {
@@ -55,11 +58,6 @@ std::string atom_chirality_label(const RDKit::Atom& atom)
     if (!atom.getPropIfPresent<std::string>(RDKit::common_properties::atomNote,
                                             label)) {
         return "";
-    }
-    const auto& abs_prefix =
-        schrodinger::rdkit_extensions::ABSOLUTE_STEREO_PREFIX;
-    if (label.find(abs_prefix) == 0) {
-        label = label.substr(abs_prefix.size());
     }
     return label;
 }
@@ -123,6 +121,22 @@ void apply_stereo_annotations(RDKit::RWMol& mol)
     // render description.
     for (auto atom : mol.atoms()) {
         atom->clearProp(RDKit::common_properties::atomNote);
+    }
+    // Mirror Qt's add_enhanced_stereo_to_chiral_atoms
+    // (sketcher/rdkit/mol_update.cpp:30-46): ensure every ungrouped chiral
+    // center is placed in an ABS stereo group. Without this,
+    // addStereoAnnotations skips lone stereocenters from plain SMILES like
+    // "F[C@H](Cl)Br" and the "abs " prefix never reaches the render
+    // description. The MDL chiral flag controls grouping — default to "on"
+    // (ABS) when missing, matching SMILES/MAE inputs.
+    int chiral_flag{1};
+    if (!mol.getPropIfPresent(RDKit::common_properties::_MolFileChiralFlag,
+                              chiral_flag)) {
+        mol.setProp(RDKit::common_properties::_MolFileChiralFlag, chiral_flag);
+    }
+    try {
+        RDKit::translateChiralFlagToStereoGroups(mol);
+    } catch (...) {
     }
     try {
         // Match Qt's label format strings (rdkit/mol_update.cpp:280-283).
