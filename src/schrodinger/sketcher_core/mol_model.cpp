@@ -770,32 +770,39 @@ std::string MolModel::toMolBlock(bool v3000) const
     }
 }
 
-std::string MolModel::toMolBlockForSelection(bool v3000) const
+/**
+ * Build a copy of m_mol containing only the selected atoms, with the
+ * selection auto-extended to cover both endpoints of any selected bond.
+ * Returns an empty mol if nothing is selected. Shared by
+ * `toMolBlockForSelection` and the selection branch of `toFormatString`.
+ */
+static RDKit::RWMol
+extract_selection_copy(const RDKit::RWMol& src,
+                       const std::unordered_set<unsigned int>& selected_atoms,
+                       const std::unordered_set<unsigned int>& selected_bonds)
 {
-    if (!hasSelection()) {
-        return "";
-    }
-    // Expand the selection so every selected bond has both endpoints in the
-    // kept set. RDKit's MolBlock writers refuse to emit a bond with a missing
-    // endpoint, so Qt does this same expansion (mol_model.cpp:244-250).
-    std::unordered_set<unsigned int> keep_atoms = m_selected_atoms;
-    for (auto bond_idx : m_selected_bonds) {
-        if (bond_idx >= m_mol.getNumBonds()) {
+    std::unordered_set<unsigned int> keep_atoms = selected_atoms;
+    for (auto bond_idx : selected_bonds) {
+        if (bond_idx >= src.getNumBonds()) {
             continue;
         }
-        const auto* b = m_mol.getBondWithIdx(bond_idx);
+        const auto* b = src.getBondWithIdx(bond_idx);
         keep_atoms.insert(b->getBeginAtomIdx());
         keep_atoms.insert(b->getEndAtomIdx());
     }
+    RDKit::RWMol mol_copy(src);
     if (keep_atoms.empty()) {
-        return "";
+        // Drop every atom — caller treats empty mol as "" output.
+        std::vector<unsigned int> all_indices;
+        all_indices.reserve(mol_copy.getNumAtoms());
+        for (unsigned int i = mol_copy.getNumAtoms(); i-- > 0;) {
+            all_indices.push_back(i);
+        }
+        for (auto idx : all_indices) {
+            mol_copy.removeAtom(idx);
+        }
+        return mol_copy;
     }
-    RDKit::RWMol mol_copy(m_mol);
-    // Remove unselected atoms in descending index order so earlier indices
-    // stay valid. RWMol::removeAtom drops incident bonds automatically, so
-    // bonds whose both endpoints survive are preserved (this is the policy
-    // Qt's getSelectedMolForExport relies on — it never explicitly removes
-    // bonds, only atoms).
     std::vector<unsigned int> drop_desc;
     drop_desc.reserve(mol_copy.getNumAtoms());
     for (unsigned int i = 0; i < mol_copy.getNumAtoms(); ++i) {
@@ -807,6 +814,16 @@ std::string MolModel::toMolBlockForSelection(bool v3000) const
     for (auto idx : drop_desc) {
         mol_copy.removeAtom(idx);
     }
+    return mol_copy;
+}
+
+std::string MolModel::toMolBlockForSelection(bool v3000) const
+{
+    if (!hasSelection()) {
+        return "";
+    }
+    auto mol_copy =
+        extract_selection_copy(m_mol, m_selected_atoms, m_selected_bonds);
     if (mol_copy.getNumAtoms() == 0) {
         return "";
     }
@@ -814,6 +831,62 @@ std::string MolModel::toMolBlockForSelection(bool v3000) const
         const auto fmt = v3000 ? rdkit_extensions::Format::MDL_MOLV3000
                                : rdkit_extensions::Format::MDL_MOLV2000;
         return rdkit_extensions::to_string(mol_copy, fmt);
+    } catch (...) {
+        return "";
+    }
+}
+
+std::string MolModel::toFormatString(const std::string& format_name,
+                                     bool selection_only) const
+{
+    if (m_mol.getNumAtoms() == 0) {
+        return "";
+    }
+    // String → Format mapping mirrors Qt's get_standard_export_formats() entry
+    // list (file_import_export.cpp:75). Names are lowercase + no spaces so JS
+    // callers can hand-key them. MDL_MOLV2000 is here for symmetry but Qt
+    // explicitly forbids it on the user-facing Copy As menu.
+    rdkit_extensions::Format fmt;
+    if (format_name == "smiles") {
+        fmt = rdkit_extensions::Format::SMILES;
+    } else if (format_name == "extended_smiles") {
+        fmt = rdkit_extensions::Format::EXTENDED_SMILES;
+    } else if (format_name == "smarts") {
+        fmt = rdkit_extensions::Format::SMARTS;
+    } else if (format_name == "extended_smarts") {
+        fmt = rdkit_extensions::Format::EXTENDED_SMARTS;
+    } else if (format_name == "inchi") {
+        fmt = rdkit_extensions::Format::INCHI;
+    } else if (format_name == "inchikey") {
+        fmt = rdkit_extensions::Format::INCHI_KEY;
+    } else if (format_name == "pdb") {
+        fmt = rdkit_extensions::Format::PDB;
+    } else if (format_name == "xyz") {
+        fmt = rdkit_extensions::Format::XYZ;
+    } else if (format_name == "mrv") {
+        fmt = rdkit_extensions::Format::MRV;
+    } else if (format_name == "maestro") {
+        fmt = rdkit_extensions::Format::MAESTRO;
+    } else if (format_name == "mdl_molv3000") {
+        fmt = rdkit_extensions::Format::MDL_MOLV3000;
+    } else if (format_name == "mdl_molv2000") {
+        fmt = rdkit_extensions::Format::MDL_MOLV2000;
+    } else {
+        return "";
+    }
+    try {
+        if (selection_only) {
+            if (!hasSelection()) {
+                return "";
+            }
+            auto mol_copy = extract_selection_copy(m_mol, m_selected_atoms,
+                                                   m_selected_bonds);
+            if (mol_copy.getNumAtoms() == 0) {
+                return "";
+            }
+            return rdkit_extensions::to_string(mol_copy, fmt);
+        }
+        return rdkit_extensions::to_string(m_mol, fmt);
     } catch (...) {
         return "";
     }

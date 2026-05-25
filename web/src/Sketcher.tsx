@@ -2179,37 +2179,29 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             setStatus(`copy ${kind} failed — clipboard access denied`);
         }
     };
-    const doCopySmiles = async (): Promise<void> => {
+    // Generic Copy As handler — routes through `MolModel.toFormatString`.
+    // Mirrors Qt's CutCopyActionManager::copy semantics (cut_copy_action_manager
+    // .cpp:131-135): when a selection exists, export just the selection;
+    // otherwise export the whole mol. Status reports the user-visible label so
+    // it matches the menu item the user just clicked.
+    const doCopyAs = async (
+        formatName: string,
+        label: string,
+    ): Promise<void> => {
         const model = modelRef.current;
         if (!model) return;
-        const smi = model.toSmiles();
-        if (!smi) {
+        const selectionOnly = model.hasSelection();
+        const text = model.toFormatString(formatName, selectionOnly);
+        if (!text) {
             setStatus('nothing to copy — sketch something first');
             return;
         }
-        await writeToClipboard(smi, 'SMILES');
-    };
-    const doCopyMolBlockV2000 = async (): Promise<void> => {
-        const model = modelRef.current;
-        if (!model) return;
-        const mb = model.toMolBlock(false);
-        if (!mb) {
-            setStatus('nothing to copy — sketch something first');
-            return;
-        }
-        await writeToClipboard(mb, 'MOL');
+        await writeToClipboard(text, label);
     };
     const doCopyMolBlockV3000 = async (): Promise<void> => {
         // Qt's CutCopyActionManager default format is MDL_MOLV3000
         // (cut_copy_action_manager.cpp:16), so Ctrl+C maps here.
-        const model = modelRef.current;
-        if (!model) return;
-        const mb = model.toMolBlock(true);
-        if (!mb) {
-            setStatus('nothing to copy — sketch something first');
-            return;
-        }
-        await writeToClipboard(mb, 'MOL V3000');
+        await doCopyAs('mdl_molv3000', 'MOL V3000');
     };
     const doPaste = async (): Promise<void> => {
         // Qt's sketcher_widget.cpp:676 routes clipboard text through
@@ -2246,14 +2238,14 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         // Qt's CutCopyActionManager (cut_copy_action_manager.cpp:131-135)
         // does copy(SELECTION) followed by removeSelected on the model. The
         // copy uses MDL_MOLV3000 by default. Selection auto-extends to bond
-        // endpoints inside toMolBlockForSelection.
+        // endpoints inside the selection-aware exporter.
         const model = modelRef.current;
         if (!model) return;
         if (!model.hasSelection()) {
             setStatus('nothing to cut — select something first');
             return;
         }
-        const mb = model.toMolBlockForSelection(true);
+        const mb = model.toFormatString('mdl_molv3000', /*selectionOnly=*/true);
         if (!mb) {
             setStatus('nothing to cut — select something first');
             return;
@@ -2869,18 +2861,35 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 onClick={() => { setMoreMenuOpen(false); doRemoveHydrogens(); }} />
             <div style={styles.moreDivider} />
             {/* Copy As — Qt's CutCopyActionManager builds this submenu
-                dynamically from get_standard_export_formats() with 11
-                formats (file_import_export.cpp:75-90). We expose the
-                three the lean MolModel supports today (SMILES + MOL
-                V2000 + MOL V3000); InChI/SMARTS/PDB/XYZ/Maestro/Marvin
-                need new lean exporters and are tracked as follow-ups. */}
+                dynamically from get_standard_export_formats() (
+                file_import_export.cpp:75-90). Order + labels match Qt
+                exactly. Qt explicitly forbids MDL_MOLV2000 on export
+                because of stereo ambiguities, so V2000 is intentionally
+                NOT in this menu (Ctrl+V import still accepts V2000 via
+                AUTO_DETECT). Image / reaction formats are deferred. */}
             <div style={styles.moreSectionLabel}>Copy As</div>
+            <MoreItem label='MDL SD V3000' testid='copy-as-mol-v3000'
+                onClick={() => { setMoreMenuOpen(false); void doCopyAs('mdl_molv3000', 'MOL V3000'); }} />
+            <MoreItem label='Maestro' testid='copy-as-maestro'
+                onClick={() => { setMoreMenuOpen(false); void doCopyAs('maestro', 'Maestro'); }} />
             <MoreItem label='SMILES' testid='copy-as-smiles'
-                onClick={() => { setMoreMenuOpen(false); void doCopySmiles(); }} />
-            <MoreItem label='MOL V2000' testid='copy-as-mol-v2000'
-                onClick={() => { setMoreMenuOpen(false); void doCopyMolBlockV2000(); }} />
-            <MoreItem label='MOL V3000' testid='copy-as-mol-v3000'
-                onClick={() => { setMoreMenuOpen(false); void doCopyMolBlockV3000(); }} />
+                onClick={() => { setMoreMenuOpen(false); void doCopyAs('smiles', 'SMILES'); }} />
+            <MoreItem label='Extended SMILES' testid='copy-as-extended-smiles'
+                onClick={() => { setMoreMenuOpen(false); void doCopyAs('extended_smiles', 'Extended SMILES'); }} />
+            <MoreItem label='SMARTS' testid='copy-as-smarts'
+                onClick={() => { setMoreMenuOpen(false); void doCopyAs('smarts', 'SMARTS'); }} />
+            <MoreItem label='Extended SMARTS' testid='copy-as-extended-smarts'
+                onClick={() => { setMoreMenuOpen(false); void doCopyAs('extended_smarts', 'Extended SMARTS'); }} />
+            <MoreItem label='InChI' testid='copy-as-inchi'
+                onClick={() => { setMoreMenuOpen(false); void doCopyAs('inchi', 'InChI'); }} />
+            <MoreItem label='InChIKey' testid='copy-as-inchikey'
+                onClick={() => { setMoreMenuOpen(false); void doCopyAs('inchikey', 'InChIKey'); }} />
+            <MoreItem label='PDB' testid='copy-as-pdb'
+                onClick={() => { setMoreMenuOpen(false); void doCopyAs('pdb', 'PDB'); }} />
+            <MoreItem label='XYZ' testid='copy-as-xyz'
+                onClick={() => { setMoreMenuOpen(false); void doCopyAs('xyz', 'XYZ'); }} />
+            <MoreItem label='Marvin Document' testid='copy-as-mrv'
+                onClick={() => { setMoreMenuOpen(false); void doCopyAs('mrv', 'Marvin'); }} />
         </div>
     );
 

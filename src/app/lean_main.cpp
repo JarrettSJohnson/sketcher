@@ -393,6 +393,11 @@ class MolModelJS
     {
         return m_model.toMolBlockForSelection(v3000);
     }
+    std::string toFormatString(const std::string& format_name,
+                               bool selection_only) const
+    {
+        return m_model.toFormatString(format_name, selection_only);
+    }
     void addHydrogens()
     {
         m_model.addHydrogens();
@@ -596,6 +601,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("toMolBlock", &MolModelJS::toMolBlock)
         .function("toMolBlockForSelection",
                   &MolModelJS::toMolBlockForSelection)
+        .function("toFormatString", &MolModelJS::toFormatString)
         .function("addHydrogens", &MolModelJS::addHydrogens)
         .function("removeHydrogens", &MolModelJS::removeHydrogens)
         .function("aromatize", &MolModelJS::aromatize)

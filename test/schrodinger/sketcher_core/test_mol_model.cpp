@@ -954,6 +954,76 @@ BOOST_AUTO_TEST_CASE(testToMolBlockForSelectionAutoExtendsSelectedBondEndpoints)
     BOOST_CHECK(mb.find("M  V30 COUNTS 2 1") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(testToFormatStringRoundTripsKnownFormats)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    // SMILES + Extended SMILES.
+    const auto smi = m.toFormatString("smiles", /*selectionOnly=*/false);
+    BOOST_CHECK_EQUAL(smi, "CCO");
+    const auto cxsmi =
+        m.toFormatString("extended_smiles", /*selectionOnly=*/false);
+    BOOST_CHECK(cxsmi.find("CCO") != std::string::npos);
+    // SMARTS + Extended SMARTS — RDKit's MolToSmarts emits atomic-number
+    // queries like `[#6][#6][#8]` (CCO).
+    const auto sma = m.toFormatString("smarts", /*selectionOnly=*/false);
+    BOOST_CHECK(!sma.empty());
+    BOOST_CHECK(sma.find("#8") != std::string::npos);
+    BOOST_CHECK(sma.find("#6") != std::string::npos);
+    // InChI carries a versioned header.
+    const auto inchi = m.toFormatString("inchi", /*selectionOnly=*/false);
+    BOOST_CHECK(inchi.find("InChI=") == 0u);
+    // InChIKey is 27 chars + dashes (XXXXXXXXXXXXXX-XXXXXXXXFV-N).
+    const auto key = m.toFormatString("inchikey", /*selectionOnly=*/false);
+    BOOST_CHECK_EQUAL(key.size(), 27u);
+    BOOST_CHECK_EQUAL(key[14], '-');
+    // PDB header.
+    const auto pdb = m.toFormatString("pdb", /*selectionOnly=*/false);
+    BOOST_CHECK(pdb.find("HETATM") != std::string::npos);
+    // MRV is XML.
+    const auto mrv = m.toFormatString("mrv", /*selectionOnly=*/false);
+    BOOST_CHECK(mrv.find("<MDocument") != std::string::npos ||
+                mrv.find("<cml") != std::string::npos);
+    // MDL V3000 + V2000.
+    const auto v3 = m.toFormatString("mdl_molv3000", /*selectionOnly=*/false);
+    BOOST_CHECK(v3.find("V3000") != std::string::npos);
+    const auto v2 = m.toFormatString("mdl_molv2000", /*selectionOnly=*/false);
+    BOOST_CHECK(v2.find("V2000") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(testToFormatStringEmptyWhenMolEmpty)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    BOOST_CHECK_EQUAL(m.toFormatString("smiles", false), "");
+    BOOST_CHECK_EQUAL(m.toFormatString("inchi", false), "");
+}
+
+BOOST_AUTO_TEST_CASE(testToFormatStringEmptyOnUnknownFormat)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    BOOST_CHECK_EQUAL(m.toFormatString("bogus", false), "");
+}
+
+BOOST_AUTO_TEST_CASE(testToFormatStringSelectionOnlyRespectsSelection)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    // No selection → "".
+    BOOST_CHECK_EQUAL(m.toFormatString("smiles", /*selectionOnly=*/true), "");
+    // Select just the O → its SMILES fragment should be a single O.
+    m.setAtomSelected(2, true);
+    const auto frag = m.toFormatString("smiles", /*selectionOnly=*/true);
+    BOOST_CHECK_EQUAL(frag, "O");
+    // Whole-mol export still works while selection is set.
+    BOOST_CHECK_EQUAL(m.toFormatString("smiles", /*selectionOnly=*/false),
+                      "CCO");
+}
+
 BOOST_AUTO_TEST_CASE(testLoadFromTextRoundTripsMolBlock)
 {
     UndoStack stack;

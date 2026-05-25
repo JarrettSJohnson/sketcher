@@ -226,6 +226,21 @@ class MolModel : public UndoableModel
     std::string toMolBlockForSelection(bool v3000) const;
 
     /**
+     * Generic exporter — routes through `rdkit_extensions::to_string` for
+     * the format named by `format_name`. Supported names mirror Qt's
+     * `get_standard_export_formats()` list (file_import_export.cpp:75):
+     *   "smiles", "extended_smiles", "smarts", "extended_smarts",
+     *   "inchi", "inchikey", "pdb", "xyz", "mrv", "maestro",
+     *   "mdl_molv3000", "mdl_molv2000"
+     * `selection_only=true` extracts the current selection first (using the
+     * same auto-extend-to-bond-endpoints logic as `toMolBlockForSelection`)
+     * — returns "" when nothing is selected. `false` exports the whole mol.
+     * Returns "" on empty mol, unknown format name, or writer failure.
+     */
+    std::string toFormatString(const std::string& format_name,
+                               bool selection_only) const;
+
+    /**
      * Promote every implicit hydrogen to an explicit atom with a generated
      * 2D position. Single undo step. No-op when the mol is empty; safe to
      * call repeatedly (a fully-explicit mol just stays that way).

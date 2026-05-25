@@ -95,6 +95,15 @@ export interface MolModelInstance {
      * selected. Used by Ctrl+X (Cut) and Copy when a selection is present.
      */
     toMolBlockForSelection(v3000: boolean): string;
+    /**
+     * Generic exporter; format names mirror Qt's get_standard_export_formats()
+     * entries (lowercased + no spaces): "smiles", "extended_smiles", "smarts",
+     * "extended_smarts", "inchi", "inchikey", "pdb", "xyz", "mrv", "maestro",
+     * "mdl_molv3000", "mdl_molv2000". `selectionOnly=true` exports only the
+     * current selection (auto-extending to bond endpoints); returns "" if no
+     * selection. Returns "" on empty mol, unknown format, or writer failure.
+     */
+    toFormatString(formatName: string, selectionOnly: boolean): string;
     /** Promote every implicit hydrogen to an explicit atom. Single undo step. */
     addHydrogens(): void;
     /** Strip explicit hydrogens back to implicit. Single undo step. */

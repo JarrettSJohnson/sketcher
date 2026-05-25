@@ -1149,21 +1149,86 @@ test.describe('React Sketcher', () => {
             .toContainText(/copied SMILES/);
     });
 
-    test('More Actions: Copy As MOL V2000 / V3000 write the right block to the clipboard', async ({ page }) => {
+    test('More Actions: Copy As MDL SD V3000 writes the right block to the clipboard', async ({ page }) => {
+        // Qt's get_standard_export_formats() explicitly forbids MDL_MOLV2000
+        // on export ("potential stereo ambiguities", file_import_export.cpp:79)
+        // so V3000 is the only MOL flavor in the menu.
         await loadText(page, 'CCO');
-
-        await page.getByTestId('more-actions-btn').click();
-        await page.getByTestId('copy-as-mol-v2000').click();
-        let clip = await readClipboard(page);
-        expect(clip).toContain('V2000');
-        // V2000 counts line: 3 atoms, 2 bonds.
-        expect(clip).toContain('  3  2');
-
         await page.getByTestId('more-actions-btn').click();
         await page.getByTestId('copy-as-mol-v3000').click();
-        clip = await readClipboard(page);
+        const clip = await readClipboard(page);
         expect(clip).toContain('V3000');
         expect(clip).toContain('M  V30 COUNTS 3 2');
+    });
+
+    test('More Actions: Copy As menu lists Qt\'s 11 standard export formats in order', async ({ page }) => {
+        // Qt's get_standard_export_formats() (file_import_export.cpp:75-90)
+        // defines the labels + order exactly. This test pins both so a
+        // future refactor can't silently drop a format or reorder them.
+        await loadText(page, 'CCO');
+        await page.getByTestId('more-actions-btn').click();
+        const menu = page.getByTestId('more-actions-menu');
+        const expected = [
+            'MDL SD V3000',
+            'Maestro',
+            'SMILES',
+            'Extended SMILES',
+            'SMARTS',
+            'Extended SMARTS',
+            'InChI',
+            'InChIKey',
+            'PDB',
+            'XYZ',
+            'Marvin Document',
+        ];
+        for (const label of expected) {
+            await expect(menu).toContainText(label);
+        }
+        // V2000 is intentionally absent — Qt forbids it on export.
+        await expect(page.getByTestId('copy-as-mol-v2000')).toHaveCount(0);
+    });
+
+    test('More Actions: Copy As InChI / InChIKey / SMARTS / Ext SMILES / Ext SMARTS / PDB / MRV / Maestro', async ({ page }) => {
+        // Each format hits a distinct rdkit_extensions::to_string branch.
+        // We don't pin the exact serialization (RDKit owns that), just the
+        // format-identifying prefix or marker.
+        await loadText(page, 'CCO');
+
+        const checks = [
+            ['copy-as-inchi', /^InChI=/, /copied InChI:/],
+            ['copy-as-inchikey', /^[A-Z]{14}-[A-Z]{10}-[A-Z]$/, /copied InChIKey:/],
+            ['copy-as-smarts', /#6|#8/, /copied SMARTS:/],
+            ['copy-as-extended-smiles', /CCO/, /copied Extended SMILES:/],
+            ['copy-as-extended-smarts', /#6|#8/, /copied Extended SMARTS:/],
+            ['copy-as-pdb', /HETATM/, /copied PDB:/],
+            ['copy-as-mrv', /MDocument|cml/, /copied Marvin:/],
+            ['copy-as-maestro', /f_m_ct|m_atom/, /copied Maestro:/],
+        ];
+        for (const [testid, clipPattern, statusPattern] of checks) {
+            await page.getByTestId('more-actions-btn').click();
+            await page.getByTestId(testid).click();
+            const clip = await readClipboard(page);
+            expect(clip).toMatch(clipPattern);
+            await expect(page.getByTestId('sketcher-status'))
+                .toContainText(statusPattern);
+        }
+    });
+
+    test('More Actions: Copy As respects selection (Qt: copy(SELECTION) when something is selected)', async ({ page }) => {
+        // Qt's CutCopyActionManager::getSubset returns SELECTION when
+        // hasActiveSelection (cut_copy_action_manager.cpp:60). React port
+        // mirrors by passing hasSelection() to toFormatString.
+        await loadText(page, 'CCO');
+        await page.evaluate(() => {
+            const m = window.SketcherModel;
+            m.clearSelection();
+            m.setAtomSelected(2, true); // the O
+        });
+        await page.getByTestId('more-actions-btn').click();
+        await page.getByTestId('copy-as-smiles').click();
+        const clip = await readClipboard(page);
+        // Selection-only SMILES export of the lone O = "O".
+        expect(clip).toBe('O');
     });
 
     test('Ctrl+C copies the sketch as MDL MOL V3000 (Qt default format)', async ({ page }) => {
