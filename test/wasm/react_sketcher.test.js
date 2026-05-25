@@ -1033,6 +1033,100 @@ test.describe('React Sketcher', () => {
         await expect(page.getByTestId('save-image-modal')).toHaveCount(0);
     });
 
+    test('Export menu: Save Image lists SVG alongside PNG in the format dropdown', async ({
+        page,
+    }) => {
+        // Qt's FileSaveImageDialog (dialog/file_save_image_dialog.cpp:80-86)
+        // populates the format combo from get_image_export_formats which
+        // returns {PNG, SVG} when SVG is enabled. The lean port exposes
+        // both; selecting SVG should stick (no auto-revert).
+        await page.getByTestId('export').click();
+        await page.getByTestId('export-save-image').click();
+        const select = page.getByTestId('save-image-format-select');
+        await expect(select).toHaveValue('png');
+        const labels = await select.locator('option').allTextContents();
+        expect(labels).toEqual(['PNG', 'SVG']);
+        await select.selectOption('svg');
+        await expect(select).toHaveValue('svg');
+        await page.getByTestId('save-image-cancel').click();
+    });
+
+    test('Export menu: Save Image SVG downloads a valid SVG of the current sketch', async ({
+        page,
+    }) => {
+        // Round-trip: seed CCO, select SVG, save at 200×120, intercept the
+        // download body, assert it's a well-formed SVG with the expected
+        // dimensions and a few primitives matching what drawSketch would
+        // have painted (a <text>O</text> for the heteroatom; <line>s for
+        // the bonds; a <rect> for the white background fill).
+        await page.getByTestId('import').click();
+        await page.getByTestId('import-paste-in-text').click();
+        await page.getByTestId('paste-text-input').fill('CCO');
+        await page.getByTestId('paste-text-load').click();
+
+        await page.getByTestId('export').click();
+        await page.getByTestId('export-save-image').click();
+        await page.getByTestId('save-image-format-select').selectOption('svg');
+        await page.getByTestId('save-image-width').fill('200');
+        await page.getByTestId('save-image-height').fill('120');
+
+        const downloadPromise = page.waitForEvent('download');
+        await page.getByTestId('save-image-save').click();
+        const download = await downloadPromise;
+        expect(download.suggestedFilename()).toBe('sketch.svg');
+        const path = await download.path();
+        const fs = await import('node:fs/promises');
+        const body = await fs.readFile(path, 'utf8');
+        // Opens with the SVG element + namespace + correct viewport.
+        expect(body).toMatch(/^<svg xmlns='http:\/\/www\.w3\.org\/2000\/svg'/);
+        expect(body).toContain(`width='200' height='120'`);
+        expect(body).toContain(`viewBox='0 0 200 120'`);
+        // White (default) background fill.
+        expect(body).toContain(`fill='#ffffff'`);
+        // CCO has 2 bonds → at least 2 <line> elements.
+        const lineCount = (body.match(/<line /g) ?? []).length;
+        expect(lineCount).toBeGreaterThanOrEqual(2);
+        // Oxygen label rendered as a <text> element.
+        expect(body).toMatch(/<text [^>]*>O<\/text>/);
+        // Implicit H label rendered too (water-like H₂ on the O).
+        expect(body).toMatch(/<text [^>]*>H<\/text>/);
+        expect(body).toMatch(/<\/svg>$/);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/saved sketch\.svg — White background, 200 x 120 px/);
+        await expect(page.getByTestId('save-image-modal')).toHaveCount(0);
+    });
+
+    test('Export menu: Save Image SVG with Transparent omits the background rect', async ({
+        page,
+    }) => {
+        // Qt's FileSaveImagePopup passes Qt::transparent as the background
+        // color when the checkbox is checked; the SVG path then skips the
+        // fill rect entirely so anything behind shows through. Same here.
+        await page.getByTestId('import').click();
+        await page.getByTestId('import-paste-in-text').click();
+        await page.getByTestId('paste-text-input').fill('CCO');
+        await page.getByTestId('paste-text-load').click();
+
+        await page.getByTestId('export').click();
+        await page.getByTestId('export-save-image').click();
+        await page.getByTestId('save-image-format-select').selectOption('svg');
+        await page.getByTestId('save-image-transparent').check();
+
+        const downloadPromise = page.waitForEvent('download');
+        await page.getByTestId('save-image-save').click();
+        const download = await downloadPromise;
+        const path = await download.path();
+        const fs = await import('node:fs/promises');
+        const body = await fs.readFile(path, 'utf8');
+        // No white-fill background rect when transparent is checked.
+        expect(body).not.toContain(`fill='#ffffff'`);
+        // Structure primitives still present.
+        expect(body).toMatch(/<line /);
+        expect(body).toMatch(/<text [^>]*>O<\/text>/);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/saved sketch\.svg — Transparent background/);
+    });
+
     test('Configure View dropdown: lists Qt-fidelity toggles in Qt order with Qt defaults', async ({
         page,
     }) => {

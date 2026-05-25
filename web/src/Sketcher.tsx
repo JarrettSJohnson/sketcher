@@ -252,14 +252,15 @@ const EXPORT_FORMAT_CHOICES: { value: ExportFormat; label: string;
 ];
 
 // Save-Image dialog choices. Qt's FileSaveImageDialog
-// (dialog/file_save_image_dialog.cpp) offers PNG and SVG. SVG would require
-// a separate vector renderer (our drawSketch is canvas-only), so SVG is
-// deferred to a follow-up batch; the dropdown still renders so the visual
-// shape of the dialog matches Qt, but only PNG is selectable today.
-type ImageFormat = 'png';
+// (dialog/file_save_image_dialog.cpp:80-86) offers PNG and SVG; PNG is
+// painted by drawSketch into an offscreen canvas, SVG is built by
+// buildSketchSvg from the same RenderDesc + view so the vector output
+// matches the pixel output geometrically.
+type ImageFormat = 'png' | 'svg';
 const IMAGE_FORMAT_CHOICES: { value: ImageFormat; label: string;
     ext: string; mime: string }[] = [
     { value: 'png', label: 'PNG', ext: 'png', mime: 'image/png' },
+    { value: 'svg', label: 'SVG', ext: 'svg', mime: 'image/svg+xml' },
 ];
 const IMAGE_SIZE_MIN = 1;
 const IMAGE_SIZE_MAX = 9999;
@@ -929,6 +930,289 @@ function drawSketch(
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
     }
+}
+
+// Build an SVG string mirroring drawSketch for the same `rd` / `view` /
+// `displayOptions` — used by Save Image when SVG is the selected format.
+// Mirrors Qt's QSvgGenerator path (image_generation.cpp:358-368), which
+// repaints the same scene through a Qt paint device that emits SVG
+// commands. The result is the same vector geometry the canvas renders,
+// just expressed as SVG primitives.
+//
+// `measureCanvas` only supplies a CanvasRenderingContext2D for measureText
+// (caller already creates a real canvas for PNG; reuse it here so H/charge
+// glyph offsets match the PNG version pixel-for-pixel). Transient chrome
+// (drag/rotation/chain hints + hover/pending highlights) is intentionally
+// not emitted — saved output is a clean structure.
+function buildSketchSvg(
+    measureCanvas: HTMLCanvasElement,
+    view: View,
+    rd: RenderDesc,
+    w: number,
+    h: number,
+    displayOptions: DisplayOptions,
+    includeBackground: boolean,
+): string {
+    const ctx = measureCanvas.getContext('2d');
+    const BOND_STROKE = 2;
+    const BOND_DOUBLE_OFFSET = 4.5;
+    const f = (n: number): string => n.toFixed(2);
+    const esc = (s: string): string =>
+        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const parts: string[] = [];
+    parts.push(
+        `<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}' ` +
+        `viewBox='0 0 ${w} ${h}'>`,
+    );
+    if (includeBackground) {
+        parts.push(
+            `<rect x='0' y='0' width='${w}' height='${h}' fill='#ffffff'/>`,
+        );
+    }
+    // pixelFromModel only reads width/height — measureCanvas is sized to (w,h)
+    // so the coord math matches the PNG renderer above.
+    const px = (x: number, y: number): { px: number; py: number } =>
+        pixelFromModel(measureCanvas, view, x, y);
+
+    let centroidX = 0;
+    let centroidY = 0;
+    for (const a of rd.atoms) {
+        centroidX += a.x;
+        centroidY += a.y;
+    }
+    if (rd.atoms.length > 0) {
+        centroidX /= rd.atoms.length;
+        centroidY /= rd.atoms.length;
+    }
+    const centroidPx = px(centroidX, centroidY);
+
+    for (const b of rd.bonds) {
+        const p1 = px(rd.atoms[b.a].x, rd.atoms[b.a].y);
+        const p2 = px(rd.atoms[b.b].x, rd.atoms[b.b].y);
+        if (b.sel) {
+            parts.push(
+                `<line x1='${f(p1.px)}' y1='${f(p1.py)}' ` +
+                `x2='${f(p2.px)}' y2='${f(p2.py)}' ` +
+                `stroke='${SELECTION_FILL}' stroke-width='9' ` +
+                `stroke-linecap='round'/>`,
+            );
+        }
+        const dir = b.dir ?? BOND_DIR_NONE;
+        if (dir === BOND_DIR_WEDGE && b.o === 1) {
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy);
+            const ox = (-dy / len) * 5;
+            const oy = (dx / len) * 5;
+            parts.push(
+                `<polygon points='${f(p1.px)},${f(p1.py)} ` +
+                `${f(p2.px + ox)},${f(p2.py + oy)} ` +
+                `${f(p2.px - ox)},${f(p2.py - oy)}' fill='#222'/>`,
+            );
+        } else if (dir === BOND_DIR_DASH && b.o === 1) {
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy);
+            const ux = dx / len;
+            const uy = dy / len;
+            const nx = -uy;
+            const ny = ux;
+            const dashCount = 6;
+            for (let k = 1; k <= dashCount; ++k) {
+                const t = k / (dashCount + 1);
+                const cx = p1.px + dx * t;
+                const cy = p1.py + dy * t;
+                const halfW = 1 + 3.5 * t;
+                parts.push(
+                    `<line x1='${f(cx + nx * halfW)}' y1='${f(cy + ny * halfW)}' ` +
+                    `x2='${f(cx - nx * halfW)}' y2='${f(cy - ny * halfW)}' ` +
+                    `stroke='#222' stroke-width='1.6'/>`,
+                );
+            }
+        } else if (dir === BOND_DIR_UNKNOWN && b.o === 1) {
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy);
+            const nx = -dy / len;
+            const ny = dx / len;
+            const amp = 3;
+            const waves = Math.max(2, Math.round(len / 8));
+            const steps = waves * 8;
+            const pts: string[] = [`${f(p1.px)},${f(p1.py)}`];
+            for (let s = 1; s <= steps; ++s) {
+                const t = s / steps;
+                const phase = Math.sin(2 * Math.PI * waves * t);
+                pts.push(
+                    `${f(p1.px + dx * t + nx * amp * phase)},` +
+                    `${f(p1.py + dy * t + ny * amp * phase)}`,
+                );
+            }
+            parts.push(
+                `<polyline points='${pts.join(' ')}' fill='none' ` +
+                `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+            );
+        } else if (dir === BOND_DIR_EITHERDOUBLE && b.o === 2) {
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy);
+            const ox = (-dy / len) * BOND_DOUBLE_OFFSET;
+            const oy = (dx / len) * BOND_DOUBLE_OFFSET;
+            parts.push(
+                `<line x1='${f(p1.px + ox)}' y1='${f(p1.py + oy)}' ` +
+                `x2='${f(p2.px - ox)}' y2='${f(p2.py - oy)}' ` +
+                `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+                `<line x1='${f(p1.px - ox)}' y1='${f(p1.py - oy)}' ` +
+                `x2='${f(p2.px + ox)}' y2='${f(p2.py + oy)}' ` +
+                `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+            );
+        } else if (b.arom) {
+            parts.push(
+                `<line x1='${f(p1.px)}' y1='${f(p1.py)}' ` +
+                `x2='${f(p2.px)}' y2='${f(p2.py)}' ` +
+                `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+            );
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy);
+            const nx = -dy / len;
+            const ny = dx / len;
+            const mx = (p1.px + p2.px) / 2;
+            const my = (p1.py + p2.py) / 2;
+            const sign = nx * (centroidPx.px - mx) +
+                ny * (centroidPx.py - my) >= 0 ? 1 : -1;
+            const ox = nx * BOND_DOUBLE_OFFSET * sign;
+            const oy = ny * BOND_DOUBLE_OFFSET * sign;
+            const shrink = 0.18;
+            const sx1 = p1.px + dx * shrink + ox;
+            const sy1 = p1.py + dy * shrink + oy;
+            const sx2 = p1.px + dx * (1 - shrink) + ox;
+            const sy2 = p1.py + dy * (1 - shrink) + oy;
+            parts.push(
+                `<line x1='${f(sx1)}' y1='${f(sy1)}' ` +
+                `x2='${f(sx2)}' y2='${f(sy2)}' ` +
+                `stroke='#222' stroke-width='1.5' ` +
+                `stroke-dasharray='5,3'/>`,
+            );
+        } else {
+            parts.push(
+                `<line x1='${f(p1.px)}' y1='${f(p1.py)}' ` +
+                `x2='${f(p2.px)}' y2='${f(p2.py)}' ` +
+                `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+            );
+        }
+        const isCrossedDouble = dir === BOND_DIR_EITHERDOUBLE && b.o === 2;
+        if (!b.arom && !isCrossedDouble && (b.o === 2 || b.o === 3)) {
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy);
+            const ox = (-dy / len) * BOND_DOUBLE_OFFSET;
+            const oy = (dx / len) * BOND_DOUBLE_OFFSET;
+            parts.push(
+                `<line x1='${f(p1.px + ox)}' y1='${f(p1.py + oy)}' ` +
+                `x2='${f(p2.px + ox)}' y2='${f(p2.py + oy)}' ` +
+                `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+            );
+            if (b.o === 3) {
+                parts.push(
+                    `<line x1='${f(p1.px - ox)}' y1='${f(p1.py - oy)}' ` +
+                    `x2='${f(p2.px - ox)}' y2='${f(p2.py - oy)}' ` +
+                    `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+                );
+            }
+        }
+    }
+
+    for (const a of rd.atoms) {
+        const { px: ax, py: ay } = px(a.x, a.y);
+        if (a.sel) {
+            parts.push(
+                `<circle cx='${f(ax)}' cy='${f(ay)}' r='13' ` +
+                `fill='${ACCENT_GREEN}'/>`,
+                `<circle cx='${f(ax)}' cy='${f(ay)}' r='10' ` +
+                `fill='${SELECTION_FILL}'/>`,
+            );
+        }
+        const hasCharge = typeof a.q === 'number' && a.q !== 0;
+        const dotOnly = a.el === 'C' && !hasCharge && !a.sel;
+        if (dotOnly) {
+            parts.push(
+                `<circle cx='${f(ax)}' cy='${f(ay)}' r='2.5' fill='#333'/>`,
+            );
+            continue;
+        }
+        if (a.el !== 'C') {
+            parts.push(
+                `<rect x='${f(ax - 9)}' y='${f(ay - 9)}' ` +
+                `width='18' height='18' fill='white'/>`,
+            );
+        }
+        const labelColor = displayOptions.colorHeteroatoms
+            ? (ELEMENT_COLORS[a.el] ?? '#333')
+            : ELEMENT_COLORS.C;
+        if (a.el === 'C' && a.sel && !hasCharge) {
+            parts.push(
+                `<circle cx='${f(ax)}' cy='${f(ay)}' r='2.5' ` +
+                `fill='${labelColor}'/>`,
+            );
+        } else {
+            // dominant-baseline=central + text-anchor=middle reproduces the
+            // canvas (textBaseline='middle', textAlign='center') layout.
+            parts.push(
+                `<text x='${f(ax)}' y='${f(ay)}' fill='${labelColor}' ` +
+                `font-family='sans-serif' font-size='13' ` +
+                `text-anchor='middle' dominant-baseline='central'>` +
+                `${esc(a.el)}</text>`,
+            );
+            if (a.el !== 'C' && typeof a.nh === 'number' && a.nh > 0 && ctx) {
+                ctx.font = '13px sans-serif';
+                const labelWidth = ctx.measureText(a.el).width;
+                const hX = ax + labelWidth / 2 + 1;
+                parts.push(
+                    `<text x='${f(hX)}' y='${f(ay)}' fill='${labelColor}' ` +
+                    `font-family='sans-serif' font-size='13' ` +
+                    `text-anchor='start' dominant-baseline='central'>` +
+                    `H</text>`,
+                );
+                if (a.nh > 1) {
+                    ctx.font = '13px sans-serif';
+                    const hWidth = ctx.measureText('H').width;
+                    parts.push(
+                        `<text x='${f(hX + hWidth + 1)}' y='${f(ay + 4)}' ` +
+                        `fill='${labelColor}' font-family='sans-serif' ` +
+                        `font-size='9' text-anchor='start' ` +
+                        `dominant-baseline='central'>` +
+                        `${esc(String(a.nh))}</text>`,
+                    );
+                }
+            }
+            if (hasCharge && ctx) {
+                const q = a.q as number;
+                const sign = q > 0 ? '+' : '−';
+                const chargeText = Math.abs(q) === 1
+                    ? sign
+                    : `${Math.abs(q)}${sign}`;
+                ctx.font = '13px sans-serif';
+                const labelWidth = ctx.measureText(a.el).width;
+                let chargeX = ax + labelWidth / 2 + 1;
+                if (a.el !== 'C' && typeof a.nh === 'number' && a.nh > 0) {
+                    chargeX += ctx.measureText('H').width;
+                    if (a.nh > 1) {
+                        ctx.font = '9px sans-serif';
+                        chargeX += ctx.measureText(String(a.nh)).width + 1;
+                    }
+                }
+                parts.push(
+                    `<text x='${f(chargeX)}' y='${f(ay - 4)}' ` +
+                    `fill='${labelColor}' font-family='sans-serif' ` +
+                    `font-size='9' text-anchor='start' ` +
+                    `dominant-baseline='central'>` +
+                    `${esc(chargeText)}</text>`,
+                );
+            }
+        }
+    }
+    parts.push('</svg>');
+    return parts.join('');
 }
 
 interface SketcherProps {
@@ -2463,25 +2747,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         const off = document.createElement('canvas');
         off.width = w;
         off.height = h;
-        // drawSketch clearRects at the start, so anything we fill first
-        // would be wiped. Instead let drawSketch paint on transparent, then
-        // composite the background behind the strokes for the opaque case.
-        drawSketch(off, offView, rd, null, null, null, null, null,
-            displayOptions);
-        if (!imageTransparent) {
-            const ctx = off.getContext('2d');
-            if (ctx) {
-                ctx.globalCompositeOperation = 'destination-over';
-                ctx.fillStyle = '#fff';
-                ctx.fillRect(0, 0, w, h);
-                ctx.globalCompositeOperation = 'source-over';
-            }
-        }
         const choice = IMAGE_FORMAT_CHOICES
             .find((c) => c.value === imageFormat);
         const mime = choice?.mime ?? 'image/png';
         const ext = choice?.ext ?? 'png';
-        off.toBlob((blob) => {
+        const bg = imageTransparent ? 'Transparent' : 'White';
+        const finishDownload = (blob: Blob | null): void => {
             if (!blob) {
                 setStatus('save image failed');
                 return;
@@ -2494,10 +2765,37 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            const bg = imageTransparent ? 'Transparent' : 'White';
-            setStatus(`saved sketch.${ext} — ${bg} background, ${w} x ${h} px`);
+            setStatus(
+                `saved sketch.${ext} — ${bg} background, ${w} x ${h} px`,
+            );
             setImageModalOpen(false);
-        }, mime);
+        };
+        if (imageFormat === 'svg') {
+            // SVG path: buildSketchSvg emits the same geometry as
+            // drawSketch, just as SVG primitives. Mirrors Qt's
+            // QSvgGenerator paint device in image_generation.cpp:358-368.
+            const svg = buildSketchSvg(
+                off, offView, rd, w, h, displayOptions, !imageTransparent,
+            );
+            finishDownload(new Blob([svg], { type: mime }));
+            return;
+        }
+        // PNG path: drawSketch clearRects at the start, so anything we
+        // fill first would be wiped. Instead let drawSketch paint on
+        // transparent, then composite the background behind the strokes
+        // for the opaque case.
+        drawSketch(off, offView, rd, null, null, null, null, null,
+            displayOptions);
+        if (!imageTransparent) {
+            const ctx = off.getContext('2d');
+            if (ctx) {
+                ctx.globalCompositeOperation = 'destination-over';
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(0, 0, w, h);
+                ctx.globalCompositeOperation = 'source-over';
+            }
+        }
+        off.toBlob(finishDownload, mime);
     };
 
     const adjustCharge = (delta: number): void => {
