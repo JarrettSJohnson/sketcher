@@ -224,7 +224,7 @@ test.describe('React Sketcher', () => {
         expect(rd.atoms.map((a) => !!a.sel)).toEqual([true, false, true]);
     });
 
-    test('rubber-band drag selects a bond when both endpoints fall inside', async ({
+    test('rubber-band drag selects a bond when its midpoint falls inside (Qt getCollidingItemsUsingBondMidpoints)', async ({
         page,
     }) => {
         const canvas = page.getByTestId('sketcher-canvas');
@@ -244,6 +244,36 @@ test.describe('React Sketcher', () => {
         const rd = await snapshot(page);
         expect(rd.atoms.every((a) => a.sel)).toBe(true);
         expect(rd.bonds.every((b) => b.sel)).toBe(true);
+    });
+
+    test('rubber-band rect selects a bond by midpoint even when endpoints are OUTSIDE', async ({
+        page,
+    }) => {
+        // Qt convention: bonds collide with the selection shape iff their
+        // *midpoint* (not endpoints) is inside. So a thin horizontal rect
+        // that misses both endpoint atoms but covers the bond midpoint must
+        // still pick up the bond. The endpoints themselves stay unselected.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+
+        await page.getByTestId('tool-select').click();
+        const box = await canvas.boundingBox();
+        // Drag a narrow vertical band around x = 190 (midpoint of x=120..260).
+        // Endpoints at x=120 and x=260 are outside this band.
+        await page.mouse.move(box.x + 170, box.y + 140);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 210, box.y + 240, { steps: 6 });
+        await page.mouse.up();
+
+        const rd = await snapshot(page);
+        expect(rd.atoms.every((a) => !a.sel)).toBe(true);
+        expect(rd.bonds.every((b) => b.sel)).toBe(true);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/rectangle: 0 atoms, 1 bond/);
     });
 
     test('drag-to-move atom (move-rotate tool): live preview + undoable commit', async ({
@@ -1814,4 +1844,108 @@ test.describe('React Sketcher', () => {
         await expect(status).toContainText(/query atom/i);
         await expect(page.getByTestId('atom-query-popup')).toHaveCount(0);
     });
+
+    test('select popup: long-press exposes rect/lasso/ellipse choices', async ({
+        page,
+    }) => {
+        // Qt selection_tool_popup.ui: rect / lasso / ellipse — the same three
+        // choices we surface in the port.
+        const selectBtn = page.getByTestId('tool-select');
+        await selectBtn.hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await expect(page.getByTestId('tool-select-popup')).toBeVisible();
+        for (const v of ['rect', 'lasso', 'ellipse']) {
+            await expect(page.getByTestId(`select-popup-${v}`)).toBeVisible();
+        }
+        await page.mouse.up();
+        // Outside-click closes without committing — select tool stays inactive.
+        await page.mouse.click(10, 10);
+        await expect(page.getByTestId('tool-select-popup')).toHaveCount(0);
+    });
+
+    test('select popup: pick lasso → select tool active with lasso icon; drag selects polygon-contained atoms', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Place 3 atoms across the canvas — we'll lasso just the middle one.
+        await canvas.click({ position: { x: 100, y: 200 } });
+        await canvas.click({ position: { x: 300, y: 200 } });
+        await canvas.click({ position: { x: 500, y: 200 } });
+
+        // Open the select popup and pick lasso.
+        const selectBtn = page.getByTestId('tool-select');
+        await selectBtn.hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await page.mouse.up();
+        await page.getByTestId('select-popup-lasso').click();
+
+        // The button is now active (select tool) and its slot icon swapped.
+        await expect(selectBtn).toHaveAttribute('aria-pressed', 'true');
+        const slotIcon = selectBtn.locator('img').first();
+        await expect(slotIcon).toHaveAttribute('src', '/icons/select_lasso.svg');
+
+        // Drag a small loop around the middle atom (~x=300, y=200) only.
+        const box = await canvas.boundingBox();
+        const path = [
+            [260, 170],
+            [340, 170],
+            [340, 230],
+            [260, 230],
+            [260, 175],
+        ];
+        await page.mouse.move(box.x + path[0][0], box.y + path[0][1]);
+        await page.mouse.down();
+        for (let i = 1; i < path.length; ++i) {
+            await page.mouse.move(box.x + path[i][0], box.y + path[i][1],
+                { steps: 4 });
+        }
+        await page.mouse.up();
+
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(3);
+        // Middle atom selected; left/right untouched.
+        const sel = rd.atoms.filter((a) => a.sel).map((a) => a.i).sort();
+        expect(sel).toEqual([1]);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/lasso: 1 atom/);
+    });
+
+    test('select popup: pick ellipse → drag selects atoms inside ellipse but not in its corners', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Three collinear atoms.
+        await canvas.click({ position: { x: 100, y: 200 } });
+        await canvas.click({ position: { x: 300, y: 200 } });
+        await canvas.click({ position: { x: 500, y: 200 } });
+
+        // Switch to ellipse via the popup.
+        const selectBtn = page.getByTestId('tool-select');
+        await selectBtn.hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await page.mouse.up();
+        await page.getByTestId('select-popup-ellipse').click();
+        await expect(selectBtn.locator('img').first())
+            .toHaveAttribute('src', '/icons/select_ellipse.svg');
+
+        // Drag a tall narrow ellipse around the middle atom. A bounding-rect
+        // of the same span would include the left and right atoms too, but
+        // the inscribed ellipse excludes them — that's the visual point of
+        // the shape.
+        const box = await canvas.boundingBox();
+        await page.mouse.move(box.x + 240, box.y + 80);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 360, box.y + 320, { steps: 8 });
+        await page.mouse.up();
+
+        const rd = await snapshot(page);
+        const sel = rd.atoms.filter((a) => a.sel).map((a) => a.i).sort();
+        expect(sel).toEqual([1]);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/ellipse: 1 atom/);
+    });
+
 });

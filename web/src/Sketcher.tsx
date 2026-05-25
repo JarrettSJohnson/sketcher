@@ -225,11 +225,20 @@ function nearestBondIndex(
     return bestIdx;
 }
 
-interface DragRect {
+// Qt ui/selection_tool_popup.ui offers three shapes for the select tool:
+// rect_btn / lasso_btn / ellipse_btn. We mirror the same three.
+type SelectShape = 'rect' | 'lasso' | 'ellipse';
+
+interface DragShape {
+    kind: SelectShape;
     startPx: number;
     startPy: number;
     curPx: number;
     curPy: number;
+    // For lasso only — sampled freehand points (including start). We append
+    // on every mousemove while dragging. Rect/ellipse derive geometry purely
+    // from start/cur, so this stays undefined for those.
+    lassoPoints?: { px: number; py: number }[];
     additive: boolean;
     // 'select' = rubber-band select; 'erase' = rubber-band erase (Qt
     // EraseSceneTool reuses RectSelectSceneTool's rubber-band but commits
@@ -291,12 +300,25 @@ function distanceSq(ax: number, ay: number, bx: number, by: number): number {
 // both: factor formula and the DEFAULT_SCALE upper bound.
 const MIN_VIEW_SCALE = 4;
 
-function dragRectBounds(d: DragRect): {
+function dragShapeBounds(d: DragShape): {
     x1: number;
     y1: number;
     x2: number;
     y2: number;
 } {
+    if (d.kind === 'lasso' && d.lassoPoints && d.lassoPoints.length > 0) {
+        let x1 = Infinity;
+        let y1 = Infinity;
+        let x2 = -Infinity;
+        let y2 = -Infinity;
+        for (const p of d.lassoPoints) {
+            if (p.px < x1) x1 = p.px;
+            if (p.py < y1) y1 = p.py;
+            if (p.px > x2) x2 = p.px;
+            if (p.py > y2) y2 = p.py;
+        }
+        return { x1, y1, x2, y2 };
+    }
     return {
         x1: Math.min(d.startPx, d.curPx),
         y1: Math.min(d.startPy, d.curPy),
@@ -305,13 +327,70 @@ function dragRectBounds(d: DragRect): {
     };
 }
 
+// Ray-casting point-in-polygon test (standard even-odd rule). Used to test
+// atoms and bond midpoints against the lasso path's polygon (Qt's
+// LassoSelectionItem builds a QPainterPath via addPolygon, which uses the
+// same even-odd containment).
+function pointInPolygon(
+    px: number,
+    py: number,
+    poly: { px: number; py: number }[],
+): boolean {
+    if (poly.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const xi = poly[i].px;
+        const yi = poly[i].py;
+        const xj = poly[j].px;
+        const yj = poly[j].py;
+        const intersects = (yi > py) !== (yj > py) &&
+            px < ((xj - xi) * (py - yi)) / (yj - yi || 1e-12) + xi;
+        if (intersects) inside = !inside;
+    }
+    return inside;
+}
+
+function pointInEllipseBounds(
+    px: number,
+    py: number,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+): boolean {
+    const cx = (x1 + x2) / 2;
+    const cy = (y1 + y2) / 2;
+    const rx = (x2 - x1) / 2;
+    const ry = (y2 - y1) / 2;
+    if (rx <= 0 || ry <= 0) return false;
+    const dx = (px - cx) / rx;
+    const dy = (py - cy) / ry;
+    return dx * dx + dy * dy <= 1;
+}
+
+// Returns true if a model-space point (already projected to pixel coords)
+// falls inside the drag shape. Centralized so atom containment and bond
+// midpoint containment share the exact same rule per shape — mirrors Qt's
+// `getCollidingItemsUsingBondMidpoints` which treats atoms-by-position and
+// bonds-by-midpoint identically against the same shape geometry.
+function pointInDragShape(d: DragShape, px: number, py: number): boolean {
+    const { x1, y1, x2, y2 } = dragShapeBounds(d);
+    if (d.kind === 'rect') {
+        return px >= x1 && px <= x2 && py >= y1 && py <= y2;
+    }
+    if (d.kind === 'ellipse') {
+        return pointInEllipseBounds(px, py, x1, y1, x2, y2);
+    }
+    return pointInPolygon(px, py, d.lassoPoints ?? []);
+}
+
 function drawSketch(
     canvas: HTMLCanvasElement,
     view: View,
     rd: RenderDesc,
     pendingAtomIdx: number | null,
     hoverAtomIdx: number | null,
-    dragRect: DragRect | null,
+    dragShape: DragShape | null,
     rotationHandle: RotationHandle | null,
 ): void {
     const ctx = canvas.getContext('2d');
@@ -604,17 +683,45 @@ function drawSketch(
         }
     }
 
-    if (dragRect) {
-        const { x1, y1, x2, y2 } = dragRectBounds(dragRect);
-        const isErase = dragRect.mode === 'erase';
+    if (dragShape) {
+        const isErase = dragShape.mode === 'erase';
         ctx.fillStyle = isErase
             ? 'rgba(200, 70, 70, 0.10)'
             : 'rgba(119, 156, 89, 0.12)';
-        ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
         ctx.strokeStyle = isErase ? '#c84646' : ACCENT_GREEN;
         ctx.lineWidth = 1;
         ctx.setLineDash([4, 3]);
-        ctx.strokeRect(x1 + 0.5, y1 + 0.5, x2 - x1 - 1, y2 - y1 - 1);
+        if (dragShape.kind === 'rect') {
+            const { x1, y1, x2, y2 } = dragShapeBounds(dragShape);
+            ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+            ctx.strokeRect(x1 + 0.5, y1 + 0.5, x2 - x1 - 1, y2 - y1 - 1);
+        } else if (dragShape.kind === 'ellipse') {
+            const { x1, y1, x2, y2 } = dragShapeBounds(dragShape);
+            const cx = (x1 + x2) / 2;
+            const cy = (y1 + y2) / 2;
+            const rx = Math.max(0, (x2 - x1) / 2);
+            const ry = Math.max(0, (y2 - y1) / 2);
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, rx, ry, 0, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.stroke();
+        } else {
+            const pts = dragShape.lassoPoints ?? [];
+            if (pts.length >= 2) {
+                ctx.beginPath();
+                ctx.moveTo(pts[0].px, pts[0].py);
+                for (let i = 1; i < pts.length; ++i) {
+                    ctx.lineTo(pts[i].px, pts[i].py);
+                }
+                // Close the loop with a dashed seam back to the start so the
+                // hovering "what would I select?" region is visible while the
+                // user drags — Qt's LassoSelectionItem fills the closed
+                // polygon, we render it the same way.
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+            }
+        }
         ctx.setLineDash([]);
     }
 
@@ -698,7 +805,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [ring, setRing] = useState<RingSpec>(RING_BENZENE);
     const [pendingBondAtom, setPendingBondAtom] = useState<number | null>(null);
     const [hoverAtom, setHoverAtom] = useState<number | null>(null);
-    const [dragRect, setDragRect] = useState<DragRect | null>(null);
+    const [dragShape, setDragShape] = useState<DragShape | null>(null);
+    // Persistent shape for the Select tool. Switches via the long-press popup
+    // on the Select button — mirrors Qt's selection_tool_popup (rect/lasso/
+    // ellipse), where the chosen shape sticks until the user picks another.
+    const [selectShape, setSelectShape] = useState<SelectShape>('rect');
+    const selectShapeRef = useRef<SelectShape>('rect');
     const [status, setStatus] = useState<string>('ready');
     const [smilesInput, setSmilesInput] = useState<string>('');
     const [view, setViewState] = useState<View>(DEFAULT_VIEW);
@@ -798,6 +910,36 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // renders a single horizontal row in this port — close enough for v1
     // since picking is stubbed anyway (RDKit query atoms aren't ported to
     // the lean MolModel yet).
+    // Select shape popup — Qt ui/selection_tool_popup.ui (rect / lasso /
+    // ellipse). Picking changes the persistent shape AND switches the active
+    // tool to 'select' so the next drag uses the new shape.
+    const SELECT_SHAPE_CHOICES: PopupChoice<SelectShape>[] = [
+        { value: 'rect',    icon: 'select_square',  title: 'Rectangle Select', testid: 'select-popup-rect' },
+        { value: 'lasso',   icon: 'select_lasso',   title: 'Lasso Select',     testid: 'select-popup-lasso' },
+        { value: 'ellipse', icon: 'select_ellipse', title: 'Ellipse Select',   testid: 'select-popup-ellipse' },
+    ];
+    const SELECT_SHAPE_ICON: Record<SelectShape, string> = {
+        rect: 'select_square',
+        lasso: 'select_lasso',
+        ellipse: 'select_ellipse',
+    };
+    const SELECT_SHAPE_TITLE: Record<SelectShape, string> = {
+        rect: 'Rectangle Select',
+        lasso: 'Lasso Select',
+        ellipse: 'Ellipse Select',
+    };
+
+    const pickSelectShape = useCallback((s: SelectShape): void => {
+        selectShapeRef.current = s;
+        setSelectShape(s);
+        setTool('select');
+        setPendingBondAtom(null);
+        setStatus(`${SELECT_SHAPE_TITLE[s].toLowerCase()} mode`);
+        // SELECT_SHAPE_TITLE isn't a stable dep — it's a const object freshly
+        // built each render but the values never change.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     const ATOM_QUERY_CHOICES: PopupChoice<AtomQueryChoice>[] = [
         { value: 'A',  label: 'A',  title: 'Any Heavy Atom',     testid: 'atom-query-popup-A' },
         { value: 'Q',  label: 'Q',  title: 'Any Heteroatom',     testid: 'atom-query-popup-Q' },
@@ -919,7 +1061,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             rd,
             pendingBondAtom,
             hoverAtom,
-            dragRect,
+            dragShape,
             rotationHandle,
         );
     });
@@ -1202,8 +1344,24 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 }
                 return;
             }
-            if (dragRect) {
-                setDragRect({ ...dragRect, curPx: px, curPy: py });
+            if (dragShape) {
+                if (dragShape.kind === 'lasso') {
+                    // Append a point on every move so the captured polygon
+                    // tracks the user's freehand path (Qt LassoSelectSceneTool
+                    // onMouseMove: m_path.addPoint(point) while pressed).
+                    const nextPoints = dragShape.lassoPoints
+                        ? [...dragShape.lassoPoints, { px, py }]
+                        : [{ px: dragShape.startPx, py: dragShape.startPy },
+                           { px, py }];
+                    setDragShape({
+                        ...dragShape,
+                        curPx: px,
+                        curPy: py,
+                        lassoPoints: nextPoints,
+                    });
+                } else {
+                    setDragShape({ ...dragShape, curPx: px, curPy: py });
+                }
                 return;
             }
             if (tool !== 'bond') {
@@ -1220,7 +1378,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const next = hit >= 0 ? hit : null;
             if (next !== hoverAtom) setHoverAtom(next);
         },
-        [tool, hoverAtom, dragRect],
+        [tool, hoverAtom, dragShape],
     );
 
     const onCanvasMouseDown = useCallback(
@@ -1340,11 +1498,18 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             if (nearestAtomIndex(canvas, viewRef.current, rd.atoms, px, py) >= 0) return;
             if (nearestBondIndex(canvas, viewRef.current, rd, px, py) >= 0) return;
 
-            setDragRect({
+            // Erase always uses a rectangle (Qt EraseSceneTool extends
+            // RectSelectSceneTool, no popup); Select uses the popup-chosen
+            // shape from selectShapeRef.
+            const kind: SelectShape =
+                tool === 'erase' ? 'rect' : selectShapeRef.current;
+            setDragShape({
+                kind,
                 startPx: px,
                 startPy: py,
                 curPx: px,
                 curPy: py,
+                lassoPoints: kind === 'lasso' ? [{ px, py }] : undefined,
                 additive: e.shiftKey,
                 mode: tool === 'erase' ? 'erase' : 'select',
             });
@@ -1443,18 +1608,18 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 }
                 return;
             }
-            if (!dragRect) return;
+            if (!dragShape) return;
             const canvas = canvasRef.current;
             const model = modelRef.current;
             if (!canvas || !model) {
-                setDragRect(null);
+                setDragShape(null);
                 return;
             }
-            const { x1, y1, x2, y2 } = dragRectBounds(dragRect);
+            const { x1, y1, x2, y2 } = dragShapeBounds(dragShape);
             const w = x2 - x1;
             const h = y2 - y1;
             const isRealDrag = w > 3 && h > 3;
-            setDragRect(null);
+            setDragShape(null);
             if (!isRealDrag) {
                 // Treat a tiny drag as a click — let onClick handle it.
                 return;
@@ -1469,7 +1634,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             } catch {
                 rd = BLANK_DESC;
             }
-            const isErase = dragRect.mode === 'erase';
+            const isErase = dragShape.mode === 'erase';
             // Erase reuses the rubber-band machinery (per Qt EraseSceneTool
             // extending RectSelectSceneTool). We stage the contained items
             // into the selection set and then call deleteSelected so the
@@ -1485,40 +1650,50 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     if (model.isBondSelected(i)) priorBondSel.push(i);
                 }
                 model.clearSelection();
-            } else if (!dragRect.additive) {
+            } else if (!dragShape.additive) {
                 model.clearSelection();
             }
             let nSelected = 0;
-            const atomInRect = new Array<boolean>(rd.atoms.length).fill(false);
             for (const a of rd.atoms) {
                 const { px, py } = pixelFromModel(canvas, viewRef.current, a.x, a.y);
-                if (px >= x1 && px <= x2 && py >= y1 && py <= y2) {
-                    atomInRect[a.i] = true;
+                if (pointInDragShape(dragShape, px, py)) {
                     if (!model.isAtomSelected(a.i)) {
                         model.setAtomSelected(a.i, true);
                     }
                     ++nSelected;
                 }
             }
-            // Select a bond when both endpoints fell inside the rectangle.
-            // Strict containment avoids surprising partial selections.
+            // Bonds by MIDPOINT (Qt getCollidingItemsUsingBondMidpoints —
+            // identical convention for rect / lasso / ellipse). Replaces the
+            // older "both endpoints inside" rule which diverged from Qt.
             let nBondsSelected = 0;
             for (let i = 0; i < rd.bonds.length; ++i) {
                 const b = rd.bonds[i];
-                if (atomInRect[b.a] && atomInRect[b.b]) {
+                const ax = rd.atoms[b.a].x;
+                const ay = rd.atoms[b.a].y;
+                const bx = rd.atoms[b.b].x;
+                const by = rd.atoms[b.b].y;
+                const mid = pixelFromModel(
+                    canvas, viewRef.current, (ax + bx) / 2, (ay + by) / 2,
+                );
+                if (pointInDragShape(dragShape, mid.px, mid.py)) {
                     if (!model.isBondSelected(i)) {
                         model.setBondSelected(i, true);
                     }
                     ++nBondsSelected;
                 }
             }
+            const shapeName =
+                dragShape.kind === 'rect' ? 'rectangle'
+                : dragShape.kind === 'lasso' ? 'lasso'
+                : 'ellipse';
             if (isErase) {
                 if (nSelected + nBondsSelected === 0) {
-                    // Nothing in the rect — restore the prior selection so
+                    // Nothing in the shape — restore the prior selection so
                     // an empty drag doesn't silently nuke it.
                     for (const i of priorAtomSel) model.setAtomSelected(i, true);
                     for (const i of priorBondSel) model.setBondSelected(i, true);
-                    setStatus('erase: rectangle was empty');
+                    setStatus(`erase: ${shapeName} was empty`);
                 } else {
                     model.deleteSelected();
                     setStatus(
@@ -1529,21 +1704,21 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 }
             } else {
                 setStatus(
-                    `rectangle: ${nSelected} atom${nSelected === 1 ? '' : 's'}, ` +
+                    `${shapeName}: ${nSelected} atom${nSelected === 1 ? '' : 's'}, ` +
                         `${nBondsSelected} bond${nBondsSelected === 1 ? '' : 's'}` +
-                        (dragRect.additive ? ' (added)' : ''),
+                        (dragShape.additive ? ' (added)' : ''),
                 );
             }
             void e; // silence unused-param lint without changing the signature
         },
-        [dragRect],
+        [dragShape],
     );
 
     const onCanvasMouseLeave = useCallback((): void => {
         setHoverAtom(null);
         // Don't commit a drag-select that left the canvas — just cancel it.
-        if (dragRect) {
-            setDragRect(null);
+        if (dragShape) {
+            setDragShape(null);
         }
         // Cancel a rotate-drag that left the canvas: restore every dragged
         // atom's original position so the preview doesn't leave the
@@ -1581,7 +1756,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 );
             }
         }
-    }, [dragRect]);
+    }, [dragShape]);
 
     const doUndo = (): void => {
         modelRef.current?.undo();
@@ -2139,14 +2314,21 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     }}>
                         <div style={styles.sectionLabel}>SELECT</div>
                         <div style={styles.row3}>
-                            <IconButton icon='select_square' testid='tool-select'
-                                title='Select (Ctrl=toggle, Shift=add)'
+                            <IconButtonWithPopup<SelectShape>
+                                icon={SELECT_SHAPE_ICON[selectShape]}
+                                testid='tool-select'
+                                title={`${SELECT_SHAPE_TITLE[selectShape]} (Ctrl=toggle, Shift=add) – press & hold to change shape`}
                                 active={tool === 'select'}
+                                choices={SELECT_SHAPE_CHOICES}
                                 onClick={() => {
                                     setTool('select');
                                     setPendingBondAtom(null);
-                                    setStatus('select mode');
-                                }} />
+                                    setStatus(
+                                        `${SELECT_SHAPE_TITLE[selectShape].toLowerCase()} mode`,
+                                    );
+                                }}
+                                onPick={(v) => pickSelectShape(v)}
+                            />
                             <IconButton icon='select_move_rotate'
                                 testid='tool-move-rotate'
                                 title='Move and Rotate (drag from inside selection)'
