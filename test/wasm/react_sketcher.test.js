@@ -922,6 +922,110 @@ test.describe('React Sketcher', () => {
         await expect(page.getByTestId('save-image-modal')).toHaveCount(0);
     });
 
+    test('Configure View dropdown: lists Qt-fidelity toggles in Qt order with Qt defaults', async ({
+        page,
+    }) => {
+        // Qt's ConfigureViewMenu (menu/sketcher_top_bar_menus.cpp:109-128)
+        // exposes 4 checkable actions in this order, then a separator,
+        // then "Preferences..."; defaults from
+        // model/sketcher_model.cpp:230-233 are true/true/true/false.
+        await page.getByTestId('settings').click();
+        const menu = page.getByTestId('configure-view-menu');
+        await expect(menu).toBeVisible();
+        // Default-checked toggles show "✓"; unchecked is empty.
+        await expect(page.getByTestId('view-valence-errors'))
+            .toHaveAttribute('aria-checked', 'true');
+        await expect(page.getByTestId('view-color-heteroatoms'))
+            .toHaveAttribute('aria-checked', 'true');
+        await expect(page.getByTestId('view-stereo-labels'))
+            .toHaveAttribute('aria-checked', 'true');
+        await expect(page.getByTestId('view-implicit-hydrogens'))
+            .toHaveAttribute('aria-checked', 'false');
+        // Preferences is a plain action item (no aria-checked).
+        await expect(page.getByTestId('view-preferences')).toBeVisible();
+        // Clicking a toggle flips its state AND keeps the menu open so
+        // the user can toggle multiple items (Qt's QMenu does the same
+        // for non-exclusive checkable QActions).
+        await page.getByTestId('view-color-heteroatoms').click();
+        await expect(page.getByTestId('view-color-heteroatoms'))
+            .toHaveAttribute('aria-checked', 'false');
+        await expect(menu).toBeVisible();
+        // Preferences closes the menu and surfaces the coming-soon status
+        // (full RenderingSettingsDialog is its own batch).
+        await page.getByTestId('view-preferences').click();
+        await expect(page.getByTestId('configure-view-menu')).toHaveCount(0);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/Preferences/);
+    });
+
+    test('Configure View: turning Heteroatom Colors off renders nitrogen in the carbon mono color', async ({
+        page,
+    }) => {
+        // Seed a single nitrogen (pyrrole) so we have a heteroatom we can
+        // sample. With Heteroatom Colors ON, the canvas pixel under the
+        // atom should match the N color (#1f4faa); with it OFF, it
+        // should match the C color (#222). Pixel-sample via canvas
+        // .getImageData inside page.evaluate.
+        await page.getByTestId('import').click();
+        await page.getByTestId('import-paste-in-text').click();
+        await page.getByTestId('paste-text-input').fill('N');
+        await page.getByTestId('paste-text-load').click();
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].el).toBe('N');
+
+        const sampleAtomColor = async () => {
+            return await page.evaluate(() => {
+                const c = document.querySelector(
+                    '[data-testid="sketcher-canvas"]',
+                );
+                const ctx = c.getContext('2d');
+                // Atom is centered (single-atom mol → bbox center = view
+                // center) so sample at canvas center.
+                const w = c.width;
+                const h = c.height;
+                // The element label is drawn at the atom position;
+                // sampling a 5×5 window around center and picking the
+                // most-non-white pixel gets us the label ink even with
+                // sub-pixel AA.
+                const data = ctx.getImageData(
+                    Math.floor(w / 2) - 2,
+                    Math.floor(h / 2) - 2,
+                    5,
+                    5,
+                ).data;
+                let best = [255, 255, 255];
+                let bestDist = -1;
+                for (let i = 0; i < data.length; i += 4) {
+                    const r = data[i], g = data[i + 1], b = data[i + 2];
+                    const d = (255 - r) + (255 - g) + (255 - b);
+                    if (d > bestDist) {
+                        bestDist = d;
+                        best = [r, g, b];
+                    }
+                }
+                return best;
+            });
+        };
+
+        // With heteroatom colors ON (the default), the N label paints
+        // with the nitrogen blue (#1f4faa) — blue channel > red channel.
+        const [r1, , b1] = await sampleAtomColor();
+        expect(b1).toBeGreaterThan(r1);
+
+        // Turn the toggle off — N should now paint with the carbon
+        // mono color (#222) where R, G, B are roughly equal.
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-color-heteroatoms').click();
+        // Close the menu so subsequent canvas reads aren't covered by it.
+        // The menu uses absolute positioning so it shouldn't, but close
+        // it explicitly for clarity.
+        await page.getByTestId('settings').click();
+        const [r2, g2, b2] = await sampleAtomColor();
+        expect(Math.abs(r2 - b2)).toBeLessThan(20);
+        expect(Math.abs(r2 - g2)).toBeLessThan(20);
+    });
+
     test('SMILES Load parses input and Copy SMILES writes canonical form', async ({ page }) => {
         const input = page.getByTestId('smiles-input');
         await input.fill('c1ccccc1');
@@ -1286,12 +1390,13 @@ test.describe('React Sketcher', () => {
         // Several Qt-side widgets are present for visual fidelity but the
         // underlying action isn't wired yet (atom_query needs RDKit query
         // atoms, bond_query needs the same, R-group, attachment
-        // point, reaction, monomeric mode, settings, help). Import/Export
-        // open real menus now (Batch 12); Save Image opens its own dialog
-        // (Batch 13). All remaining stubs route through comingSoon() →
-        // setStatus(...) so users can tell the button is intentional
-        // rather than broken. (periodic-table opens a real popup in
-        // Batch 7; covered by its own tests.)
+        // point, reaction, monomeric mode, help). Import/Export open real
+        // menus now (Batch 12); Save Image opens its own dialog (Batch
+        // 13); Settings is the Configure View dropdown (Batch 14, covered
+        // by its own tests). All remaining stubs route through
+        // comingSoon() → setStatus(...) so users can tell the button is
+        // intentional rather than broken. (periodic-table opens a real
+        // popup in Batch 7; covered by its own tests.)
         const status = page.getByTestId('sketcher-status');
         const stubs = [
             ['atom-query', /Atom query/],
@@ -1300,7 +1405,6 @@ test.describe('React Sketcher', () => {
             ['attachment-point', /Attachment point/],
             ['reaction', /Reaction/],
             ['mode-monomeric', /Monomeric/],
-            ['settings', /Settings/],
             ['help', /Help/],
         ];
         for (const [testid, pattern] of stubs) {

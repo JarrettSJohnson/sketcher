@@ -264,6 +264,29 @@ const IMAGE_FORMAT_CHOICES: { value: ImageFormat; label: string;
 const IMAGE_SIZE_MIN = 1;
 const IMAGE_SIZE_MAX = 9999;
 
+// Configure-View options — mirrors Qt's ConfigureViewMenu (menu/
+// sketcher_top_bar_menus.cpp:109-128). The four toggles match Qt's
+// menu items 1:1; defaults match SketcherModel::initializeDefaults
+// (model/sketcher_model.cpp:230-233). Only `colorHeteroatoms` is wired
+// to the renderer today (gates ELEMENT_COLORS); the other three are
+// stored faithfully and reserved for future rendering hooks
+// (valence-error halo, stereo annotations, implicit-H labels on
+// carbons) once the lean MolModel exposes the underlying data — Qt
+// itself stores them even when the renderer hasn't yet consumed them,
+// which is the behavior the port matches.
+interface DisplayOptions {
+    showValenceErrors: boolean;
+    colorHeteroatoms: boolean;
+    showStereoLabels: boolean;
+    useImplicitHydrogens: boolean;
+}
+const DEFAULT_DISPLAY_OPTIONS: DisplayOptions = {
+    showValenceErrors: true,
+    colorHeteroatoms: true,
+    showStereoLabels: true,
+    useImplicitHydrogens: false,
+};
+
 interface DragShape {
     kind: SelectShape;
     startPx: number;
@@ -495,6 +518,7 @@ function drawSketch(
     dragShape: DragShape | null,
     rotationHandle: RotationHandle | null,
     chainDrag: ChainDrag | null,
+    displayOptions: DisplayOptions = DEFAULT_DISPLAY_OPTIONS,
 ): void {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -734,7 +758,13 @@ function drawSketch(
             ctx.fillStyle = 'white';
             ctx.fillRect(px - 9, py - 9, 18, 18);
         }
-        ctx.fillStyle = ELEMENT_COLORS[a.el] ?? '#333';
+        // ConfigureView "Heteroatom Colors" toggle. When OFF, every atom
+        // renders in the mono "carbon" color, matching Qt's behavior
+        // when COLOR_HETEROATOMS is unchecked (model/sketcher_model.cpp:
+        // 348-354 swaps the color scheme to the all-mono variant).
+        ctx.fillStyle = displayOptions.colorHeteroatoms
+            ? (ELEMENT_COLORS[a.el] ?? '#333')
+            : ELEMENT_COLORS.C;
         if (a.el === 'C' && a.sel && !isPending && !isHover && !hasCharge) {
             ctx.beginPath();
             ctx.arc(px, py, 2.5, 0, 2 * Math.PI);
@@ -970,6 +1000,17 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [imageWidth, setImageWidth] = useState<number>(400);
     const [imageHeight, setImageHeight] = useState<number>(400);
     const [imageTransparent, setImageTransparent] = useState<boolean>(false);
+    // Configure View dropdown (Qt's ConfigureViewMenu) — opens off the
+    // gear button in the top bar. Holds the four checkable toggles +
+    // the "Preferences..." action. Defaults mirror Qt
+    // (model/sketcher_model.cpp:230-233).
+    const [configureViewOpen, setConfigureViewOpen] = useState<boolean>(false);
+    const [displayOptions, setDisplayOptions] = useState<DisplayOptions>(
+        DEFAULT_DISPLAY_OPTIONS,
+    );
+    const toggleDisplayOption = (key: keyof DisplayOptions): void => {
+        setDisplayOptions((opt) => ({ ...opt, [key]: !opt[key] }));
+    };
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const bondModeRef = useRef<BondMode>('single');
     const [, bumpVersion] = useReducer((v: number) => v + 1, 0);
@@ -1231,6 +1272,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             dragShape,
             rotationHandle,
             chainDrag,
+            displayOptions,
         );
     });
 
@@ -2294,7 +2336,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         // drawSketch clearRects at the start, so anything we fill first
         // would be wiped. Instead let drawSketch paint on transparent, then
         // composite the background behind the strokes for the opaque case.
-        drawSketch(off, offView, rd, null, null, null, null, null);
+        drawSketch(off, offView, rd, null, null, null, null, null,
+            displayOptions);
         if (!imageTransparent) {
             const ctx = off.getContext('2d');
             if (ctx) {
@@ -2791,9 +2834,68 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         onChange={(e) => { void onImportFile(e); }}
                     />
                     <span style={styles.topDivider} />
-                    <IconButton icon='topbar_settings'
-                        onClick={() => comingSoon('Settings')}
-                        testid='settings' title='Settings' />
+                    {/* Configure View dropdown — Qt's ConfigureViewMenu
+                        (menu/sketcher_top_bar_menus.cpp:109-128). Same
+                        InstantPopup pattern as Import/Export. The gear
+                        icon (topbar_settings) was already the
+                        ConfigureView trigger in Qt
+                        (ui/sketcher_top_bar.ui:250). */}
+                    <div style={{ position: 'relative' }}
+                        data-testid='configure-view-wrapper'
+                        onMouseLeave={() => setConfigureViewOpen(false)}>
+                        <IconButton icon='topbar_settings'
+                            onClick={() => setConfigureViewOpen((v) => !v)}
+                            testid='settings' title='Configure View'
+                            active={configureViewOpen} />
+                        {configureViewOpen && (
+                            <div style={styles.moreMenu}
+                                data-testid='configure-view-menu'>
+                                <ToggleMenuItem
+                                    label='Valence Errors'
+                                    testid='view-valence-errors'
+                                    checked={displayOptions.showValenceErrors}
+                                    onToggle={() =>
+                                        toggleDisplayOption('showValenceErrors')
+                                    } />
+                                <ToggleMenuItem
+                                    label='Heteroatom Colors'
+                                    testid='view-color-heteroatoms'
+                                    checked={displayOptions.colorHeteroatoms}
+                                    onToggle={() =>
+                                        toggleDisplayOption('colorHeteroatoms')
+                                    } />
+                                <ToggleMenuItem
+                                    label='Stereo Labels'
+                                    testid='view-stereo-labels'
+                                    checked={displayOptions.showStereoLabels}
+                                    onToggle={() =>
+                                        toggleDisplayOption('showStereoLabels')
+                                    } />
+                                <ToggleMenuItem
+                                    label='Implicit Hydrogens'
+                                    testid='view-implicit-hydrogens'
+                                    checked={
+                                        displayOptions.useImplicitHydrogens
+                                    }
+                                    onToggle={() =>
+                                        toggleDisplayOption(
+                                            'useImplicitHydrogens',
+                                        )
+                                    } />
+                                <div style={styles.moreDivider} />
+                                {/* "Preferences..." opens the full
+                                    RenderingSettingsDialog in Qt. That
+                                    dialog has its own batch (font/line/
+                                    color-mode controls); stub for now. */}
+                                <MoreItem label='Preferences...'
+                                    testid='view-preferences'
+                                    onClick={() => {
+                                        setConfigureViewOpen(false);
+                                        comingSoon('Preferences');
+                                    }} />
+                            </div>
+                        )}
+                    </div>
                     <IconButton icon='topbar_help'
                         onClick={() => comingSoon('Help')}
                         testid='help' title='Help' />
@@ -3352,6 +3454,52 @@ function MoreItem({ label, onClick, testid }: MoreItemProps): JSX.Element {
             onMouseLeave={() => setHover(false)}
             data-testid={testid}
         >
+            {label}
+        </button>
+    );
+}
+
+// Checkable dropdown item — mirrors Qt's `QAction::setCheckable(true)` on
+// the four ConfigureViewMenu actions. A leading ✓ glyph appears when
+// `checked`; clicking flips state via `onToggle`. The menu stays open so
+// the user can toggle multiple items in one go, matching Qt's
+// InstantPopup + non-exclusive QAction behavior.
+interface ToggleMenuItemProps {
+    label: string;
+    checked: boolean;
+    onToggle: () => void;
+    testid: string;
+}
+
+function ToggleMenuItem({
+    label, checked, onToggle, testid,
+}: ToggleMenuItemProps): JSX.Element {
+    const [hover, setHover] = useState(false);
+    return (
+        <button
+            type='button'
+            role='menuitemcheckbox'
+            aria-checked={checked}
+            style={{
+                ...styles.moreItem,
+                ...(hover ? styles.moreItemHover : {}),
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+            }}
+            onClick={onToggle}
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
+            data-testid={testid}
+        >
+            <span style={{
+                width: 12,
+                display: 'inline-block',
+                color: '#3d5d71',
+                fontWeight: 700,
+            }}>
+                {checked ? '✓' : ''}
+            </span>
             {label}
         </button>
     );
