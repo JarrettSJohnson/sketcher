@@ -30,6 +30,12 @@ const LAST_PICKED_DEFAULT: Element = 'Si';
 // is visually faithful but picking a choice surfaces a coming-soon status
 // since the lean MolModel doesn't expose RDKit::QueryAtom yet.
 type AtomQueryChoice = 'A' | 'AH' | 'Q' | 'QH' | 'M' | 'MH' | 'X' | 'XH';
+// Bond-query popup choices — Qt ui/bond_query_popup.ui. 5 choices in a single
+// row (aromatic icon + 4 text variants). Same fidelity caveat as atom-query:
+// visually present but picking surfaces a coming-soon status (lean MolModel
+// doesn't expose RDKit::QueryBond yet).
+type BondQueryChoice = 'aromatic' | 'any' | 'single_double' | 'single_aromatic'
+    | 'double_aromatic';
 // Qt's bond_group is a single radio group covering single/double/triple plus
 // the stereo variants — picking any one button replaces the previously-active
 // bond mode. We mirror that here: BondMode collapses "what order is the next
@@ -939,6 +945,17 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         // built each render but the values never change.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    // Bond-query popup (Qt ui/bond_query_popup.ui). 5 choices in column
+    // order: aromatic (icon) / Any / S/D / S/A / D/A. Layout matches Qt
+    // exactly so the visual reads identically.
+    const BOND_QUERY_CHOICES: PopupChoice<BondQueryChoice>[] = [
+        { value: 'aromatic',        icon: 'bond_aromatic', title: 'Aromatic Bond',           testid: 'bond-query-popup-aromatic' },
+        { value: 'any',             label: 'Any',          title: 'Any Bond',                testid: 'bond-query-popup-any' },
+        { value: 'single_double',   label: 'S/D',          title: 'Single or Double Bond',   testid: 'bond-query-popup-single-double' },
+        { value: 'single_aromatic', label: 'S/A',          title: 'Single or Aromatic Bond', testid: 'bond-query-popup-single-aromatic' },
+        { value: 'double_aromatic', label: 'D/A',          title: 'Double or Aromatic Bond', testid: 'bond-query-popup-double-aromatic' },
+    ];
 
     const ATOM_QUERY_CHOICES: PopupChoice<AtomQueryChoice>[] = [
         { value: 'A',  label: 'A',  title: 'Any Heavy Atom',     testid: 'atom-query-popup-A' },
@@ -2488,9 +2505,15 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 pickBondModeApplying(v, bondModeTitle(v).toLowerCase());
                             }}
                         />
-                        <IconButton icon='bond_aromatic' testid='bond-query'
-                            title='Bond Query'
-                            onClick={() => comingSoon('Bond query popup')} />
+                        <IconButtonWithPopup<BondQueryChoice>
+                            icon='bond_aromatic'
+                            testid='bond-query'
+                            title='Bond Query – press & hold to change'
+                            active={false}
+                            choices={BOND_QUERY_CHOICES}
+                            onClick={() => comingSoon('Bond query (needs RDKit query bond support)')}
+                            onPick={(q) => comingSoon(`Bond query "${q.replace('_', '/')}" (needs RDKit query bond support)`)}
+                        />
                         <IconButton icon='bond_chain' testid='atom-chain'
                             title='Atom Chain'
                             onClick={() => comingSoon('Atom chain tool')} />

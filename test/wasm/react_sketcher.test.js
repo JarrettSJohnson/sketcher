@@ -1845,6 +1845,34 @@ test.describe('React Sketcher', () => {
         await expect(page.getByTestId('atom-query-popup')).toHaveCount(0);
     });
 
+    test('bond-query popup: long-press exposes aromatic/Any/S-D/S-A/D-A; pick still surfaces coming-soon (query bonds need RDKit support)', async ({
+        page,
+    }) => {
+        // Qt BondQueryPopup renders 5 choices in a horizontal row: aromatic
+        // (icon) / Any / S/D / S/A / D/A. RDKit::QueryBond isn't in the lean
+        // MolModel yet, so picks should route through comingSoon().
+        const status = page.getByTestId('sketcher-status');
+        const bondQueryBtn = page.getByTestId('bond-query');
+
+        await bondQueryBtn.hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await expect(page.getByTestId('bond-query-popup')).toBeVisible();
+
+        // All 5 choices present.
+        for (const v of ['aromatic', 'any', 'single-double', 'single-aromatic',
+                         'double-aromatic']) {
+            await expect(page.getByTestId(`bond-query-popup-${v}`)).toBeVisible();
+        }
+        await page.mouse.up();
+
+        // Pick "S/D" — status surfaces the pick + coming-soon-ness.
+        await page.getByTestId('bond-query-popup-single-double').click();
+        await expect(status).toContainText(/single\/double/i);
+        await expect(status).toContainText(/query bond/i);
+        await expect(page.getByTestId('bond-query-popup')).toHaveCount(0);
+    });
+
     test('select popup: long-press exposes rect/lasso/ellipse choices', async ({
         page,
     }) => {
