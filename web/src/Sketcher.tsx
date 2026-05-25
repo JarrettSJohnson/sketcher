@@ -1335,6 +1335,47 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         pendingRef.current = pendingBondAtom;
     }, [pendingBondAtom]);
 
+    // Wrapper refs for the 5 top-bar dropdowns. Used by the outside-click
+    // effect below — clicks outside the wrapper close the menu, but mouse
+    // motion does not (Qt menus don't auto-dismiss on mouse-leave).
+    const moreMenuWrapperRef = useRef<HTMLDivElement | null>(null);
+    const importMenuWrapperRef = useRef<HTMLDivElement | null>(null);
+    const exportMenuWrapperRef = useRef<HTMLDivElement | null>(null);
+    const configureViewWrapperRef = useRef<HTMLDivElement | null>(null);
+    const helpMenuWrapperRef = useRef<HTMLDivElement | null>(null);
+    useEffect(() => {
+        if (!moreMenuOpen && !importMenuOpen && !exportMenuOpen
+            && !configureViewOpen && !helpMenuOpen) return;
+        function onDocMouseDown(e: globalThis.MouseEvent): void {
+            const t = e.target as Node;
+            if (moreMenuOpen && moreMenuWrapperRef.current
+                && !moreMenuWrapperRef.current.contains(t)) {
+                setMoreMenuOpen(false);
+            }
+            if (importMenuOpen && importMenuWrapperRef.current
+                && !importMenuWrapperRef.current.contains(t)) {
+                setImportMenuOpen(false);
+            }
+            if (exportMenuOpen && exportMenuWrapperRef.current
+                && !exportMenuWrapperRef.current.contains(t)) {
+                setExportMenuOpen(false);
+            }
+            if (configureViewOpen && configureViewWrapperRef.current
+                && !configureViewWrapperRef.current.contains(t)) {
+                setConfigureViewOpen(false);
+            }
+            if (helpMenuOpen && helpMenuWrapperRef.current
+                && !helpMenuWrapperRef.current.contains(t)) {
+                setHelpMenuOpen(false);
+            }
+        }
+        document.addEventListener('mousedown', onDocMouseDown);
+        return () => {
+            document.removeEventListener('mousedown', onDocMouseDown);
+        };
+    }, [moreMenuOpen, importMenuOpen, exportMenuOpen, configureViewOpen,
+        helpMenuOpen]);
+
     const onCanvasClick = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
             if (suppressNextClickRef.current) {
@@ -2170,6 +2211,37 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         }
         await writeToClipboard(mb, 'MOL V3000');
     };
+    const doPaste = async (): Promise<void> => {
+        // Qt's sketcher_widget.cpp:676 routes clipboard text through
+        // addTextToMolModel with AUTO_DETECT — the same flat list
+        // loadFromText already handles. Single undo step (the paste).
+        const model = modelRef.current;
+        if (!model) return;
+        let text: string;
+        try {
+            text = await navigator.clipboard.readText();
+        } catch {
+            setStatus('paste failed — clipboard access denied');
+            return;
+        }
+        if (!text.trim()) {
+            setStatus('clipboard is empty');
+            return;
+        }
+        try {
+            model.loadFromText(text);
+            setPendingBondAtom(null);
+            const kind = text.includes('\n') ||
+                text.includes('V2000') ||
+                text.includes('V3000')
+                ? 'MOL'
+                : 'SMILES';
+            setStatus(`pasted ${kind} (${model.numAtoms()} atoms)`);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            setStatus(`paste failed: ${msg || 'unrecognized format'}`);
+        }
+    };
 
     // Import-from-File: programmatically open the hidden <input type=file>
     // and pipe the chosen file's text through loadFromText. Qt opens a
@@ -2578,14 +2650,19 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 void doCopyMolBlockV3000();
                 return;
             }
-            if (mod && (lower === 'x' || lower === 'v')) {
-                // Cut needs a model.toMolBlockForSelection + removeSelected
-                // primitive (Qt: sketcher_widget.cpp:561-564); Paste needs
-                // clipboard-read + AUTO_DETECT routed through loadFromText.
-                // Both deferred to a follow-up batch.
+            if (mod && lower === 'v') {
+                // Qt's sketcher_widget.cpp:676 routes paste through
+                // addTextToMolModel with AUTO_DETECT.
                 e.preventDefault();
-                const which = lower === 'x' ? 'Cut' : 'Paste';
-                comingSoon(which);
+                void doPaste();
+                return;
+            }
+            if (mod && lower === 'x') {
+                // Cut needs a model.toMolBlockForSelection (selection-aware
+                // export) + removeSelected primitive (Qt:
+                // sketcher_widget.cpp:561-564). Deferred to a follow-up.
+                e.preventDefault();
+                comingSoon('Cut');
                 return;
             }
 
@@ -2803,9 +2880,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         testid='fit-to-screen' title='Fit to Screen' />
                     <IconButton icon='topbar_cleanup' onClick={doCleanUp}
                         testid='clean-up' title='Clean Up' />
-                    <div style={{ position: 'relative' }}
-                        data-testid='more-actions-wrapper'
-                        onMouseLeave={() => setMoreMenuOpen(false)}>
+                    <div ref={moreMenuWrapperRef}
+                        style={{ position: 'relative' }}
+                        data-testid='more-actions-wrapper'>
                         <IconButton icon='topbar_more_actions'
                             onClick={() => setMoreMenuOpen((v) => !v)}
                             testid='more-actions-btn'
@@ -2823,9 +2900,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         ImportMenu/ExportMenu (menu/sketcher_top_bar_menus.cpp).
                         InstantPopup-style: click opens the menu under the
                         button. */}
-                    <div style={{ position: 'relative' }}
-                        data-testid='import-wrapper'
-                        onMouseLeave={() => setImportMenuOpen(false)}>
+                    <div ref={importMenuWrapperRef}
+                        style={{ position: 'relative' }}
+                        data-testid='import-wrapper'>
                         <IconButton icon='topbar_import'
                             onClick={() => setImportMenuOpen((v) => !v)}
                             testid='import' title='Import'
@@ -2842,9 +2919,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             </div>
                         )}
                     </div>
-                    <div style={{ position: 'relative' }}
-                        data-testid='export-wrapper'
-                        onMouseLeave={() => setExportMenuOpen(false)}>
+                    <div ref={exportMenuWrapperRef}
+                        style={{ position: 'relative' }}
+                        data-testid='export-wrapper'>
                         <IconButton icon='topbar_export'
                             onClick={() => setExportMenuOpen((v) => !v)}
                             testid='export' title='Export'
@@ -2880,9 +2957,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         icon (topbar_settings) was already the
                         ConfigureView trigger in Qt
                         (ui/sketcher_top_bar.ui:250). */}
-                    <div style={{ position: 'relative' }}
-                        data-testid='configure-view-wrapper'
-                        onMouseLeave={() => setConfigureViewOpen(false)}>
+                    <div ref={configureViewWrapperRef}
+                        style={{ position: 'relative' }}
+                        data-testid='configure-view-wrapper'>
                         <IconButton icon='topbar_settings'
                             onClick={() => setConfigureViewOpen((v) => !v)}
                             testid='settings' title='Configure View'
@@ -2940,9 +3017,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         sketcher_top_bar_menus.cpp:130-151). Same
                         InstantPopup pattern as Import/Export/Configure
                         View. */}
-                    <div style={{ position: 'relative' }}
-                        data-testid='help-wrapper'
-                        onMouseLeave={() => setHelpMenuOpen(false)}>
+                    <div ref={helpMenuWrapperRef}
+                        style={{ position: 'relative' }}
+                        data-testid='help-wrapper'>
                         <IconButton icon='topbar_help'
                             onClick={() => setHelpMenuOpen((v) => !v)}
                             testid='help' title='Help'

@@ -21,15 +21,9 @@ async function snapshot(page) {
 
 // Loads a SMILES (or MOL block) into the sketch via the Qt-fidelity
 // Import → Paste in Text modal — the only text-entry path Qt exposes.
-//
-// The .hover() before .click() pins the cursor on the menu item so the
-// wrapper's onMouseLeave-close doesn't fire mid-click (otherwise the menu
-// item detaches from the DOM during Playwright's stability check).
 async function loadText(page, text) {
     await page.getByTestId('import').click();
-    const item = page.getByTestId('import-paste-in-text');
-    await item.hover();
-    await item.click();
+    await page.getByTestId('import-paste-in-text').click();
     await page.getByTestId('paste-text-input').fill(text);
     await page.getByTestId('paste-text-load').click();
 }
@@ -1190,6 +1184,63 @@ test.describe('React Sketcher', () => {
             .toContainText(/nothing to copy/);
     });
 
+    test('Ctrl+V pastes SMILES from the clipboard via AUTO_DETECT (single undo)', async ({ page }) => {
+        // Qt's sketcher_widget.cpp:676 routes clipboard text through
+        // addTextToMolModel(text, AUTO_DETECT) — loadFromText matches.
+        await page.evaluate(() => navigator.clipboard.writeText('CCO'));
+        const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+        await page.keyboard.press(`${modifier}+v`);
+        let rd = await snapshot(page);
+        expect(rd.atoms.map((a) => a.el)).toEqual(['C', 'C', 'O']);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/pasted SMILES/);
+        // Single undo unwinds the paste.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(0);
+    });
+
+    test('Ctrl+V pastes a V2000 MOL block from the clipboard', async ({ page }) => {
+        // Round-trip benzene → V2000 → clipboard → Ctrl+V. Verifies the
+        // AUTO_DETECT path handles MOL blocks (the historical leading-
+        // newline trap from the old SMILES bar test still applies here
+        // — clipboard.writeText preserves the leading \n).
+        const molBlock = await page.evaluate(() => {
+            const m = new window.Module.MolModel();
+            m.loadFromSmiles('c1ccccc1');
+            const mb = m.toMolBlock(false);
+            m.delete();
+            return mb;
+        });
+        await page.evaluate(
+            (mb) => navigator.clipboard.writeText(mb),
+            molBlock,
+        );
+        const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+        await page.keyboard.press(`${modifier}+v`);
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(6);
+        expect(rd.bonds).toHaveLength(6);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/pasted MOL/);
+    });
+
+    test('Ctrl+V with an empty clipboard surfaces a friendly status, no model change', async ({ page }) => {
+        await page.evaluate(() => navigator.clipboard.writeText(''));
+        // Seed one atom so we can assert the paste no-op leaves it alone.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 200 } });
+        const before = await snapshot(page);
+        expect(before.atoms).toHaveLength(1);
+
+        const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+        await page.keyboard.press(`${modifier}+v`);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/clipboard is empty/);
+        const after = await snapshot(page);
+        expect(after.atoms).toHaveLength(1);
+    });
+
     test('charge +/- buttons adjust selected-atom formal charge', async ({ page }) => {
         const canvas = page.getByTestId('sketcher-canvas');
         await page.getByTestId('element-N').click();
@@ -1758,7 +1809,7 @@ test.describe('React Sketcher', () => {
         expect(rd.atoms[0].q).toBe(-1);
     });
 
-    test('stub shortcuts (Ctrl+X/C/V, 0 bond) surface a status; D/T without selection surfaces a friendly hint', async ({
+    test('stub shortcuts (Ctrl+X, 0 bond) surface a status; D/T without selection surfaces a friendly hint', async ({
         page,
     }) => {
         const status = page.getByTestId('sketcher-status');
@@ -1771,11 +1822,11 @@ test.describe('React Sketcher', () => {
         // now wired through setSelectedAtomsToHydrogenIsotope, but with no
         // selection they surface a "select atoms first" status that still
         // mentions Deuterium / Tritium so users can tell what the shortcut
-        // would do. Ctrl+C was a stub before batch 16 — now wired to copy
-        // as MOL V3000 (Qt's CutCopyActionManager default).
+        // would do. Ctrl+C was a stub before batch 16 (now copies as MOL
+        // V3000); Ctrl+V was a stub before batch 17 (now pastes via
+        // clipboard-read + AUTO_DETECT).
         const checks = [
             ['ControlOrMeta+x', /Cut/],
-            ['ControlOrMeta+v', /Paste/],
             ['d', /Deuterium.*select atoms first/],
             ['t', /Tritium.*select atoms first/],
             ['0', /Zero bond/],
