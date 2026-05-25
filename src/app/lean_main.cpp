@@ -19,12 +19,15 @@
 #include <GraphMol/Atom.h>
 #include <GraphMol/Bond.h>
 #include <GraphMol/Chirality.h>
+#include <GraphMol/CIPLabeler/CIPLabeler.h>
 #include <GraphMol/Conformer.h>
+#include <GraphMol/MolOps.h>
 #include <GraphMol/RWMol.h>
 
 #include "schrodinger/rdkit_extensions/convert.h"
 #include "schrodinger/rdkit_extensions/coord_utils.h"
 #include "schrodinger/rdkit_extensions/file_format.h"
+#include "schrodinger/rdkit_extensions/stereochemistry.h"
 
 #include "schrodinger/sketcher_core/mol_model.h"
 #include "schrodinger/sketcher_core/observer.h"
@@ -39,6 +42,104 @@ using schrodinger::rdkit_extensions::Format;
 using schrodinger::rdkit_extensions::to_rdkit;
 
 /**
+ * Compute the per-atom chirality label for `atom`, mirroring Qt's
+ * get_atom_chirality_label (sketcher/rdkit/stereochemistry.cpp:37-66).
+ * Reads RDKit::common_properties::atomNote (set by addStereoAnnotations)
+ * and strips the leading ABSOLUTE_STEREO_PREFIX so "abs (R)" renders as
+ * "(R)" — matches Qt's default explicit_abs_labels_shown=false. Returns
+ * empty string when there's no label.
+ */
+std::string atom_chirality_label(const RDKit::Atom& atom)
+{
+    std::string label;
+    if (!atom.getPropIfPresent<std::string>(RDKit::common_properties::atomNote,
+                                            label)) {
+        return "";
+    }
+    const auto& abs_prefix =
+        schrodinger::rdkit_extensions::ABSOLUTE_STEREO_PREFIX;
+    if (label.find(abs_prefix) == 0) {
+        label = label.substr(abs_prefix.size());
+    }
+    return label;
+}
+
+/**
+ * Run the stereo-perception pipeline that populates per-atom CIP labels:
+ *   1. assignStereochemistry — perceives chirality from bond dirs + coords
+ *   2. CIPLabeler::assignCIPLabels — computes R/S codes
+ *   3. Chirality::addStereoAnnotations — writes "(R)" / "(S)" / etc. to
+ *      RDKit::common_properties::atomNote on each chiral atom
+ *
+ * Mirrors Qt's update_molecule_on_change (rdkit/mol_update.cpp:236-298),
+ * minus the StereoGroup / sgroup machinery the lean bundle doesn't surface.
+ * Swallows CIPLabeler exceptions (matches Qt) so a timeout on a single
+ * problem mol doesn't blank the whole render.
+ */
+void apply_stereo_annotations(RDKit::RWMol& mol)
+{
+    if (mol.getNumAtoms() == 0) {
+        return;
+    }
+    // assignStereochemistry(cleanIt=true) wipes user-set wedge/dash/wavy
+    // bond directions when no stereo center is detected on the endpoint
+    // (e.g. wedge dragged onto a non-stereo bond). Snapshot the dirs first
+    // so we can restore the user-visible ones afterward. Mirrors Qt's
+    // assign_stereochemistry_with_bond_directions_and_coordinates
+    // (rdkit/mol_update.cpp:95-152).
+    std::vector<RDKit::Bond::BondDir> saved_dirs;
+    saved_dirs.reserve(mol.getNumBonds());
+    for (auto bond : mol.bonds()) {
+        saved_dirs.push_back(bond->getBondDir());
+    }
+    try {
+        RDKit::MolOps::assignStereochemistry(mol, /*cleanIt=*/true,
+                                             /*force=*/true,
+                                             /*flagPossibleStereoCenters=*/true);
+    } catch (...) {
+    }
+    // Restore the four directions the canvas/SVG renderers special-case.
+    // ENDDOWNRIGHT/ENDUPRIGHT (parser-internal markers) are left as
+    // assignStereochemistry produced them.
+    auto dir_it = saved_dirs.begin();
+    for (auto bond : mol.bonds()) {
+        const auto saved = *dir_it++;
+        if (saved == RDKit::Bond::BondDir::BEGINWEDGE ||
+            saved == RDKit::Bond::BondDir::BEGINDASH ||
+            saved == RDKit::Bond::BondDir::EITHERDOUBLE ||
+            saved == RDKit::Bond::BondDir::UNKNOWN) {
+            bond->setBondDir(saved);
+        }
+    }
+    try {
+        // 2,000,000 matches Qt's SHARED-11140 limit so equivalent inputs
+        // produce equivalent labels across the two builds.
+        constexpr unsigned MAX_CYCLES = 2000000;
+        RDKit::CIPLabeler::assignCIPLabels(mol, MAX_CYCLES);
+    } catch (...) {
+    }
+    // addStereoAnnotations doesn't clear existing notes — wipe first so
+    // a stale label from a previous mutation can't survive into the next
+    // render description.
+    for (auto atom : mol.atoms()) {
+        atom->clearProp(RDKit::common_properties::atomNote);
+    }
+    try {
+        // Match Qt's label format strings (rdkit/mol_update.cpp:280-283).
+        // {cip} gets replaced with the actual R/S code by addStereoAnnotations.
+        const std::string abs_label =
+            schrodinger::rdkit_extensions::ABSOLUTE_STEREO_PREFIX + "({cip})";
+        const std::string or_label =
+            schrodinger::rdkit_extensions::OR_STEREO_PREFIX + "{id}";
+        const std::string and_label =
+            schrodinger::rdkit_extensions::AND_STEREO_PREFIX + "{id}";
+        RDKit::Chirality::addStereoAnnotations(mol, abs_label, or_label,
+                                               and_label);
+    } catch (...) {
+    }
+}
+
+/**
  * Serialize an RDKit mol to the JSON render description shape expected by
  * lean.html and Playwright. The caller is responsible for ensuring `mol` has
  * a conformer — typically by calling compute2DCoords first for parsed mols,
@@ -46,14 +147,20 @@ using schrodinger::rdkit_extensions::to_rdkit;
  *
  * When `model` is non-null, atoms and bonds carry a `"sel": true` flag when
  * they're in the model's selection set. Parsed-from-SMILES callers pass null.
+ *
+ * Takes mol by non-const reference: apply_stereo_annotations writes
+ * RDKit::common_properties::atomNote into the mol so we can read R/S
+ * labels back out alongside the position/element data. The mutations are
+ * idempotent — calling again with the same mol produces the same labels.
  */
 std::string mol_to_render_description(
-    const RDKit::RWMol& mol,
+    RDKit::RWMol& mol,
     const schrodinger::sketcher_core::MolModel* model = nullptr)
 {
     if (mol.getNumAtoms() == 0) {
         return R"({"atoms":[],"bonds":[]})";
     }
+    apply_stereo_annotations(mol);
     const auto& conf = mol.getConformer();
 
     std::ostringstream os;
@@ -94,6 +201,33 @@ std::string mol_to_render_description(
         }
         if (atom->getIsAromatic()) {
             os << ",\"arom\":true";
+        }
+        // Valence violation (Qt: AtomItem::determineValenceErrorIsVisible).
+        // Cheap call once the property cache is current (every caller
+        // refreshes via updatePropertyCache before reaching this serializer).
+        try {
+            if (atom->hasValenceViolation()) {
+                os << ",\"verr\":true";
+            }
+        } catch (...) {
+            // hasValenceViolation can throw if the cache hasn't been
+            // refreshed yet (rare given our invariants) — treat that as
+            // "no violation known" rather than aborting the whole render.
+        }
+        // Stereo label (R/S/r/s + enhanced-stereo group ids). Empty for
+        // achiral atoms — omit the key in that case to keep JSON small.
+        const std::string stereo = atom_chirality_label(*atom);
+        if (!stereo.empty()) {
+            os << ",\"stereo\":\"";
+            // Stereo labels are short ASCII (e.g. "(R)", "(S)", "or1")
+            // so plain backslash-escaping for the JSON specials is enough.
+            for (char c : stereo) {
+                if (c == '"' || c == '\\') {
+                    os << '\\';
+                }
+                os << c;
+            }
+            os << '"';
         }
         if (model != nullptr && model->isAtomSelected(i)) {
             os << ",\"sel\":true";
@@ -471,7 +605,12 @@ class MolModelJS
 
     std::string description() const
     {
-        return mol_to_render_description(m_model.mol(), &m_model);
+        // mol_to_render_description writes stereo annotations into the
+        // mol via addStereoAnnotations — copy the model's mol first so
+        // the model itself stays unchanged (snapshots are by value, so
+        // the labels would otherwise leak into the undo history).
+        RDKit::RWMol mol_copy(m_model.mol());
+        return mol_to_render_description(mol_copy, &m_model);
     }
 
     Signal<>& modelChangedSignal()

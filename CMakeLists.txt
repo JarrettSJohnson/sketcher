@@ -378,7 +378,8 @@ if(EMSCRIPTEN)
     -sDISABLE_EXCEPTION_CATCHING=0
     -sEXPORT_EXCEPTION_HANDLING_HELPERS)
   target_link_libraries(
-    ${LEAN_APP_TARGET} PRIVATE Boost::filesystem ${SKETCHER_CORE_TARGET}
+    ${LEAN_APP_TARGET} PRIVATE Boost::filesystem RDKit::CIPLabeler
+                               ${SKETCHER_CORE_TARGET}
                                ${RDKIT_EXTENSIONS_TARGET})
   add_custom_target(
     update_lean_wasm_files ALL

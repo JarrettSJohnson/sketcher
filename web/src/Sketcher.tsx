@@ -89,6 +89,15 @@ interface AtomDesc {
     nh?: number; // total H count (omitted when 0)
     iso?: number; // isotope (omitted when 0)
     arom?: boolean; // aromatic flag (omitted when false)
+    // Valence violation — drives the orange dotted halo when the user
+    // has Show Valence Errors enabled. Qt: AtomItem::determineValenceErrorIsVisible
+    // (molviewer/atom_item.cpp:853-856).
+    verr?: boolean;
+    // Stereo / chirality annotation — "(R)", "(S)", "(r)", "(s)", "or1",
+    // "and1", or "abs (R)" when explicit abs labels are shown. Drives the
+    // small label drawn near the atom when Show Stereo Labels is enabled.
+    // Qt: AtomItem::updateChiralityLabel (molviewer/atom_item.cpp:417-449).
+    stereo?: string;
 }
 interface BondDesc {
     a: number;
@@ -733,6 +742,30 @@ function drawSketch(
     ctx.font = '13px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    // Valence-error halos: orange dotted ellipse drawn *under* the atom
+    // labels so the label sits on top. Qt paints these inside AtomItem::paint
+    // before the main label (molviewer/atom_item.cpp:750-758). The colors
+    // and ~3px padding come from molviewer/constants.h:177-232.
+    if (displayOptions.showValenceErrors) {
+        ctx.save();
+        ctx.strokeStyle = '#fb7100';
+        ctx.fillStyle = '#ffecc5';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([1, 3]);
+        ctx.lineCap = 'round';
+        for (const a of rd.atoms) {
+            if (!a.verr) continue;
+            const { px, py } = pixelFromModel(canvas, view, a.x, a.y);
+            // 13 = atom-label half-width (matches the 13px-radius selection
+            // halo) + the 3-px area border Qt uses on m_main_label_rect.
+            const r = 13;
+            ctx.beginPath();
+            ctx.ellipse(px, py, r, r, 0, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
     for (const a of rd.atoms) {
         const { px, py } = pixelFromModel(canvas, view, a.x, a.y);
         const isPending = pendingAtomIdx === a.i;
@@ -828,6 +861,35 @@ function drawSketch(
                 ctx.font = '13px sans-serif';
             }
         }
+    }
+
+    // Stereo labels: small text drawn just past the atom toward an empty
+    // wedge of space around it. Qt uses CHIRALITY_LABEL_DISTANCE_RATIO=0.10
+    // of the bond length plus the label's half-diagonal so the label sits
+    // a fixed distance from the atom regardless of font size
+    // (molviewer/atom_item.cpp:434-448). For a 2D sketcher with our
+    // ~40px-per-unit scale, ~16px offset reads at roughly the same gap.
+    if (displayOptions.showStereoLabels) {
+        ctx.save();
+        ctx.font = '10px sans-serif';
+        ctx.fillStyle = '#333333';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        for (const a of rd.atoms) {
+            if (!a.stereo) continue;
+            const { px, py } = pixelFromModel(canvas, view, a.x, a.y);
+            // Pick a direction away from the centroid so the label
+            // doesn't sit on top of the bond lines pointing inward.
+            const dx = a.x - centroidX;
+            const dy = a.y - centroidY;
+            const len = Math.hypot(dx, dy) || 1;
+            const offset = 16;
+            // Flip dy sign — model y is up, pixel y is down.
+            const lx = px + (dx / len) * offset;
+            const ly = py - (dy / len) * offset;
+            ctx.fillText(a.stereo, lx, ly);
+        }
+        ctx.restore();
     }
 
     if (dragShape) {
@@ -1122,6 +1184,19 @@ function buildSketchSvg(
         }
     }
 
+    // Valence-error halos render under the atom labels — mirror the canvas
+    // (drawSketch) ordering so the SVG looks identical.
+    if (displayOptions.showValenceErrors) {
+        for (const a of rd.atoms) {
+            if (!a.verr) continue;
+            const { px: ax, py: ay } = px(a.x, a.y);
+            parts.push(
+                `<ellipse cx='${f(ax)}' cy='${f(ay)}' rx='13' ry='13' ` +
+                `fill='#ffecc5' stroke='#fb7100' stroke-width='2' ` +
+                `stroke-dasharray='1,3' stroke-linecap='round'/>`,
+            );
+        }
+    }
     for (const a of rd.atoms) {
         const { px: ax, py: ay } = px(a.x, a.y);
         if (a.sel) {
@@ -1209,6 +1284,26 @@ function buildSketchSvg(
                     `${esc(chargeText)}</text>`,
                 );
             }
+        }
+    }
+    // Stereo labels — same direction-from-centroid pick as drawSketch so
+    // the SVG and the canvas place the label in matching positions.
+    if (displayOptions.showStereoLabels) {
+        for (const a of rd.atoms) {
+            if (!a.stereo) continue;
+            const { px: ax, py: ay } = px(a.x, a.y);
+            const dx = a.x - centroidX;
+            const dy = a.y - centroidY;
+            const len = Math.hypot(dx, dy) || 1;
+            const offset = 16;
+            const lx = ax + (dx / len) * offset;
+            const ly = ay - (dy / len) * offset;
+            parts.push(
+                `<text x='${f(lx)}' y='${f(ly)}' fill='#333333' ` +
+                `font-family='sans-serif' font-size='10' ` +
+                `text-anchor='middle' dominant-baseline='central'>` +
+                `${esc(a.stereo)}</text>`,
+            );
         }
     }
     parts.push('</svg>');

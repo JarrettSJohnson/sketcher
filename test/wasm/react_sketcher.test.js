@@ -1231,6 +1231,98 @@ test.describe('React Sketcher', () => {
         expect(Math.abs(r2 - g2)).toBeLessThan(20);
     });
 
+    test('Configure View: Show Valence Errors paints an orange dotted halo on hypervalent atoms', async ({
+        page,
+    }) => {
+        // Qt's AtomItem::determineValenceErrorIsVisible (atom_item.cpp:853-856)
+        // gates the orange halo on m_settings.m_valence_errors_shown &&
+        // atom->hasValenceViolation(). N with 5 double bonds → 10 bonds of
+        // valence on a 3-valent element triggers the violation. The halo
+        // is #fb7100 (border) on #ffecc5 (fill); we assert the render
+        // description carries verr=true AND that an orange pixel appears
+        // under the atom when the toggle is on, then disappears when off.
+        await loadText(page, '[N](=O)(=O)(=O)=O');
+        const rd = await snapshot(page);
+        const nAtom = rd.atoms.find((a) => a.el === 'N');
+        expect(nAtom.verr).toBe(true);
+        const sampleHaloOrange = async () => {
+            return await page.evaluate(() => {
+                const c = document.querySelector(
+                    '[data-testid="sketcher-canvas"]',
+                );
+                const ctx = c.getContext('2d');
+                // The halo is drawn around the centered N atom — sample a
+                // ring ~13px from the center (the halo's radius). Return
+                // true if ANY sampled pixel is the warm orange shade
+                // (#fb7100 ≈ R>200, G~110, B<60).
+                const cx = Math.floor(c.width / 2);
+                const cy = Math.floor(c.height / 2);
+                for (let dr = 11; dr <= 15; ++dr) {
+                    for (let a = 0; a < 360; a += 15) {
+                        const rad = (a * Math.PI) / 180;
+                        const x = Math.round(cx + dr * Math.cos(rad));
+                        const y = Math.round(cy + dr * Math.sin(rad));
+                        const d = ctx.getImageData(x, y, 1, 1).data;
+                        if (d[0] > 200 && d[1] < 160 && d[1] > 50 && d[2] < 80) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            });
+        };
+        expect(await sampleHaloOrange()).toBe(true);
+        // Toggle off → halo disappears.
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-valence-errors').click();
+        await page.getByTestId('settings').click();
+        expect(await sampleHaloOrange()).toBe(false);
+    });
+
+    test('Configure View: Show Stereo Labels paints "(R)" / "(S)" near the chiral atom and SVG export honors the toggle', async ({
+        page,
+    }) => {
+        // Qt's AtomItem::updateChiralityLabel (atom_item.cpp:417-449) reads
+        // RDKit::common_properties::atomNote (populated by Chirality::
+        // addStereoAnnotations after CIPLabeler runs) and draws it as a
+        // small text label offset from the atom. The port mirrors the same
+        // pipeline in lean_main.cpp::apply_stereo_annotations and emits
+        // the resulting label as stereo:"(R)" / "(S)" on the render desc.
+        await loadText(page, 'F[C@H](Cl)Br');
+        const rd = await snapshot(page);
+        const cAtom = rd.atoms.find((a) => a.el === 'C');
+        expect(cAtom.stereo).toMatch(/\(R\)|\(S\)/);
+
+        // Save SVG with the toggle ON → SVG body must contain a <text>
+        // node with the (R)/(S) label.
+        const fs = await import('node:fs/promises');
+        const saveAndReadSvg = async () => {
+            await page.getByTestId('export').click();
+            await page.getByTestId('export-save-image').click();
+            await page.getByTestId('save-image-format-select').selectOption('svg');
+            const downloadPromise = page.waitForEvent('download');
+            await page.getByTestId('save-image-save').click();
+            const download = await downloadPromise;
+            const path = await download.path();
+            const body = await fs.readFile(path, 'utf8');
+            return body;
+        };
+        const svgOn = await saveAndReadSvg();
+        expect(svgOn).toMatch(/<text [^>]*>\(R\)<\/text>|<text [^>]*>\(S\)<\/text>/);
+
+        // Toggle off → render desc still carries the label (the toggle
+        // gates the *paint*, not the perception), but the SVG must NOT
+        // contain a (R)/(S) text node.
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-stereo-labels').click();
+        await page.getByTestId('settings').click();
+        const rdAfter = await snapshot(page);
+        expect(rdAfter.atoms.find((a) => a.el === 'C').stereo)
+            .toBe(cAtom.stereo);
+        const svgOff = await saveAndReadSvg();
+        expect(svgOff).not.toMatch(/<text [^>]*>\(R\)<\/text>|<text [^>]*>\(S\)<\/text>/);
+    });
+
     test('Help menu: dropdown shows three items in Qt order (Help / Getting Started / About)', async ({
         page,
     }) => {
