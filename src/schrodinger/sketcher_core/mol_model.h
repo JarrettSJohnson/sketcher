@@ -149,6 +149,18 @@ class MolModel : public UndoableModel
     void addRing(unsigned int size, double cx, double cy, bool aromatic);
 
     /**
+     * Add a chain of carbon atoms at the given 2D positions, single-bonded in
+     * order. When `bound_to_atom_idx` is a valid existing atom index, the
+     * first new atom is single-bonded to it (extending the chain off an
+     * existing structure). Pass -1 for a free-standing chain. Mirrors Qt's
+     * `DrawChainSceneTool::onLeftButtonDragRelease` (`tool/draw_chain_scene_tool.cpp:74-89`),
+     * which calls `MolModel::addAtomChain(Element::C, coords, start_atom)`.
+     * Single undo step. No-op when `xs` is empty or xs/ys lengths mismatch.
+     */
+    void addAtomChain(const std::vector<double>& xs,
+                      const std::vector<double>& ys, int bound_to_atom_idx);
+
+    /**
      * Add `delta` to the formal charge of every selected atom in a single
      * undoable command. Preserves the selection (charge edits don't reindex).
      * Refreshes the implicit-H cache so render description picks up the new

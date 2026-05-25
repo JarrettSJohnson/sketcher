@@ -691,6 +691,60 @@ test.describe('React Sketcher', () => {
         expect(doubles).toBe(0);
     });
 
+    test('atom-chain tool draws a free-standing zig-zag chain bonded in order', async ({
+        page,
+    }) => {
+        // Qt DrawChainSceneTool: drag from empty area lays down N+1 carbons
+        // (zig-zag, 30° angle-rounded) connected by N single bonds, one
+        // undo step. We just check the structural outcome — N atoms, N-1
+        // bonds, all carbons, all single, undo restores.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('atom-chain').click();
+        const box = await canvas.boundingBox();
+        await page.mouse.move(box.x + 100, box.y + 200);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 260, box.y + 200, { steps: 6 });
+        await page.mouse.up();
+        const rd = await snapshot(page);
+        expect(rd.atoms.length).toBeGreaterThanOrEqual(3);
+        expect(rd.bonds.length).toBe(rd.atoms.length - 1);
+        expect(rd.atoms.every((a) => a.el === 'C')).toBe(true);
+        expect(rd.bonds.every((b) => b.o === 1)).toBe(true);
+        await page.getByTestId('undo').click();
+        const empty = await snapshot(page);
+        expect(empty.atoms).toHaveLength(0);
+    });
+
+    test('atom-chain tool extends an existing atom (first chain atom bonds to it)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Place one atom, then chain-drag starting on it.
+        await canvas.click({ position: { x: 120, y: 200 } });
+        const before = await snapshot(page);
+        expect(before.atoms).toHaveLength(1);
+
+        await page.getByTestId('atom-chain').click();
+        const box = await canvas.boundingBox();
+        await page.mouse.move(box.x + 120, box.y + 200);
+        await page.mouse.down();
+        await page.mouse.move(box.x + 280, box.y + 200, { steps: 6 });
+        await page.mouse.up();
+
+        const rd = await snapshot(page);
+        // Original atom + N new chain atoms, joined by N bonds.
+        expect(rd.atoms.length).toBeGreaterThanOrEqual(3);
+        expect(rd.bonds.length).toBe(rd.atoms.length - 1);
+        // Atom 0 must participate in at least one bond (chain attached).
+        const atom0Bonded = rd.bonds.some((b) => b.a === 0 || b.b === 0);
+        expect(atom0Bonded).toBe(true);
+        // Single undo step removes the chain but keeps the original atom.
+        await page.getByTestId('undo').click();
+        const after = await snapshot(page);
+        expect(after.atoms).toHaveLength(1);
+        expect(after.bonds).toHaveLength(0);
+    });
+
     test('SMILES Load parses input and Copy SMILES writes canonical form', async ({ page }) => {
         const input = page.getByTestId('smiles-input');
         await input.fill('c1ccccc1');
@@ -1054,7 +1108,7 @@ test.describe('React Sketcher', () => {
     }) => {
         // Several Qt-side widgets are present for visual fidelity but the
         // underlying action isn't wired yet (atom_query needs RDKit query
-        // atoms, bond_query needs the same, atom_chain, R-group, attachment
+        // atoms, bond_query needs the same, R-group, attachment
         // point, reaction, monomeric mode, import/export/settings/help).
         // All route through comingSoon() → setStatus(...) so users can tell
         // the button is intentional rather than broken. (periodic-table
@@ -1063,7 +1117,6 @@ test.describe('React Sketcher', () => {
         const stubs = [
             ['atom-query', /Atom query/],
             ['bond-query', /Bond query/],
-            ['atom-chain', /Atom chain/],
             ['rgroup', /R-Group/],
             ['attachment-point', /Attachment point/],
             ['reaction', /Reaction/],

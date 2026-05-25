@@ -53,6 +53,13 @@ export interface MolModelInstance {
     setBondTypeUndoable(begin: number, end: number, type: number): void;
     addRing(size: number, cx: number, cy: number, aromatic: boolean): void;
     /**
+     * Add a single-bonded carbon chain at the given 2D positions. Pass
+     * boundToAtomIdx=-1 for a free-standing chain; otherwise the first new
+     * atom is single-bonded to the existing atom at that index (extending
+     * the chain off existing structure). Single undo step.
+     */
+    addAtomChain(xs: number[], ys: number[], boundToAtomIdx: number): void;
+    /**
      * Rotate selected atoms (or all atoms when nothing is selected) by
      * angle_rad counterclockwise around their centroid. Single undo step.
      */

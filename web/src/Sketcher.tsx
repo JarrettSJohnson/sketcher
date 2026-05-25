@@ -16,7 +16,8 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 // to commit it. Undo/redo/clear go through the same UndoStack the C++ Boost
 // tests cover.
 
-type Tool = 'atom' | 'bond' | 'select' | 'move-rotate' | 'erase' | 'ring';
+type Tool = 'atom' | 'bond' | 'select' | 'move-rotate' | 'erase' | 'ring'
+    | 'atom-chain';
 // SetAtomWidget.ui ships C/H/N/O/P/S/F/Cl/Si on the atomistic panel.
 // Element symbol — any RDKit-recognized symbol. The sidebar exposes
 // 8 fixed elements via dedicated buttons; everything else flows through
@@ -270,6 +271,26 @@ interface AtomDrag {
 
 const ATOM_DRAG_THRESHOLD = 3; // pixels — below this, treat as a click
 
+// Mirrors Qt DrawChainSceneTool (tool/draw_chain_scene_tool.cpp). Tracks an
+// active chain-draw drag so the live "blue hint" preview can be drawn between
+// the press point and the current cursor, and the commit (mouseUp) knows
+// whether to attach the new chain to an existing start atom.
+interface ChainDrag {
+    startPx: number;
+    startPy: number;
+    curPx: number;
+    curPy: number;
+    // start in model coords — snapped to an existing atom's position when
+    // startAtomIdx >= 0, otherwise the mousedown pixel converted to model.
+    startX: number;
+    startY: number;
+    // Index of the existing atom under the press point (-1 = empty area).
+    // Used to omit the start position from addAtomChain coords + bond the
+    // first new atom to this existing atom (Qt's `skip_first_coord` +
+    // `bound_to_atom` plumbing).
+    startAtomIdx: number;
+}
+
 interface RotateDrag {
     // Pivot in model coords — the geometric center of rotation. All `atoms`
     // rotate about this point. Pixel projection (pivotPx,pivotPy) is captured
@@ -299,6 +320,53 @@ function distanceSq(ax: number, ay: number, bx: number, by: number): number {
     const dy = ay - by;
     return dx * dx + dy * dy;
 }
+
+// Model-space port of Qt's get_bond_chain_atom_coords
+// (tool/draw_chain_scene_tool.cpp:112-162). Builds the zig-zag chain that
+// fits between `start` and `end` (both in model coords) at the nearest
+// 30°-rounded angle, with 1.5-unit bond length and alternating ±30° kinks.
+// Returns the full atom positions including the start point; callers are
+// responsible for dropping coords[0] when the chain attaches to an existing
+// atom (matches Qt's `skip_first_coord` logic).
+const CHAIN_BOND_LEN = 1.5;
+function computeChainAtomCoords(
+    startX: number, startY: number,
+    endX: number, endY: number,
+): { x: number; y: number }[] {
+    const STEP = Math.PI / 6;
+    const dx = endX - startX;
+    const dy = endY - startY;
+    // atan2 in model space (Y up) gives the same "math angle" Qt computes
+    // via QLineF::angle (which is also math-style CCW from +X, even though
+    // its inputs are pixel coords). Round to nearest 30° step.
+    const rawAngle = Math.atan2(dy, dx);
+    const angle = Math.round(rawAngle / STEP) * STEP;
+    const COS_STEP = Math.cos(STEP);
+    const SIN_STEP = 0.5;
+    // Projection of one bond onto the rounded-angle vector V. Bonds zig-zag
+    // ±30° around V, so each bond covers BOND_LEN*cos(30°) along V.
+    const projLen = CHAIN_BOND_LEN * COS_STEP;
+    const projX = Math.cos(angle) * projLen;
+    const projY = Math.sin(angle) * projLen;
+    // Perpendicular kick to V — odd-index atoms sit one BOND_LEN*sin(30°)
+    // off V; even-index atoms are on V. Rotating (cos,sin) by +90° CCW
+    // gives (-sin, cos).
+    const perpX = -Math.sin(angle) * CHAIN_BOND_LEN * SIN_STEP;
+    const perpY = Math.cos(angle) * CHAIN_BOND_LEN * SIN_STEP;
+    const dist = Math.hypot(dx, dy);
+    let numBonds = Math.round(dist / projLen);
+    if (numBonds === 0) numBonds = 1; // always at least one bond
+    const coords: { x: number; y: number }[] = [];
+    for (let i = 0; i <= numBonds; ++i) {
+        coords.push({
+            x: startX + i * projX + ((i % 2) * perpX),
+            y: startY + i * projY + ((i % 2) * perpY),
+        });
+    }
+    return coords;
+}
+
+const CHAIN_HINT_COLOR = '#9cbcd1'; // Qt STRUCTURE_HINT_COLOR
 
 // Qt's QGraphicsView wheel zoom (sketcher_view.cpp `wheelEvent`) uses
 // scale_factor = 2^(angleDelta.y / 2400) and caps zoom-in at the default
@@ -398,6 +466,7 @@ function drawSketch(
     hoverAtomIdx: number | null,
     dragShape: DragShape | null,
     rotationHandle: RotationHandle | null,
+    chainDrag: ChainDrag | null,
 ): void {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -759,6 +828,36 @@ function drawSketch(
         ctx.arc(handlePx, handlePy, ROTATION_HANDLE_RADIUS, 0, 2 * Math.PI);
         ctx.fill();
     }
+
+    // Atom-chain hint (Qt HintChainItem, draw_chain_scene_tool.cpp:20-43).
+    // Blue polyline showing where the new chain atoms would land + a label
+    // with the bond count at the cursor end.
+    if (chainDrag) {
+        const { x: endX, y: endY } = modelFromPixel(
+            canvas, view, chainDrag.curPx, chainDrag.curPy,
+        );
+        const coords = computeChainAtomCoords(
+            chainDrag.startX, chainDrag.startY, endX, endY,
+        );
+        const pixCoords = coords.map((c) => pixelFromModel(canvas, view, c.x, c.y));
+        ctx.strokeStyle = CHAIN_HINT_COLOR;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(pixCoords[0].px, pixCoords[0].py);
+        for (let i = 1; i < pixCoords.length; ++i) {
+            ctx.lineTo(pixCoords[i].px, pixCoords[i].py);
+        }
+        ctx.stroke();
+        // Label = number of bonds = coords.length - 1.
+        const last = pixCoords[pixCoords.length - 1];
+        ctx.fillStyle = CHAIN_HINT_COLOR;
+        ctx.font = '13px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(coords.length - 1), last.px + 6, last.py - 6);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+    }
 }
 
 interface SketcherProps {
@@ -784,6 +883,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // mousemove preview, single committed undo on mouseup, cancellable on
     // mouseleave. Mutually exclusive with atomDragRef at any given time.
     const rotateDragRef = useRef<RotateDrag | null>(null);
+    // Atom-chain drag state. Lives in React state (not a ref) so updates
+    // re-render and refresh the canvas hint. Lower frequency than
+    // atomDrag/rotateDrag — we only need it while the user is actively
+    // drawing a new chain, not the constant stream of an existing-mol drag.
+    const [chainDrag, setChainDrag] = useState<ChainDrag | null>(null);
     // View transform — mirrors viewState into a ref so event handlers (which
     // capture the closure at mount) always read the current viewport.
     const viewRef = useRef<View>(DEFAULT_VIEW);
@@ -1080,6 +1184,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             hoverAtom,
             dragShape,
             rotationHandle,
+            chainDrag,
         );
     });
 
@@ -1381,6 +1486,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 }
                 return;
             }
+            if (chainDrag) {
+                setChainDrag({ ...chainDrag, curPx: px, curPy: py });
+                return;
+            }
             if (tool !== 'bond') {
                 if (hoverAtom !== null) setHoverAtom(null);
                 return;
@@ -1395,7 +1504,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const next = hit >= 0 ? hit : null;
             if (next !== hoverAtom) setHoverAtom(next);
         },
-        [tool, hoverAtom, dragShape],
+        [tool, hoverAtom, dragShape, chainDrag],
     );
 
     const onCanvasMouseDown = useCallback(
@@ -1496,6 +1605,43 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     startPy: py,
                     moved: false,
                 };
+                return;
+            }
+
+            if (tool === 'atom-chain') {
+                // Qt DrawChainSceneTool::onLeftButtonDragStart
+                // (tool/draw_chain_scene_tool.cpp:58-63 + getStartPosAndAtom
+                // at :91-105) — if the press lands on an existing atom, the
+                // chain starts at that atom's coords + remembers the atom
+                // index so the first new atom gets bonded to it on commit.
+                let rd: RenderDesc = BLANK_DESC;
+                try {
+                    rd = JSON.parse(model.description()) as RenderDesc;
+                } catch {
+                    rd = BLANK_DESC;
+                }
+                const hit = nearestAtomIndex(
+                    canvas, viewRef.current, rd.atoms, px, py,
+                );
+                let startX: number;
+                let startY: number;
+                if (hit >= 0) {
+                    startX = rd.atoms[hit].x;
+                    startY = rd.atoms[hit].y;
+                } else {
+                    const m = modelFromPixel(canvas, viewRef.current, px, py);
+                    startX = m.x;
+                    startY = m.y;
+                }
+                setChainDrag({
+                    startPx: px,
+                    startPy: py,
+                    curPx: px,
+                    curPy: py,
+                    startX,
+                    startY,
+                    startAtomIdx: hit,
+                });
                 return;
             }
 
@@ -1625,6 +1771,42 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 }
                 return;
             }
+            if (chainDrag) {
+                const canvas = canvasRef.current;
+                const model = modelRef.current;
+                if (!canvas || !model) {
+                    setChainDrag(null);
+                    return;
+                }
+                const rect = canvas.getBoundingClientRect();
+                const px = e.clientX - rect.left;
+                const py = e.clientY - rect.top;
+                const { x: endX, y: endY } = modelFromPixel(
+                    canvas, viewRef.current, px, py,
+                );
+                const coords = computeChainAtomCoords(
+                    chainDrag.startX, chainDrag.startY, endX, endY,
+                );
+                // When anchored to an existing atom, drop coords[0] (it
+                // coincides with the existing atom) and let addAtomChain
+                // bond the first new atom to it.
+                const startIdx = chainDrag.startAtomIdx;
+                const slice = startIdx >= 0 ? coords.slice(1) : coords;
+                setChainDrag(null);
+                if (slice.length === 0) {
+                    setStatus('chain: drag farther to add atoms');
+                    return;
+                }
+                const xs = slice.map((c) => c.x);
+                const ys = slice.map((c) => c.y);
+                model.addAtomChain(xs, ys, startIdx);
+                suppressNextClickRef.current = true;
+                setStatus(
+                    `added chain (${slice.length} atom` +
+                        `${slice.length === 1 ? '' : 's'})`,
+                );
+                return;
+            }
             if (!dragShape) return;
             const canvas = canvasRef.current;
             const model = modelRef.current;
@@ -1728,7 +1910,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             }
             void e; // silence unused-param lint without changing the signature
         },
-        [dragShape],
+        [dragShape, chainDrag],
     );
 
     const onCanvasMouseLeave = useCallback((): void => {
@@ -1773,7 +1955,13 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 );
             }
         }
-    }, [dragShape]);
+        // Cancel an in-flight chain-draw — chain is purely a preview until
+        // mouseUp, so cancellation just drops the hint.
+        if (chainDrag) {
+            setChainDrag(null);
+            setStatus('chain cancelled');
+        }
+    }, [dragShape, chainDrag]);
 
     const doUndo = (): void => {
         modelRef.current?.undo();
@@ -2524,7 +2712,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         />
                         <IconButton icon='bond_chain' testid='atom-chain'
                             title='Atom Chain'
-                            onClick={() => comingSoon('Atom chain tool')} />
+                            active={tool === 'atom-chain'}
+                            onClick={() => {
+                                setTool('atom-chain');
+                                setPendingBondAtom(null);
+                            }} />
                     </div>
 
                     <hr style={styles.hr} />

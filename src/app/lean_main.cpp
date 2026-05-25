@@ -345,6 +345,18 @@ class MolModelJS
     {
         m_model.addRing(size, cx, cy, aromatic);
     }
+    void addAtomChain(emscripten::val xs, emscripten::val ys,
+                      int bound_to_atom_idx)
+    {
+        const auto n = xs["length"].as<unsigned int>();
+        std::vector<double> cxs(n);
+        std::vector<double> cys(n);
+        for (unsigned int i = 0; i < n; ++i) {
+            cxs[i] = xs[i].as<double>();
+            cys[i] = ys[i].as<double>();
+        }
+        m_model.addAtomChain(cxs, cys, bound_to_atom_idx);
+    }
     void rotateSelectedAtoms(double angle_rad)
     {
         m_model.rotateSelectedAtoms(angle_rad);
@@ -567,6 +579,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
                   &MolModelJS::setBondDirForSelectedBonds)
         .function("setBondTypeUndoable", &MolModelJS::setBondTypeUndoable)
         .function("addRing", &MolModelJS::addRing)
+        .function("addAtomChain", &MolModelJS::addAtomChain)
         .function("rotateSelectedAtoms", &MolModelJS::rotateSelectedAtoms)
         .function("flipSelectedAtoms", &MolModelJS::flipSelectedAtoms)
         .function("adjustChargeOnSelectedAtoms",

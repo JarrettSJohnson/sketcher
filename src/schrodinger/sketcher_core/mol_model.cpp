@@ -352,6 +352,40 @@ void MolModel::addRing(unsigned int size, double cx, double cy, bool aromatic)
         aromatic ? "Add aromatic ring" : "Add ring");
 }
 
+void MolModel::addAtomChain(const std::vector<double>& xs,
+                            const std::vector<double>& ys,
+                            int bound_to_atom_idx)
+{
+    if (xs.empty() || xs.size() != ys.size()) {
+        return;
+    }
+    doMutation(
+        [this, xs, ys, bound_to_atom_idx] {
+            auto& conf = m_mol.getConformer();
+            int prev_idx = bound_to_atom_idx;
+            for (std::size_t i = 0; i < xs.size(); ++i) {
+                auto atom = std::make_unique<RDKit::Atom>("C");
+                const auto idx = m_mol.addAtom(atom.release(),
+                                               /*updateLabel=*/false,
+                                               /*takeOwnership=*/true);
+                auto& positions = conf.getPositions();
+                if (positions.size() < m_mol.getNumAtoms()) {
+                    positions.resize(m_mol.getNumAtoms(),
+                                     RDGeom::Point3D(0, 0, 0));
+                }
+                conf.setAtomPos(idx, RDGeom::Point3D(xs[i], ys[i], 0));
+                if (prev_idx >= 0 &&
+                    static_cast<unsigned int>(prev_idx) < m_mol.getNumAtoms() &&
+                    static_cast<unsigned int>(prev_idx) != idx) {
+                    m_mol.addBond(static_cast<unsigned int>(prev_idx), idx,
+                                  RDKit::Bond::BondType::SINGLE);
+                }
+                prev_idx = static_cast<int>(idx);
+            }
+        },
+        "Add chain");
+}
+
 void MolModel::adjustChargeOnSelectedAtoms(int delta)
 {
     if (m_selected_atoms.empty() || delta == 0) {
