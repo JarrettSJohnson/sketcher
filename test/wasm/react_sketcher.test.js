@@ -848,11 +848,78 @@ test.describe('React Sketcher', () => {
         await expect(page.getByTestId('export-modal')).toHaveCount(0);
     });
 
-    test('Export menu: Save Image is still a stub', async ({ page }) => {
+    test('Export menu: Save Image opens dialog with Qt defaults + live status label', async ({
+        page,
+    }) => {
         await page.getByTestId('export').click();
         await page.getByTestId('export-save-image').click();
+        const modal = page.getByTestId('save-image-modal');
+        await expect(modal).toBeVisible();
+        // Qt defaults: PNG, 400×400, White background.
+        await expect(page.getByTestId('save-image-format-select'))
+            .toHaveValue('png');
+        await expect(page.getByTestId('save-image-width')).toHaveValue('400');
+        await expect(page.getByTestId('save-image-height')).toHaveValue('400');
+        await expect(page.getByTestId('save-image-transparent'))
+            .not.toBeChecked();
+        await expect(page.getByTestId('save-image-status'))
+            .toHaveText('White background, 400 x 400 px');
+        // Tweak width/height/transparent — status label updates to match
+        // (Qt's FileSaveImageDialog refreshes the same line on every spin).
+        await page.getByTestId('save-image-width').fill('600');
+        await page.getByTestId('save-image-height').fill('300');
+        await page.getByTestId('save-image-transparent').check();
+        await expect(page.getByTestId('save-image-status'))
+            .toHaveText('Transparent background, 600 x 300 px');
+        // Cancel closes without saving.
+        await page.getByTestId('save-image-cancel').click();
+        await expect(page.getByTestId('save-image-modal')).toHaveCount(0);
+    });
+
+    test('Export menu: Save Image without a sketch surfaces a status, no download', async ({
+        page,
+    }) => {
+        // Empty sketch — Save should bail with a friendly status, mirroring
+        // Qt's "no atoms to draw" guard in get_image_bytes.
+        await page.getByTestId('export').click();
+        await page.getByTestId('export-save-image').click();
+        await expect(page.getByTestId('save-image-modal')).toBeVisible();
+        let downloaded = false;
+        page.on('download', () => { downloaded = true; });
+        await page.getByTestId('save-image-save').click();
         await expect(page.getByTestId('sketcher-status'))
-            .toContainText(/Save Image/);
+            .toContainText(/nothing to save/);
+        // Modal stays open so the user can dismiss intentionally.
+        await expect(page.getByTestId('save-image-modal')).toBeVisible();
+        expect(downloaded).toBe(false);
+        await page.getByTestId('save-image-cancel').click();
+    });
+
+    test('Export menu: Save Image downloads a PNG of the current sketch', async ({
+        page,
+    }) => {
+        // Seed benzene via Paste-in-Text so the render has something.
+        await page.getByTestId('import').click();
+        await page.getByTestId('import-paste-in-text').click();
+        await page.getByTestId('paste-text-input').fill('c1ccccc1');
+        await page.getByTestId('paste-text-load').click();
+
+        await page.getByTestId('export').click();
+        await page.getByTestId('export-save-image').click();
+        // Use small dimensions so the offscreen render is cheap; assert the
+        // status reflects what we asked for. Width/height inputs accept any
+        // integer in [1, 9999]; pick 120 × 80 to confirm non-square works.
+        await page.getByTestId('save-image-width').fill('120');
+        await page.getByTestId('save-image-height').fill('80');
+
+        const downloadPromise = page.waitForEvent('download');
+        await page.getByTestId('save-image-save').click();
+        const download = await downloadPromise;
+        expect(download.suggestedFilename()).toBe('sketch.png');
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/saved sketch\.png — White background, 120 x 80 px/);
+        // Modal auto-closes after a successful save.
+        await expect(page.getByTestId('save-image-modal')).toHaveCount(0);
     });
 
     test('SMILES Load parses input and Copy SMILES writes canonical form', async ({ page }) => {
@@ -1220,8 +1287,8 @@ test.describe('React Sketcher', () => {
         // underlying action isn't wired yet (atom_query needs RDKit query
         // atoms, bond_query needs the same, R-group, attachment
         // point, reaction, monomeric mode, settings, help). Import/Export
-        // open real menus now (Batch 12); Save Image inside the Export
-        // menu is still a stub. All stubs route through comingSoon() →
+        // open real menus now (Batch 12); Save Image opens its own dialog
+        // (Batch 13). All remaining stubs route through comingSoon() →
         // setStatus(...) so users can tell the button is intentional
         // rather than broken. (periodic-table opens a real popup in
         // Batch 7; covered by its own tests.)

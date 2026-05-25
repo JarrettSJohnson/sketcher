@@ -251,6 +251,19 @@ const EXPORT_FORMAT_CHOICES: { value: ExportFormat; label: string;
     { value: 'mol-v3000', label: 'MDL MOL V3000', ext: 'mol' },
 ];
 
+// Save-Image dialog choices. Qt's FileSaveImageDialog
+// (dialog/file_save_image_dialog.cpp) offers PNG and SVG. SVG would require
+// a separate vector renderer (our drawSketch is canvas-only), so SVG is
+// deferred to a follow-up batch; the dropdown still renders so the visual
+// shape of the dialog matches Qt, but only PNG is selectable today.
+type ImageFormat = 'png';
+const IMAGE_FORMAT_CHOICES: { value: ImageFormat; label: string;
+    ext: string; mime: string }[] = [
+    { value: 'png', label: 'PNG', ext: 'png', mime: 'image/png' },
+];
+const IMAGE_SIZE_MIN = 1;
+const IMAGE_SIZE_MAX = 9999;
+
 interface DragShape {
     kind: SelectShape;
     startPx: number;
@@ -949,6 +962,14 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [pasteText, setPasteText] = useState<string>('');
     const [exportModalOpen, setExportModalOpen] = useState<boolean>(false);
     const [exportFormat, setExportFormat] = useState<ExportFormat>('smiles');
+    // Save Image dialog — mirrors Qt FileSaveImageDialog
+    // (dialog/file_save_image_dialog.cpp). Defaults to 400×400 opaque white
+    // PNG, same as Qt.
+    const [imageModalOpen, setImageModalOpen] = useState<boolean>(false);
+    const [imageFormat, setImageFormat] = useState<ImageFormat>('png');
+    const [imageWidth, setImageWidth] = useState<number>(400);
+    const [imageHeight, setImageHeight] = useState<number>(400);
+    const [imageTransparent, setImageTransparent] = useState<boolean>(false);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const bondModeRef = useRef<BondMode>('single');
     const [, bumpVersion] = useReducer((v: number) => v + 1, 0);
@@ -2211,6 +2232,101 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         setStatus(`downloaded sketch.${ext}`);
     };
 
+    const openImageModal = (): void => {
+        setExportMenuOpen(false);
+        setImageModalOpen(true);
+    };
+    // Render the current sketch into a fresh offscreen canvas at (w, h) and
+    // download as PNG. Mirrors Qt's FileSaveImageDialog → get_image_bytes
+    // path, which re-renders the scene at the requested size rather than
+    // scaling a snapshot of the main canvas (so PNG output is crisp at any
+    // size). Transparent=true skips the background fill; otherwise a white
+    // background is composited behind the strokes.
+    const doSaveImage = (): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        if (model.numAtoms() === 0) {
+            setStatus('nothing to save — sketch something first');
+            return;
+        }
+        const w = Math.max(IMAGE_SIZE_MIN,
+            Math.min(IMAGE_SIZE_MAX, Math.round(imageWidth)));
+        const h = Math.max(IMAGE_SIZE_MIN,
+            Math.min(IMAGE_SIZE_MAX, Math.round(imageHeight)));
+        let rd: RenderDesc = BLANK_DESC;
+        try {
+            rd = JSON.parse(model.description()) as RenderDesc;
+        } catch {
+            rd = BLANK_DESC;
+        }
+        if (rd.atoms.length === 0) return;
+        // Compute a fit-to-bbox view for the offscreen canvas — same math
+        // as doFit but parameterized by (w, h) instead of the live canvas.
+        let minX = rd.atoms[0].x;
+        let maxX = rd.atoms[0].x;
+        let minY = rd.atoms[0].y;
+        let maxY = rd.atoms[0].y;
+        for (const a of rd.atoms) {
+            if (a.x < minX) minX = a.x;
+            if (a.x > maxX) maxX = a.x;
+            if (a.y < minY) minY = a.y;
+            if (a.y > maxY) maxY = a.y;
+        }
+        const bboxW = Math.max(maxX - minX, 1e-6);
+        const bboxH = Math.max(maxY - minY, 1e-6);
+        const marginPx = Math.min(40, Math.floor(Math.min(w, h) * 0.1));
+        const usableW = Math.max(w - 2 * marginPx, 1);
+        const usableH = Math.max(h - 2 * marginPx, 1);
+        const fitScale = rd.atoms.length === 1
+            ? DEFAULT_SCALE
+            : Math.min(usableW / bboxW, usableH / bboxH);
+        const scale = Math.min(fitScale, DEFAULT_SCALE * 2);
+        const cxModel = (minX + maxX) / 2;
+        const cyModel = (minY + maxY) / 2;
+        const offView: View = {
+            scale,
+            offsetX: -cxModel * scale,
+            offsetY: cyModel * scale,
+        };
+        const off = document.createElement('canvas');
+        off.width = w;
+        off.height = h;
+        // drawSketch clearRects at the start, so anything we fill first
+        // would be wiped. Instead let drawSketch paint on transparent, then
+        // composite the background behind the strokes for the opaque case.
+        drawSketch(off, offView, rd, null, null, null, null, null);
+        if (!imageTransparent) {
+            const ctx = off.getContext('2d');
+            if (ctx) {
+                ctx.globalCompositeOperation = 'destination-over';
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(0, 0, w, h);
+                ctx.globalCompositeOperation = 'source-over';
+            }
+        }
+        const choice = IMAGE_FORMAT_CHOICES
+            .find((c) => c.value === imageFormat);
+        const mime = choice?.mime ?? 'image/png';
+        const ext = choice?.ext ?? 'png';
+        off.toBlob((blob) => {
+            if (!blob) {
+                setStatus('save image failed');
+                return;
+            }
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `sketch.${ext}`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            const bg = imageTransparent ? 'Transparent' : 'White';
+            setStatus(`saved sketch.${ext} — ${bg} background, ${w} x ${h} px`);
+            setImageModalOpen(false);
+        }, mime);
+    };
+
     const adjustCharge = (delta: number): void => {
         const model = modelRef.current;
         if (!model) return;
@@ -2653,16 +2769,13 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         {exportMenuOpen && (
                             <div style={styles.moreMenu}
                                 data-testid='export-menu'>
-                                {/* Save Image is still a stub — the
-                                    canvas-to-PNG/SVG path needs its own
-                                    batch (Qt's FileSaveImageDialog opens
-                                    a width/height/transparent-bg popup). */}
+                                {/* Save Image opens the width/height/
+                                    transparent-bg dialog. Mirrors Qt's
+                                    FileSaveImageDialog. PNG only for now;
+                                    SVG would need a vector renderer. */}
                                 <MoreItem label='Save Image...'
                                     testid='export-save-image'
-                                    onClick={() => {
-                                        setExportMenuOpen(false);
-                                        comingSoon('Save Image');
-                                    }} />
+                                    onClick={openImageModal} />
                                 <MoreItem label='Export to File...'
                                     testid='export-to-file'
                                     onClick={openExportModal} />
@@ -3096,6 +3209,120 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 data-testid='export-copy'
                                 onClick={() => { void doExportCopy(); }}>
                                 Copy
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {imageModalOpen && (
+                <div style={styles.modalOverlay}
+                    data-testid='save-image-modal'
+                    onClick={(e) => {
+                        if (e.target === e.currentTarget) {
+                            setImageModalOpen(false);
+                        }
+                    }}>
+                    <div style={styles.modalCard}>
+                        <div style={styles.modalTitle}>Save Image</div>
+                        <div style={styles.modalRow}>
+                            <label htmlFor='save-image-format-select'
+                                style={styles.modalLabel}>
+                                Format
+                            </label>
+                            <select
+                                id='save-image-format-select'
+                                data-testid='save-image-format-select'
+                                value={imageFormat}
+                                onChange={(e) =>
+                                    setImageFormat(
+                                        e.target.value as ImageFormat,
+                                    )
+                                }
+                                style={styles.modalSelect}>
+                                {IMAGE_FORMAT_CHOICES.map((c) => (
+                                    <option key={c.value} value={c.value}>
+                                        {c.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <div style={styles.modalRow}>
+                            <label htmlFor='save-image-width'
+                                style={styles.modalLabel}>
+                                Width
+                            </label>
+                            <input
+                                id='save-image-width'
+                                type='number'
+                                min={IMAGE_SIZE_MIN}
+                                max={IMAGE_SIZE_MAX}
+                                step={1}
+                                value={imageWidth}
+                                data-testid='save-image-width'
+                                onChange={(e) => {
+                                    const n = Number(e.target.value);
+                                    if (Number.isFinite(n)) setImageWidth(n);
+                                }}
+                                style={styles.modalNumber}
+                            />
+                            <label htmlFor='save-image-height'
+                                style={styles.modalLabel}>
+                                Height
+                            </label>
+                            <input
+                                id='save-image-height'
+                                type='number'
+                                min={IMAGE_SIZE_MIN}
+                                max={IMAGE_SIZE_MAX}
+                                step={1}
+                                value={imageHeight}
+                                data-testid='save-image-height'
+                                onChange={(e) => {
+                                    const n = Number(e.target.value);
+                                    if (Number.isFinite(n)) setImageHeight(n);
+                                }}
+                                style={styles.modalNumber}
+                            />
+                            <label style={{
+                                ...styles.modalLabel,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                cursor: 'pointer',
+                            }}>
+                                <input
+                                    type='checkbox'
+                                    checked={imageTransparent}
+                                    data-testid='save-image-transparent'
+                                    onChange={(e) =>
+                                        setImageTransparent(e.target.checked)
+                                    }
+                                />
+                                Transparent background
+                            </label>
+                        </div>
+                        <div style={styles.modalStatus}
+                            data-testid='save-image-status'>
+                            {imageTransparent ? 'Transparent' : 'White'}
+                            {' '}background, {Math.max(IMAGE_SIZE_MIN,
+                                Math.min(IMAGE_SIZE_MAX,
+                                    Math.round(imageWidth)))}
+                            {' x '}
+                            {Math.max(IMAGE_SIZE_MIN,
+                                Math.min(IMAGE_SIZE_MAX,
+                                    Math.round(imageHeight)))}
+                            {' px'}
+                        </div>
+                        <div style={styles.modalButtons}>
+                            <button type='button' style={styles.modalBtn}
+                                data-testid='save-image-cancel'
+                                onClick={() => setImageModalOpen(false)}>
+                                Cancel
+                            </button>
+                            <button type='button' style={styles.modalBtnPrimary}
+                                data-testid='save-image-save'
+                                onClick={doSaveImage}>
+                                Save
                             </button>
                         </div>
                     </div>
@@ -3882,6 +4109,18 @@ const styles: Record<string, CSSProperties> = {
         border: `1px solid ${BORDER_COLOR}`,
         borderRadius: 3,
         background: 'white',
+    },
+    modalNumber: {
+        font: '12px sans-serif',
+        padding: '3px 6px',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 3,
+        background: 'white',
+        width: 72,
+    },
+    modalStatus: {
+        font: '11px sans-serif',
+        color: '#666',
     },
     modalTextarea: {
         font: '11px Menlo, Consolas, monospace',
