@@ -745,6 +745,116 @@ test.describe('React Sketcher', () => {
         expect(after.bonds).toHaveLength(0);
     });
 
+    test('Import menu: Paste in Text modal loads SMILES and closes', async ({
+        page,
+    }) => {
+        // Qt ImportMenu (menu/sketcher_top_bar_menus.cpp): the top-bar
+        // Import button is a dropdown with "Import from File..." and
+        // "Paste in Text..." items. Paste in Text opens a modal with a
+        // textarea + Load / Cancel buttons.
+        await page.getByTestId('import').click();
+        await expect(page.getByTestId('import-menu')).toBeVisible();
+        await expect(page.getByTestId('import-from-file')).toBeVisible();
+        await page.getByTestId('import-paste-in-text').click();
+        // Menu closes, modal opens.
+        await expect(page.getByTestId('paste-text-modal')).toBeVisible();
+        await expect(page.getByTestId('import-menu')).toHaveCount(0);
+        await page.getByTestId('paste-text-input').fill('CCO');
+        await page.getByTestId('paste-text-load').click();
+        // Modal closes on successful load; mol picked up the SMILES.
+        await expect(page.getByTestId('paste-text-modal')).toHaveCount(0);
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(3);
+        expect(rd.bonds).toHaveLength(2);
+    });
+
+    test('Import menu: Paste in Text modal preserves sketch + leaves modal open on bad input', async ({
+        page,
+    }) => {
+        // Seed a sketch so we can assert it stays put on a failed load.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 150, y: 180 } });
+        await page.getByTestId('import').click();
+        await page.getByTestId('import-paste-in-text').click();
+        await page.getByTestId('paste-text-input').fill('not a smiles!!!');
+        await page.getByTestId('paste-text-load').click();
+        // Modal stays open so the user can fix their input.
+        await expect(page.getByTestId('paste-text-modal')).toBeVisible();
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/load failed/);
+        // Original sketch untouched.
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        // Cancel closes without committing.
+        await page.getByTestId('paste-text-cancel').click();
+        await expect(page.getByTestId('paste-text-modal')).toHaveCount(0);
+    });
+
+    test('Import menu: Import from File reads a SMILES file and loads it', async ({
+        page,
+    }) => {
+        // Qt's "Import from File..." opens QFileDialog and pipes the chosen
+        // file's text through loadFromText with AUTO_DETECT. We use
+        // Playwright's setInputFiles to drive the hidden <input type=file>
+        // directly — no need to actually open the menu (the menu item just
+        // .click()s the input, which we do here).
+        await page.getByTestId('import-file-input').setInputFiles({
+            name: 'sample.smi',
+            mimeType: 'chemical/x-daylight-smiles',
+            buffer: Buffer.from('c1ccccc1'),
+        });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(6);
+        expect(rd.bonds).toHaveLength(6);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/imported sample\.smi/);
+    });
+
+    test('Export menu: Export to File modal renders SMILES / V2000 / V3000 and copies', async ({
+        page,
+    }) => {
+        // Seed benzene via the existing Paste-in-Text flow so we have
+        // something to export.
+        await page.getByTestId('import').click();
+        await page.getByTestId('import-paste-in-text').click();
+        await page.getByTestId('paste-text-input').fill('c1ccccc1');
+        await page.getByTestId('paste-text-load').click();
+
+        await page.getByTestId('export').click();
+        await expect(page.getByTestId('export-menu')).toBeVisible();
+        await page.getByTestId('export-to-file').click();
+        await expect(page.getByTestId('export-modal')).toBeVisible();
+
+        // Default format is SMILES.
+        const text = page.getByTestId('export-text');
+        await expect(text).toHaveValue(/c1ccccc1/);
+
+        // Switch to V2000 — textarea content updates to a MOL block.
+        await page.getByTestId('export-format-select').selectOption('mol-v2000');
+        await expect(text).toHaveValue(/V2000/);
+        await expect(text).not.toHaveValue(/V3000/);
+
+        // Switch to V3000.
+        await page.getByTestId('export-format-select').selectOption('mol-v3000');
+        await expect(text).toHaveValue(/V3000/);
+
+        // Copy button triggers status update (clipboard may or may not be
+        // granted in the test env; both branches set a status).
+        await page.getByTestId('export-copy').click();
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/MDL MOL V3000|copy manually/);
+
+        await page.getByTestId('export-close').click();
+        await expect(page.getByTestId('export-modal')).toHaveCount(0);
+    });
+
+    test('Export menu: Save Image is still a stub', async ({ page }) => {
+        await page.getByTestId('export').click();
+        await page.getByTestId('export-save-image').click();
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/Save Image/);
+    });
+
     test('SMILES Load parses input and Copy SMILES writes canonical form', async ({ page }) => {
         const input = page.getByTestId('smiles-input');
         await input.fill('c1ccccc1');
@@ -1109,10 +1219,12 @@ test.describe('React Sketcher', () => {
         // Several Qt-side widgets are present for visual fidelity but the
         // underlying action isn't wired yet (atom_query needs RDKit query
         // atoms, bond_query needs the same, R-group, attachment
-        // point, reaction, monomeric mode, import/export/settings/help).
-        // All route through comingSoon() → setStatus(...) so users can tell
-        // the button is intentional rather than broken. (periodic-table
-        // opens a real popup in Batch 7; covered by its own tests.)
+        // point, reaction, monomeric mode, settings, help). Import/Export
+        // open real menus now (Batch 12); Save Image inside the Export
+        // menu is still a stub. All stubs route through comingSoon() →
+        // setStatus(...) so users can tell the button is intentional
+        // rather than broken. (periodic-table opens a real popup in
+        // Batch 7; covered by its own tests.)
         const status = page.getByTestId('sketcher-status');
         const stubs = [
             ['atom-query', /Atom query/],
@@ -1121,8 +1233,6 @@ test.describe('React Sketcher', () => {
             ['attachment-point', /Attachment point/],
             ['reaction', /Reaction/],
             ['mode-monomeric', /Monomeric/],
-            ['import', /Import/],
-            ['export', /Export/],
             ['settings', /Settings/],
             ['help', /Help/],
         ];

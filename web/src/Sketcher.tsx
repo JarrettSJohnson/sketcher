@@ -4,6 +4,7 @@ import {
     useReducer,
     useRef,
     useState,
+    type ChangeEvent,
     type CSSProperties,
     type JSX,
     type MouseEvent as ReactMouseEvent,
@@ -235,6 +236,20 @@ function nearestBondIndex(
 // Qt ui/selection_tool_popup.ui offers three shapes for the select tool:
 // rect_btn / lasso_btn / ellipse_btn. We mirror the same three.
 type SelectShape = 'rect' | 'lasso' | 'ellipse';
+
+// Export format dropdown choices in the Export-to-File modal. Maps to the
+// Qt FileExportDialog format combo (dialog/file_export_dialog.cpp), trimmed
+// to the formats the lean MolModel actually exposes today: SMILES via
+// toSmiles, MDL MOL V2000/V3000 via toMolBlock(v3000). Reaction formats,
+// InChI/InChIKey, PDB, XYZ, Maestro, Marvin are deferred — they'd need
+// extra rdkit_extensions writer paths plumbed through MolModel first.
+type ExportFormat = 'smiles' | 'mol-v2000' | 'mol-v3000';
+const EXPORT_FORMAT_CHOICES: { value: ExportFormat; label: string;
+    ext: string }[] = [
+    { value: 'smiles', label: 'SMILES', ext: 'smi' },
+    { value: 'mol-v2000', label: 'MDL MOL V2000', ext: 'mol' },
+    { value: 'mol-v3000', label: 'MDL MOL V3000', ext: 'mol' },
+];
 
 interface DragShape {
     kind: SelectShape;
@@ -925,6 +940,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [smilesInput, setSmilesInput] = useState<string>('');
     const [view, setViewState] = useState<View>(DEFAULT_VIEW);
     const [moreMenuOpen, setMoreMenuOpen] = useState<boolean>(false);
+    // Top-bar Import / Export dropdowns + their modals. Mirrors Qt's
+    // ImportMenu / ExportMenu (menu/sketcher_top_bar_menus.cpp) + the
+    // PasteInTextDialog / FileExportDialog popups they open.
+    const [importMenuOpen, setImportMenuOpen] = useState<boolean>(false);
+    const [exportMenuOpen, setExportMenuOpen] = useState<boolean>(false);
+    const [pasteModalOpen, setPasteModalOpen] = useState<boolean>(false);
+    const [pasteText, setPasteText] = useState<string>('');
+    const [exportModalOpen, setExportModalOpen] = useState<boolean>(false);
+    const [exportFormat, setExportFormat] = useState<ExportFormat>('smiles');
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
     const bondModeRef = useRef<BondMode>('single');
     const [, bumpVersion] = useReducer((v: number) => v + 1, 0);
 
@@ -2083,6 +2108,109 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         await writeToClipboardWithFallback(mb, 'MOL');
     };
 
+    // Import-from-File: programmatically open the hidden <input type=file>
+    // and pipe the chosen file's text through loadFromText. Qt opens a
+    // QFileDialog::getOpenFileContent with format filters built from
+    // get_import_formats (widget/sketcher_top_bar.cpp:248-254); we accept
+    // the same flat list and let rdkit_extensions AUTO_DETECT figure it out.
+    const triggerFileImport = (): void => {
+        setImportMenuOpen(false);
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+            fileInputRef.current.click();
+        }
+    };
+    const onImportFile = async (
+        e: ChangeEvent<HTMLInputElement>,
+    ): Promise<void> => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const model = modelRef.current;
+        if (!model) return;
+        try {
+            const text = await file.text();
+            model.loadFromText(text);
+            setPendingBondAtom(null);
+            setStatus(`imported ${file.name} (${model.numAtoms()} atoms)`);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            setStatus(`import failed: ${msg || 'unrecognized format'}`);
+        }
+    };
+    const openPasteModal = (): void => {
+        setImportMenuOpen(false);
+        setPasteText('');
+        setPasteModalOpen(true);
+    };
+    const submitPasteModal = (): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        if (!pasteText.trim()) {
+            setStatus('paste some text first');
+            return;
+        }
+        try {
+            model.loadFromText(pasteText);
+            setPendingBondAtom(null);
+            const kind = pasteText.includes('\n') ||
+                pasteText.includes('V2000') ||
+                pasteText.includes('V3000')
+                ? 'MOL'
+                : 'SMILES';
+            setStatus(`loaded ${kind} (${model.numAtoms()} atoms)`);
+            setPasteModalOpen(false);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            setStatus(`load failed: ${msg || 'unrecognized format'}`);
+        }
+    };
+
+    const openExportModal = (): void => {
+        setExportMenuOpen(false);
+        setExportModalOpen(true);
+    };
+    const computeExport = useCallback((fmt: ExportFormat): string => {
+        const model = modelRef.current;
+        if (!model || model.numAtoms() === 0) return '';
+        if (fmt === 'smiles') return model.toSmiles();
+        return model.toMolBlock(fmt === 'mol-v3000');
+    }, []);
+    const doExportCopy = async (): Promise<void> => {
+        const text = computeExport(exportFormat);
+        if (!text) {
+            setStatus('nothing to export — sketch something first');
+            return;
+        }
+        const label = EXPORT_FORMAT_CHOICES
+            .find((c) => c.value === exportFormat)?.label ?? exportFormat;
+        try {
+            await navigator.clipboard.writeText(text);
+            setStatus(`copied ${label} to clipboard`);
+        } catch {
+            setStatus(`${label} ready — copy manually from the text area`);
+        }
+    };
+    const doExportDownload = (): void => {
+        const text = computeExport(exportFormat);
+        if (!text) {
+            setStatus('nothing to export — sketch something first');
+            return;
+        }
+        const choice = EXPORT_FORMAT_CHOICES
+            .find((c) => c.value === exportFormat);
+        const ext = choice?.ext ?? 'txt';
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `sketch.${ext}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        setStatus(`downloaded sketch.${ext}`);
+    };
+
     const adjustCharge = (delta: number): void => {
         const model = modelRef.current;
         if (!model) return;
@@ -2492,12 +2620,63 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     <span style={styles.topDivider} />
                     <IconButton icon='topbar_clear_sketcher' onClick={doClear}
                         testid='clear' title='Clear Sketcher' />
-                    <IconButton icon='topbar_import'
-                        onClick={() => comingSoon('Import')}
-                        testid='import' title='Import' />
-                    <IconButton icon='topbar_export'
-                        onClick={() => comingSoon('Export')}
-                        testid='export' title='Export' />
+                    {/* Import / Export dropdowns mirror Qt's
+                        ImportMenu/ExportMenu (menu/sketcher_top_bar_menus.cpp).
+                        InstantPopup-style: click opens the menu under the
+                        button. */}
+                    <div style={{ position: 'relative' }}
+                        data-testid='import-wrapper'
+                        onMouseLeave={() => setImportMenuOpen(false)}>
+                        <IconButton icon='topbar_import'
+                            onClick={() => setImportMenuOpen((v) => !v)}
+                            testid='import' title='Import'
+                            active={importMenuOpen} />
+                        {importMenuOpen && (
+                            <div style={styles.moreMenu}
+                                data-testid='import-menu'>
+                                <MoreItem label='Import from File...'
+                                    testid='import-from-file'
+                                    onClick={triggerFileImport} />
+                                <MoreItem label='Paste in Text...'
+                                    testid='import-paste-in-text'
+                                    onClick={openPasteModal} />
+                            </div>
+                        )}
+                    </div>
+                    <div style={{ position: 'relative' }}
+                        data-testid='export-wrapper'
+                        onMouseLeave={() => setExportMenuOpen(false)}>
+                        <IconButton icon='topbar_export'
+                            onClick={() => setExportMenuOpen((v) => !v)}
+                            testid='export' title='Export'
+                            active={exportMenuOpen} />
+                        {exportMenuOpen && (
+                            <div style={styles.moreMenu}
+                                data-testid='export-menu'>
+                                {/* Save Image is still a stub — the
+                                    canvas-to-PNG/SVG path needs its own
+                                    batch (Qt's FileSaveImageDialog opens
+                                    a width/height/transparent-bg popup). */}
+                                <MoreItem label='Save Image...'
+                                    testid='export-save-image'
+                                    onClick={() => {
+                                        setExportMenuOpen(false);
+                                        comingSoon('Save Image');
+                                    }} />
+                                <MoreItem label='Export to File...'
+                                    testid='export-to-file'
+                                    onClick={openExportModal} />
+                            </div>
+                        )}
+                    </div>
+                    <input
+                        ref={fileInputRef}
+                        type='file'
+                        accept='.mol,.sdf,.smi,.smiles,.smarts,.mol2,.pdb,.xyz,.mrv,.cdxml,.inchi,.txt'
+                        style={{ display: 'none' }}
+                        data-testid='import-file-input'
+                        onChange={(e) => { void onImportFile(e); }}
+                    />
                     <span style={styles.topDivider} />
                     <IconButton icon='topbar_settings'
                         onClick={() => comingSoon('Settings')}
@@ -2819,6 +2998,109 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     </div>
                 </div>
             </div>
+            {pasteModalOpen && (
+                <div style={styles.modalOverlay}
+                    data-testid='paste-text-modal'
+                    onClick={(e) => {
+                        if (e.target === e.currentTarget) {
+                            setPasteModalOpen(false);
+                        }
+                    }}>
+                    <div style={styles.modalCard}>
+                        <div style={styles.modalTitle}>Paste in Text</div>
+                        <textarea
+                            value={pasteText}
+                            onChange={(e) => setPasteText(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Escape') {
+                                    e.preventDefault();
+                                    setPasteModalOpen(false);
+                                } else if (e.key === 'Enter' &&
+                                    (e.ctrlKey || e.metaKey)) {
+                                    e.preventDefault();
+                                    submitPasteModal();
+                                }
+                            }}
+                            placeholder='Paste SMILES (c1ccccc1) or a MOL block — Cmd+Enter to Load'
+                            style={styles.modalTextarea}
+                            data-testid='paste-text-input'
+                            spellCheck={false}
+                            autoFocus
+                        />
+                        <div style={styles.modalButtons}>
+                            <button type='button' style={styles.modalBtn}
+                                data-testid='paste-text-cancel'
+                                onClick={() => setPasteModalOpen(false)}>
+                                Cancel
+                            </button>
+                            <button type='button' style={styles.modalBtnPrimary}
+                                data-testid='paste-text-load'
+                                onClick={submitPasteModal}>
+                                Load
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {exportModalOpen && (
+                <div style={styles.modalOverlay}
+                    data-testid='export-modal'
+                    onClick={(e) => {
+                        if (e.target === e.currentTarget) {
+                            setExportModalOpen(false);
+                        }
+                    }}>
+                    <div style={styles.modalCard}>
+                        <div style={styles.modalTitle}>Export to File</div>
+                        <div style={styles.modalRow}>
+                            <label htmlFor='export-format-select'
+                                style={styles.modalLabel}>
+                                Format
+                            </label>
+                            <select
+                                id='export-format-select'
+                                data-testid='export-format-select'
+                                value={exportFormat}
+                                onChange={(e) =>
+                                    setExportFormat(
+                                        e.target.value as ExportFormat,
+                                    )
+                                }
+                                style={styles.modalSelect}>
+                                {EXPORT_FORMAT_CHOICES.map((c) => (
+                                    <option key={c.value} value={c.value}>
+                                        {c.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <textarea
+                            readOnly
+                            value={computeExport(exportFormat)}
+                            style={styles.modalTextarea}
+                            data-testid='export-text'
+                            spellCheck={false}
+                        />
+                        <div style={styles.modalButtons}>
+                            <button type='button' style={styles.modalBtn}
+                                data-testid='export-close'
+                                onClick={() => setExportModalOpen(false)}>
+                                Close
+                            </button>
+                            <button type='button' style={styles.modalBtn}
+                                data-testid='export-download'
+                                onClick={doExportDownload}>
+                                Download
+                            </button>
+                            <button type='button' style={styles.modalBtnPrimary}
+                                data-testid='export-copy'
+                                onClick={() => { void doExportCopy(); }}>
+                                Copy
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </section>
     );
 }
@@ -3557,6 +3839,81 @@ const styles: Record<string, CSSProperties> = {
         display: 'block',
     },
     moreItemHover: { background: HOVER_BG },
+    modalOverlay: {
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: 'rgba(0,0,0,0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 100,
+    },
+    modalCard: {
+        background: 'white',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 4,
+        boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+        padding: 16,
+        minWidth: 440,
+        maxWidth: 560,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+    },
+    modalTitle: {
+        font: '600 14px sans-serif',
+        color: '#222',
+    },
+    modalRow: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+    },
+    modalLabel: {
+        font: '12px sans-serif',
+        color: '#444',
+    },
+    modalSelect: {
+        font: '12px sans-serif',
+        padding: '3px 6px',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 3,
+        background: 'white',
+    },
+    modalTextarea: {
+        font: '11px Menlo, Consolas, monospace',
+        padding: 6,
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 3,
+        minHeight: 160,
+        resize: 'vertical',
+        outline: 'none',
+    },
+    modalButtons: {
+        display: 'flex',
+        justifyContent: 'flex-end',
+        gap: 6,
+    },
+    modalBtn: {
+        font: '12px sans-serif',
+        padding: '4px 12px',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 3,
+        background: 'white',
+        cursor: 'pointer',
+    },
+    modalBtnPrimary: {
+        font: '12px sans-serif',
+        padding: '4px 12px',
+        border: '1px solid #3d5d71',
+        borderRadius: 3,
+        background: '#3d5d71',
+        color: 'white',
+        cursor: 'pointer',
+    },
     canvasColumn: {
         flex: '1 1 auto',
         display: 'flex',
