@@ -827,6 +827,100 @@ test.describe('React Sketcher', () => {
             .toContainText(/imported sample\.smi/);
     });
 
+    test('Import menu: Replace Current Content toggle defaults on and gates import', async ({
+        page,
+    }) => {
+        // Qt's ImportMenu (menu/sketcher_top_bar_menus.cpp:50) adds a
+        // checkable "Replace Current Content" action; default from
+        // model/sketcher_model.cpp:227 is true. When ON,
+        // sketcher_widget::importText calls m_mol_model->clear() before
+        // loading; when OFF, the new structure is appended (or the user
+        // is signaled that append isn't ready yet here, since the lean
+        // mol_model doesn't yet expose a merge primitive). Ctrl+V paste
+        // is intentionally agnostic of this flag per the Qt comment at
+        // sketcher_widget.cpp:685.
+        await page.getByTestId('import').click();
+        const toggle = page.getByTestId('import-replace-content');
+        await expect(toggle).toBeVisible();
+        await expect(toggle).toHaveAttribute('aria-checked', 'true');
+        // Toggle off — flips the aria state and keeps the menu open so
+        // the user can launch an import in the same gesture.
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-checked', 'false');
+        await expect(page.getByTestId('import-menu')).toBeVisible();
+        // Import from File while OFF surfaces the coming-soon stub and
+        // does NOT touch the canvas.
+        await page.getByTestId('import-file-input').setInputFiles({
+            name: 'sample.smi',
+            mimeType: 'chemical/x-daylight-smiles',
+            buffer: Buffer.from('c1ccccc1'),
+        });
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/append mode coming soon/);
+        const empty = await snapshot(page);
+        expect(empty.atoms).toHaveLength(0);
+        // Paste in Text while OFF also surfaces the stub; modal stays
+        // open so the user can fix the toggle or cancel. (The import
+        // menu is still open from above — setInputFiles doesn't close
+        // it — so we click the paste-in-text item directly.)
+        await page.getByTestId('import-paste-in-text').click();
+        await page.getByTestId('paste-text-input').fill('CCO');
+        await page.getByTestId('paste-text-load').click();
+        await expect(page.getByTestId('paste-text-modal')).toBeVisible();
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/append mode coming soon/);
+        const stillEmpty = await snapshot(page);
+        expect(stillEmpty.atoms).toHaveLength(0);
+        await page.getByTestId('paste-text-cancel').click();
+        // Toggle back on — import works as normal.
+        await page.getByTestId('import').click();
+        await page.getByTestId('import-replace-content').click();
+        await expect(page.getByTestId('import-replace-content'))
+            .toHaveAttribute('aria-checked', 'true');
+        await page.getByTestId('import-paste-in-text').click();
+        await page.getByTestId('paste-text-input').fill('CCO');
+        await page.getByTestId('paste-text-load').click();
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(3);
+        expect(rd.bonds).toHaveLength(2);
+    });
+
+    test('Import menu: Replace Current Content does NOT gate Ctrl+V clipboard paste', async ({
+        page,
+        context,
+    }) => {
+        // Qt's paste handler (sketcher_widget.cpp:685) explicitly notes
+        // that clipboard paste merges into the existing scene
+        // regardless of the Replace Current Content flag — the flag is
+        // for the Import menu only. Confirm Ctrl+V still loads.
+        await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+        // Turn off Replace Current Content.
+        await page.getByTestId('import').click();
+        await page.getByTestId('import-replace-content').click();
+        await expect(page.getByTestId('import-replace-content'))
+            .toHaveAttribute('aria-checked', 'false');
+        // Close the import menu by clicking on the canvas (the document
+        // mousedown handler dismisses any open menu when the click lands
+        // outside its wrapper). The click itself is on an empty canvas
+        // with no draw tool active, so it doesn't create an atom.
+        await page.getByTestId('sketcher-canvas').click({
+            position: { x: 200, y: 200 },
+        });
+        await expect(page.getByTestId('import-menu')).toHaveCount(0);
+        // Push SMILES into the clipboard and dispatch the platform paste
+        // shortcut — Cmd+V on macOS, Ctrl+V elsewhere.
+        await page.evaluate(() =>
+            navigator.clipboard.writeText('CCO'));
+        const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+        await page.keyboard.press(`${modifier}+v`);
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(3);
+        // Status should be the normal "pasted SMILES" line — NOT the
+        // append-mode stub, because Ctrl+V ignores the toggle.
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/pasted SMILES/);
+    });
+
     test('Export menu: Export to File modal renders SMILES / V2000 / V3000 and copies', async ({
         page,
     }) => {

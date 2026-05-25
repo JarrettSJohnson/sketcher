@@ -1023,6 +1023,20 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const toggleDisplayOption = (key: keyof DisplayOptions): void => {
         setDisplayOptions((opt) => ({ ...opt, [key]: !opt[key] }));
     };
+    // Import menu's checkable "Replace Current Content" toggle — Qt's
+    // ImportMenu::m_replace_content_act (menu/sketcher_top_bar_menus.cpp:50)
+    // mirrors NEW_STRUCTURES_REPLACE_CONTENT in the SketcherModel and
+    // defaults to true (model/sketcher_model.cpp:227). When checked, file
+    // import + paste-in-text clear the existing mol first; when unchecked
+    // the Qt path merges via add_mol_or_reaction_to_mol_model. The lean
+    // MolModel doesn't have an append/merge primitive yet, so unchecked
+    // mode surfaces a friendly stub message instead of silently replacing.
+    // Ctrl+V (clipboard paste) is agnostic per Qt's
+    // sketcher_widget.cpp:685 comment ("paste is agnostic of
+    // NEW_STRUCTURES_REPLACE_CONTENT"), so the Batch 17 paste handler is
+    // unchanged.
+    const [replaceCurrentContent, setReplaceCurrentContent] =
+        useState<boolean>(true);
     // Help dropdown (Qt's HelpMenu, menu/sketcher_top_bar_menus.cpp:130-151)
     // + its two modal sub-dialogs (SketcherWelcomeDialog,
     // About2DSketcher). Modal state mirrors what the Qt dialogs hold.
@@ -2274,6 +2288,13 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         if (!file) return;
         const model = modelRef.current;
         if (!model) return;
+        if (!replaceCurrentContent) {
+            setStatus(
+                "append mode coming soon — toggle 'Replace Current Content' " +
+                'back on to import',
+            );
+            return;
+        }
         try {
             const text = await file.text();
             model.loadFromText(text);
@@ -2294,6 +2315,13 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         if (!model) return;
         if (!pasteText.trim()) {
             setStatus('paste some text first');
+            return;
+        }
+        if (!replaceCurrentContent) {
+            setStatus(
+                "append mode coming soon — toggle 'Replace Current Content' " +
+                'back on to import',
+            );
             return;
         }
         try {
@@ -2945,6 +2973,13 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 <MoreItem label='Paste in Text...'
                                     testid='import-paste-in-text'
                                     onClick={openPasteModal} />
+                                <div style={styles.moreDivider} />
+                                <ToggleMenuItem
+                                    label='Replace Current Content'
+                                    testid='import-replace-content'
+                                    checked={replaceCurrentContent}
+                                    onToggle={() =>
+                                        setReplaceCurrentContent((v) => !v)} />
                             </div>
                         )}
                     </div>
