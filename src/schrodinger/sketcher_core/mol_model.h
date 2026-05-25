@@ -198,6 +198,19 @@ class MolModel : public UndoableModel
     void loadFromText(const std::string& text);
 
     /**
+     * Append the parsed text to the current mol (auto-detects format). The
+     * existing structure is preserved; the new mol is placed to the right
+     * of the existing mol with IMPORT_SPACING (2 * RDDepict::BOND_LEN = 3.0
+     * RDKit units) of horizontal gap, vertically centered against the
+     * existing mol. When the current mol is empty, the new mol is centered
+     * at the origin instead. Mirrors Qt `MolModel::addMol` with
+     * reposition_mol=true (model/mol_model.cpp:1195). Single undo step.
+     * Throws std::invalid_argument on unparseable input; no-op when the
+     * parse succeeds but yields zero atoms.
+     */
+    void addMolFromText(const std::string& text);
+
+    /**
      * Serialize the current mol as a SMILES string. Returns an empty string
      * for an empty mol. RDKit writes non-Kekulé canonical SMILES by default;
      * stereo is preserved.

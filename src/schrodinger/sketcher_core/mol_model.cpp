@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -545,6 +546,90 @@ void MolModel::loadFromText(const std::string& text)
     // isn't present (typical for SMILES/InChI inputs).
     prepare_loaded_mol(new_mol, /*needs_2d_coords=*/false);
     doMutation([this, new_mol] { m_mol = new_mol; }, "Load");
+}
+
+namespace
+{
+
+// Shift `mol`'s 2D conformer so its centroid sits at the origin. Mirrors Qt's
+// center_on_origin (molviewer/coord_utils.cpp:249) but inlined here to avoid
+// pulling the Qt sketcher target into sketcher_core.
+void center_mol_on_origin(RDKit::RWMol& mol)
+{
+    if (mol.getNumAtoms() == 0 || mol.getNumConformers() == 0) {
+        return;
+    }
+    auto& conf = mol.getConformer();
+    RDGeom::Point3D centroid(0, 0, 0);
+    for (const auto& p : conf.getPositions()) {
+        centroid += p;
+    }
+    centroid /= static_cast<double>(conf.getNumAtoms());
+    for (auto& p : conf.getPositions()) {
+        p -= centroid;
+    }
+}
+
+// Translate `to_move`'s 2D conformer so its left edge sits `gap` units to the
+// right of `stationary`'s right edge, vertically aligned against
+// `stationary`'s mean-Y. Mirrors Qt's move_molecule_to_the_right_of
+// (molviewer/coord_utils.cpp:406) but does not return the placement point
+// (no callers in sketcher_core need it).
+void move_to_right_of(RDKit::RWMol& to_move, const RDKit::RWMol& stationary,
+                      double gap)
+{
+    auto& to_move_conf = to_move.getConformer();
+    const auto& stat_conf = stationary.getConformer();
+    if (stat_conf.getNumAtoms() == 0 || to_move_conf.getNumAtoms() == 0) {
+        return;
+    }
+    double max_stat_x = -std::numeric_limits<double>::max();
+    double sum_stat_y = 0.0;
+    for (const auto& p : stat_conf.getPositions()) {
+        max_stat_x = std::max(max_stat_x, p.x);
+        sum_stat_y += p.y;
+    }
+    const double center_stat_y =
+        sum_stat_y / static_cast<double>(stat_conf.getNumAtoms());
+    double min_move_x = std::numeric_limits<double>::max();
+    double sum_move_y = 0.0;
+    for (const auto& p : to_move_conf.getPositions()) {
+        min_move_x = std::min(min_move_x, p.x);
+        sum_move_y += p.y;
+    }
+    const double center_move_y =
+        sum_move_y / static_cast<double>(to_move_conf.getNumAtoms());
+    const RDGeom::Point3D offset(max_stat_x - min_move_x + gap,
+                                 center_stat_y - center_move_y, 0);
+    for (auto& p : to_move_conf.getPositions()) {
+        p += offset;
+    }
+}
+
+} // namespace
+
+void MolModel::addMolFromText(const std::string& text)
+{
+    // Same parse path as loadFromText — AUTO_DETECT walks SMILES/MOL/etc.
+    auto parsed = rdkit_extensions::to_rdkit(text);
+    RDKit::RWMol new_mol(*parsed);
+    if (new_mol.getNumAtoms() == 0) {
+        return;
+    }
+    prepare_loaded_mol(new_mol, /*needs_2d_coords=*/false);
+    // Qt uses IMPORT_SPACING = 2 * BOND_LENGTH (constants.h:329), where
+    // BOND_LENGTH = RDDepict::BOND_LEN = 1.5. Hardcoded here so sketcher_core
+    // stays free of the Qt constants header.
+    constexpr double IMPORT_SPACING = 2.0 * 1.5;
+    if (m_mol.getNumAtoms() == 0) {
+        center_mol_on_origin(new_mol);
+    } else {
+        move_to_right_of(new_mol, m_mol, IMPORT_SPACING);
+    }
+    // insertMol merges atoms/bonds and copies coordinates when conformer
+    // counts match (both mols have exactly one 2D conformer here). Mirrors
+    // Qt `addMolCommandFunc` (model/mol_model.cpp:2970).
+    doMutation([this, new_mol] { m_mol.insertMol(new_mol); }, "Import");
 }
 
 std::string MolModel::toSmiles() const

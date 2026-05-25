@@ -2667,18 +2667,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         if (!file) return;
         const model = modelRef.current;
         if (!model) return;
-        if (!replaceCurrentContent) {
-            setStatus(
-                "append mode coming soon — toggle 'Replace Current Content' " +
-                'back on to import',
-            );
-            return;
-        }
         try {
             const text = await file.text();
-            model.loadFromText(text);
+            if (replaceCurrentContent) {
+                model.loadFromText(text);
+            } else {
+                model.addMolFromText(text);
+            }
             setPendingBondAtom(null);
-            setStatus(`imported ${file.name} (${model.numAtoms()} atoms)`);
+            const verb = replaceCurrentContent ? 'imported' : 'appended';
+            setStatus(`${verb} ${file.name} (${model.numAtoms()} atoms)`);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             setStatus(`import failed: ${msg || 'unrecognized format'}`);
@@ -2696,22 +2694,20 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             setStatus('paste some text first');
             return;
         }
-        if (!replaceCurrentContent) {
-            setStatus(
-                "append mode coming soon — toggle 'Replace Current Content' " +
-                'back on to import',
-            );
-            return;
-        }
         try {
-            model.loadFromText(pasteText);
+            if (replaceCurrentContent) {
+                model.loadFromText(pasteText);
+            } else {
+                model.addMolFromText(pasteText);
+            }
             setPendingBondAtom(null);
             const kind = pasteText.includes('\n') ||
                 pasteText.includes('V2000') ||
                 pasteText.includes('V3000')
                 ? 'MOL'
                 : 'SMILES';
-            setStatus(`loaded ${kind} (${model.numAtoms()} atoms)`);
+            const verb = replaceCurrentContent ? 'loaded' : 'appended';
+            setStatus(`${verb} ${kind} (${model.numAtoms()} atoms)`);
             setPasteModalOpen(false);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);

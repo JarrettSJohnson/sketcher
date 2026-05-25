@@ -827,62 +827,71 @@ test.describe('React Sketcher', () => {
             .toContainText(/imported sample\.smi/);
     });
 
-    test('Import menu: Replace Current Content toggle defaults on and gates import', async ({
+    test('Import menu: Replace Current Content toggle controls replace vs append', async ({
         page,
     }) => {
         // Qt's ImportMenu (menu/sketcher_top_bar_menus.cpp:50) adds a
         // checkable "Replace Current Content" action; default from
         // model/sketcher_model.cpp:227 is true. When ON,
         // sketcher_widget::importText calls m_mol_model->clear() before
-        // loading; when OFF, the new structure is appended (or the user
-        // is signaled that append isn't ready yet here, since the lean
-        // mol_model doesn't yet expose a merge primitive). Ctrl+V paste
-        // is intentionally agnostic of this flag per the Qt comment at
-        // sketcher_widget.cpp:685.
+        // loading; when OFF, the new structure is appended (Qt:
+        // MolModel::addMol with reposition_mol=true, model/mol_model.cpp:1195
+        // — the new mol is placed to the right of the existing one). Ctrl+V
+        // paste is intentionally agnostic of this flag per the Qt comment
+        // at sketcher_widget.cpp:685.
         await page.getByTestId('import').click();
         const toggle = page.getByTestId('import-replace-content');
         await expect(toggle).toBeVisible();
         await expect(toggle).toHaveAttribute('aria-checked', 'true');
-        // Toggle off — flips the aria state and keeps the menu open so
-        // the user can launch an import in the same gesture.
-        await toggle.click();
-        await expect(toggle).toHaveAttribute('aria-checked', 'false');
-        await expect(page.getByTestId('import-menu')).toBeVisible();
-        // Import from File while OFF surfaces the coming-soon stub and
-        // does NOT touch the canvas.
-        await page.getByTestId('import-file-input').setInputFiles({
-            name: 'sample.smi',
-            mimeType: 'chemical/x-daylight-smiles',
-            buffer: Buffer.from('c1ccccc1'),
-        });
-        await expect(page.getByTestId('sketcher-status'))
-            .toContainText(/append mode coming soon/);
-        const empty = await snapshot(page);
-        expect(empty.atoms).toHaveLength(0);
-        // Paste in Text while OFF also surfaces the stub; modal stays
-        // open so the user can fix the toggle or cancel. (The import
-        // menu is still open from above — setInputFiles doesn't close
-        // it — so we click the paste-in-text item directly.)
+        // Replace mode (default): paste CCO loads 3 atoms / 2 bonds.
         await page.getByTestId('import-paste-in-text').click();
         await page.getByTestId('paste-text-input').fill('CCO');
         await page.getByTestId('paste-text-load').click();
-        await expect(page.getByTestId('paste-text-modal')).toBeVisible();
-        await expect(page.getByTestId('sketcher-status'))
-            .toContainText(/append mode coming soon/);
-        const stillEmpty = await snapshot(page);
-        expect(stillEmpty.atoms).toHaveLength(0);
-        await page.getByTestId('paste-text-cancel').click();
-        // Toggle back on — import works as normal.
+        let rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(3);
+        expect(rd.bonds).toHaveLength(2);
+        // Toggle off — next import appends rather than replacing.
         await page.getByTestId('import').click();
         await page.getByTestId('import-replace-content').click();
         await expect(page.getByTestId('import-replace-content'))
-            .toHaveAttribute('aria-checked', 'true');
+            .toHaveAttribute('aria-checked', 'false');
         await page.getByTestId('import-paste-in-text').click();
-        await page.getByTestId('paste-text-input').fill('CCO');
+        await page.getByTestId('paste-text-input').fill('N');
         await page.getByTestId('paste-text-load').click();
-        const rd = await snapshot(page);
-        expect(rd.atoms).toHaveLength(3);
+        rd = await snapshot(page);
+        // 3 (original CCO) + 1 (N) = 4 atoms; bonds unchanged at 2.
+        expect(rd.atoms).toHaveLength(4);
         expect(rd.bonds).toHaveLength(2);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/appended/);
+        // The newly added N should sit to the right of the existing mol
+        // (matches Qt's move_molecule_to_the_right_of placement). Verify
+        // by comparing min-x of the new atom against max-x of the others.
+        const xs = rd.atoms.map((a) => a.x);
+        const maxOldX = Math.max(...xs.slice(0, 3));
+        const newX = xs[3];
+        expect(newX).toBeGreaterThan(maxOldX);
+        // Append is a single undo step — one undo restores to 3 atoms.
+        await page.keyboard.press(
+            (process.platform === 'darwin' ? 'Meta' : 'Control') + '+z',
+        );
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(3);
+        // File import while OFF also appends — load benzene SMI on top.
+        await page.getByTestId('import').click();
+        await page.getByTestId('import-file-input').setInputFiles({
+            name: 'ring.smi',
+            mimeType: 'chemical/x-daylight-smiles',
+            buffer: Buffer.from('c1ccccc1'),
+        });
+        // setInputFiles' change handler is async — wait for the status line
+        // to flip before snapshotting the model.
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/appended ring\.smi/);
+        rd = await snapshot(page);
+        // 3 (CCO) + 6 (benzene) = 9 atoms; 2 + 6 ring bonds = 8 bonds.
+        expect(rd.atoms).toHaveLength(9);
+        expect(rd.bonds).toHaveLength(8);
     });
 
     test('Import menu: Replace Current Content does NOT gate Ctrl+V clipboard paste', async ({

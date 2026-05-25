@@ -85,6 +85,13 @@ export interface MolModelInstance {
     loadFromSmiles(smiles: string): void;
     /** Replace mol with parsed text (auto-detects SMILES, MOL, etc.). Throws on failure. */
     loadFromText(text: string): void;
+    /**
+     * Append parsed text to the current mol. The new structure is placed to
+     * the right of the existing mol (or centered at the origin if the mol is
+     * empty). Auto-detects format like loadFromText; throws on parse failure.
+     * Single undo step.
+     */
+    addMolFromText(text: string): void;
     /** Canonical SMILES for the current mol; empty string if mol is empty. */
     toSmiles(): string;
     /** MDL MOL block (V3000 if `v3000` else V2000); empty for empty mol. */

@@ -515,6 +515,10 @@ class MolModelJS
     {
         m_model.loadFromText(text);
     }
+    void addMolFromText(const std::string& text)
+    {
+        m_model.addMolFromText(text);
+    }
     std::string toSmiles() const
     {
         return m_model.toSmiles();
@@ -736,6 +740,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
                   &MolModelJS::setSelectedAtomsToHydrogenIsotope)
         .function("loadFromSmiles", &MolModelJS::loadFromSmiles)
         .function("loadFromText", &MolModelJS::loadFromText)
+        .function("addMolFromText", &MolModelJS::addMolFromText)
         .function("toSmiles", &MolModelJS::toSmiles)
         .function("toMolBlock", &MolModelJS::toMolBlock)
         .function("toMolBlockForSelection",
