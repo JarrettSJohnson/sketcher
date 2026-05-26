@@ -957,12 +957,12 @@ test.describe('React Sketcher', () => {
     test('Reaction tool: SVG export renders <path> for arrow + plus alongside the mol', async ({
         page,
     }) => {
-        // Place two carbons (the bbox math needs atoms — Save Image's
-        // empty-mol guard short-circuits when numAtoms == 0, so a pure
-        // non-mol scheme can't be exported in this skeleton yet), then
-        // an arrow + plus. The exported SVG must include at least two
-        // <path stroke=...> elements (one for the chevron arrow, one for
-        // the crossed plus) on top of the C-C bond path.
+        // Place two carbons, then an arrow + plus. The exported SVG must
+        // include at least two <path stroke=...> elements (one for the
+        // chevron arrow, one for the crossed plus) on top of the C-C
+        // bond. (Reaction-only export — no atoms at all — is covered by
+        // the dedicated reaction-only export test in the Save Image
+        // suite.)
         const canvas = page.getByTestId('sketcher-canvas');
         await canvas.click({ position: { x: 100, y: 200 } });
         await canvas.click({ position: { x: 200, y: 200 } });
@@ -1509,6 +1509,65 @@ test.describe('React Sketcher', () => {
         expect(body).toMatch(/<text [^>]*>O<\/text>/);
         await expect(page.getByTestId('sketcher-status'))
             .toContainText(/saved sketch\.svg — Transparent background/);
+    });
+
+    test('Export menu: Save Image exports a pure reaction-only scheme (arrow + plus, no atoms)', async ({
+        page,
+    }) => {
+        // Reaction-only schemes are real Qt content (arrows + pluses are
+        // NonMolecularObjects, independent of atoms). The earlier Batch 30
+        // landing flagged a gap where doSaveImage bailed when numAtoms ==
+        // 0 — Batch 34 fixes that by seeding the bbox from non-mol coords
+        // when there are no atoms, and folding non-mol drawing extents
+        // into the fit calculation so chevrons / plus arms don't clip.
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Place an arrow, then switch the popup to plus and place two.
+        await page.getByTestId('reaction').click();
+        await canvas.click({ position: { x: 300, y: 200 } });
+        await page.getByTestId('reaction').hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await page.mouse.up();
+        await page.getByTestId('reaction-popup-plus').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await canvas.click({ position: { x: 400, y: 200 } });
+
+        await page.getByTestId('export').click();
+        await page.getByTestId('export-save-image').click();
+        await page.getByTestId('save-image-format-select')
+            .selectOption('svg');
+        await page.getByTestId('save-image-width').fill('400');
+        await page.getByTestId('save-image-height').fill('200');
+        const downloadPromise = page.waitForEvent('download');
+        await page.getByTestId('save-image-save').click();
+        const download = await downloadPromise;
+        const path = await download.path();
+        const fs = await import('node:fs/promises');
+        const body = await fs.readFile(path, 'utf8');
+        // No atoms → no <line> (bond strokes) or element <text>; ≥3
+        // stroked <path>s (one arrow + two pluses) from the non-mol layer.
+        expect(body).not.toMatch(/<line /);
+        const pathMatches = body.match(/<path [^>]*stroke=/g) || [];
+        expect(pathMatches.length).toBeGreaterThanOrEqual(3);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/saved sketch\.svg/);
+    });
+
+    test('Export menu: Save Image still bails when both atoms and non-mol are empty', async ({
+        page,
+    }) => {
+        // Regression guard for Batch 34: the empty-sketch friendly-status
+        // path now uses (atoms + non-mol) == 0, not just numAtoms == 0.
+        // A truly-empty sketch must still surface "nothing to save".
+        await page.getByTestId('export').click();
+        await page.getByTestId('export-save-image').click();
+        let downloaded = false;
+        page.on('download', () => { downloaded = true; });
+        await page.getByTestId('save-image-save').click();
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/nothing to save/);
+        expect(downloaded).toBe(false);
+        await page.getByTestId('save-image-cancel').click();
     });
 
     test('Configure View dropdown: lists Qt-fidelity toggles in Qt order with Qt defaults', async ({

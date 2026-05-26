@@ -3593,10 +3593,6 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const doSaveImage = (): void => {
         const model = modelRef.current;
         if (!model) return;
-        if (model.numAtoms() === 0) {
-            setStatus('nothing to save — sketch something first');
-            return;
-        }
         const w = Math.max(IMAGE_SIZE_MIN,
             Math.min(IMAGE_SIZE_MAX, Math.round(imageWidth)));
         const h = Math.max(IMAGE_SIZE_MIN,
@@ -3607,25 +3603,56 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         } catch {
             rd = BLANK_DESC;
         }
-        if (rd.atoms.length === 0) return;
+        const nonMol = rd.nonMol ?? [];
+        // "Nothing to save" = no atoms AND no non-mol objects. A pure
+        // reaction scheme (arrow + pluses, no atoms) is exportable now —
+        // bbox math below seeds from non-mol coords when there are no
+        // atoms. Each non-mol shape contributes its drawing extent so
+        // the chevrons / plus arms don't get clipped at the bbox edge.
+        if (rd.atoms.length === 0 && nonMol.length === 0) {
+            setStatus('nothing to save — sketch something first');
+            return;
+        }
         // Compute a fit-to-bbox view for the offscreen canvas — same math
         // as doFit but parameterized by (w, h) instead of the live canvas.
-        let minX = rd.atoms[0].x;
-        let maxX = rd.atoms[0].x;
-        let minY = rd.atoms[0].y;
-        let maxY = rd.atoms[0].y;
+        // Seed the bbox from whichever the model has (atoms or non-mol);
+        // both are then folded in so reaction schemes get the right frame.
+        const seed = rd.atoms.length > 0
+            ? { x: rd.atoms[0].x, y: rd.atoms[0].y }
+            : { x: nonMol[0].x, y: nonMol[0].y };
+        let minX = seed.x;
+        let maxX = seed.x;
+        let minY = seed.y;
+        let maxY = seed.y;
         for (const a of rd.atoms) {
             if (a.x < minX) minX = a.x;
             if (a.x > maxX) maxX = a.x;
             if (a.y < minY) minY = a.y;
             if (a.y > maxY) maxY = a.y;
         }
+        // Non-mol extents in model units: an arrow spans ±half-length
+        // horizontally and ±tip-half-width vertically; a plus is
+        // ±half-length both ways. Without these the chevrons / arms
+        // would clip at the bbox edge in a tight reaction-only fit.
+        const ARROW_HX = RXN_ARROW_LENGTH_MODEL / 2;
+        const ARROW_HY = RXN_ARROW_TIP_HALF_WIDTH_MODEL;
+        const PLUS_H = RXN_PLUS_HALF_LENGTH_MODEL;
+        for (const n of nonMol) {
+            const hx = n.type === 'arrow' ? ARROW_HX : PLUS_H;
+            const hy = n.type === 'arrow' ? ARROW_HY : PLUS_H;
+            if (n.x - hx < minX) minX = n.x - hx;
+            if (n.x + hx > maxX) maxX = n.x + hx;
+            if (n.y - hy < minY) minY = n.y - hy;
+            if (n.y + hy > maxY) maxY = n.y + hy;
+        }
         const bboxW = Math.max(maxX - minX, 1e-6);
         const bboxH = Math.max(maxY - minY, 1e-6);
         const marginPx = Math.min(40, Math.floor(Math.min(w, h) * 0.1));
         const usableW = Math.max(w - 2 * marginPx, 1);
         const usableH = Math.max(h - 2 * marginPx, 1);
-        const fitScale = rd.atoms.length === 1
+        // Single-atom (or single non-mol object) → no real bbox; use
+        // DEFAULT_SCALE so we don't divide by ~0 and zoom to infinity.
+        const fitScale = (rd.atoms.length + nonMol.length) === 1
             ? DEFAULT_SCALE
             : Math.min(usableW / bboxW, usableH / bboxH);
         const scale = Math.min(fitScale, DEFAULT_SCALE * 2);
