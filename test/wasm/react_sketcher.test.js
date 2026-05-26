@@ -3943,4 +3943,156 @@ test.describe('React Sketcher', () => {
         await expect(page.getByTestId('export-modal')).toBeVisible();
     });
 
+    // -------- Batch 36: selection right-click context menu --------
+    // Mirrors Qt's SelectionContextMenu (menu/selection_context_menu.cpp).
+    // Qt's SketcherView dispatches right-click → SelectionContextMenu when
+    // hit-test lands on a selected item, BackgroundContextMenu otherwise.
+    // Without item hit-test (deferred), the dispatch collapses to "any
+    // selection present → selection menu" which preserves the user-visible
+    // behavior of Qt for the right-click-with-selection case.
+    test('selection context menu: right-click with active selection opens SelectionContextMenu (not Background)', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Select-all so a selection exists.
+        await page.keyboard.press('Control+A');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await expect(page.getByTestId('sel-context-menu')).toBeVisible();
+        await expect(page.getByTestId('bg-context-menu')).toHaveCount(0);
+    });
+
+    test('selection context menu: action set matches Qt (Invert / Copy / Copy As / Flip Molecule / Delete)', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        for (const id of [
+            'sel-ctx-invert',
+            'sel-ctx-copy',
+            'sel-ctx-copy-as-mol-v3000', 'sel-ctx-copy-as-maestro',
+            'sel-ctx-copy-as-smiles', 'sel-ctx-copy-as-extended-smiles',
+            'sel-ctx-copy-as-smarts', 'sel-ctx-copy-as-extended-smarts',
+            'sel-ctx-copy-as-inchi', 'sel-ctx-copy-as-inchikey',
+            'sel-ctx-copy-as-pdb', 'sel-ctx-copy-as-xyz',
+            'sel-ctx-copy-as-mrv',
+            'sel-ctx-flip-horizontal', 'sel-ctx-flip-vertical',
+            'sel-ctx-delete',
+        ]) {
+            await expect(page.getByTestId(id)).toBeVisible();
+        }
+    });
+
+    test('selection context menu: clearing selection routes the next right-click back to BackgroundContextMenu', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await expect(page.getByTestId('sel-context-menu')).toBeVisible();
+        // Dismiss without acting, clear selection, then re-open.
+        await page.keyboard.press('Escape'); // not actually wired, but click
+        // outside dismisses — use that:
+        await page.getByTestId('sketcher-status').click();
+        await page.keyboard.press('Control+D'); // clear selection shortcut
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await expect(page.getByTestId('bg-context-menu')).toBeVisible();
+        await expect(page.getByTestId('sel-context-menu')).toHaveCount(0);
+    });
+
+    test('selection context menu: Invert Selection toggles which atoms are selected', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Select all three, then in next steps we'll invert via menu.
+        await page.keyboard.press('Control+A');
+        let rd = await snapshot(page);
+        const allSelected = rd.atoms.every((a) => a.sel);
+        expect(allSelected).toBe(true);
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-invert').click();
+        rd = await snapshot(page);
+        const noneSelected = rd.atoms.every((a) => !a.sel);
+        expect(noneSelected).toBe(true);
+    });
+
+    test('selection context menu: Copy writes MOL V3000 (Qt DEFAULT_FORMAT) for the selection', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-copy').click();
+        const clip = await readClipboard(page);
+        expect(clip).toContain('V30 BEGIN CTAB');
+    });
+
+    test('selection context menu: Copy As SMILES emits selection SMILES', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-copy-as-smiles').click();
+        const clip = await readClipboard(page);
+        expect(clip.trim()).toBe('CCO');
+    });
+
+    test('selection context menu: Flip Horizontally mirrors selected atoms about centroid', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const before = await snapshot(page);
+        const xs = before.atoms.map((a) => a.x);
+        const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-flip-horizontal').click();
+        const after = await snapshot(page);
+        for (let i = 0; i < before.atoms.length; ++i) {
+            expect(after.atoms[i].x).toBeCloseTo(2 * cx - before.atoms[i].x, 3);
+        }
+    });
+
+    test('selection context menu: Delete removes the selected atoms', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        let rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(3);
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-delete').click();
+        await expect(page.getByTestId('sel-context-menu')).toHaveCount(0);
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(0);
+    });
+
+    test('selection context menu: outside-click dismisses without mutating the selection', async ({
+        page,
+    }) => {
+        await loadText(page, 'CC');
+        await page.keyboard.press('Control+A');
+        const before = await snapshot(page);
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await expect(page.getByTestId('sel-context-menu')).toBeVisible();
+        await page.getByTestId('sketcher-status').click();
+        await expect(page.getByTestId('sel-context-menu')).toHaveCount(0);
+        const after = await snapshot(page);
+        // Same atoms, same selection (nothing was acted on).
+        expect(after.atoms).toHaveLength(before.atoms.length);
+        for (let i = 0; i < before.atoms.length; ++i) {
+            expect(after.atoms[i].sel).toBe(before.atoms[i].sel);
+        }
+    });
+
 });

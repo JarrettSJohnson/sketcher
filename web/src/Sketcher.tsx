@@ -1991,12 +1991,24 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [moreMenuOpen, setMoreMenuOpen] = useState<boolean>(false);
     // Right-click context menu on empty canvas — mirrors Qt's
     // BackgroundContextMenu (menu/background_context_menu.cpp). Qt opens it
-    // from SketcherView::contextMenuEvent when the click lands on no item.
-    // `x`/`y` are viewport coords (position: fixed) and `sceneEmpty` is
-    // snapshotted at open time so the enable-states (Save Image, Export,
-    // Flip H/V, Select All) match Qt's BackgroundContextMenu::updateActions.
+    // from SketcherView::contextMenuEvent when the click lands on no item
+    // and there is no active selection. `x`/`y` are viewport coords
+    // (position: fixed) and `sceneEmpty` is snapshotted at open time so
+    // enable-states (Save Image, Export, Flip H/V, Select All) match Qt's
+    // BackgroundContextMenu::updateActions().
     const [bgContextMenu, setBgContextMenu] = useState<
         { x: number; y: number; sceneEmpty: boolean } | null
+    >(null);
+    // Selection right-click context menu — mirrors Qt's SelectionContextMenu
+    // (menu/selection_context_menu.cpp). Qt opens it when right-clicking
+    // anywhere on the canvas while a selection is active. Open-time snapshot
+    // captures atom/bond selection counts so we can label "Flip" vs.
+    // "Flip Molecule" the same way Qt does (Flip is shown when there's
+    // exactly one crossing bond on a single-fragment selection — that path
+    // needs adjacency data we don't have client-side yet, so we always show
+    // the Flip Molecule submenu form which is the more general case).
+    const [selContextMenu, setSelContextMenu] = useState<
+        { x: number; y: number; nAtoms: number; nBonds: number } | null
     >(null);
     // Top-bar Import / Export dropdowns + their modals. Mirrors Qt's
     // ImportMenu / ExportMenu (menu/sketcher_top_bar_menus.cpp) + the
@@ -2452,10 +2464,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const configureViewWrapperRef = useRef<HTMLDivElement | null>(null);
     const helpMenuWrapperRef = useRef<HTMLDivElement | null>(null);
     const bgContextMenuRef = useRef<HTMLDivElement | null>(null);
-    // Bounds-clamp the background context menu within the viewport — Qt's
-    // QMenu does this automatically (flips upward / leftward at edges). The
-    // menu has 21 items and tall layouts can easily push the bottom items
-    // below a 700px-tall window.
+    const selContextMenuRef = useRef<HTMLDivElement | null>(null);
+    // Bounds-clamp the right-click menus within the viewport — Qt's QMenu
+    // does this automatically (flips upward / leftward at edges). The
+    // background menu has 21 items and tall layouts can easily push the
+    // bottom items below a 700px-tall window.
     useLayoutEffect(() => {
         if (!bgContextMenu) return;
         const el = bgContextMenuRef.current;
@@ -2471,9 +2484,25 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             el.style.top = `${y}px`;
         }
     }, [bgContextMenu]);
+    useLayoutEffect(() => {
+        if (!selContextMenu) return;
+        const el = selContextMenuRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        let { x, y } = selContextMenu;
+        if (x + rect.width > vw) x = Math.max(0, vw - rect.width - 4);
+        if (y + rect.height > vh) y = Math.max(0, vh - rect.height - 4);
+        if (x !== selContextMenu.x || y !== selContextMenu.y) {
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+        }
+    }, [selContextMenu]);
     useEffect(() => {
         if (!moreMenuOpen && !importMenuOpen && !exportMenuOpen
-            && !configureViewOpen && !helpMenuOpen && !bgContextMenu) return;
+            && !configureViewOpen && !helpMenuOpen && !bgContextMenu
+            && !selContextMenu) return;
         function onDocMouseDown(e: globalThis.MouseEvent): void {
             const t = e.target as Node;
             if (moreMenuOpen && moreMenuWrapperRef.current
@@ -2500,13 +2529,17 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 && !bgContextMenuRef.current.contains(t)) {
                 setBgContextMenu(null);
             }
+            if (selContextMenu && selContextMenuRef.current
+                && !selContextMenuRef.current.contains(t)) {
+                setSelContextMenu(null);
+            }
         }
         document.addEventListener('mousedown', onDocMouseDown);
         return () => {
             document.removeEventListener('mousedown', onDocMouseDown);
         };
     }, [moreMenuOpen, importMenuOpen, exportMenuOpen, configureViewOpen,
-        helpMenuOpen, bgContextMenu]);
+        helpMenuOpen, bgContextMenu, selContextMenu]);
 
     const onCanvasClick = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
@@ -3338,31 +3371,48 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         }
     }, [dragShape, chainDrag]);
 
-    // Right-click on the canvas → open the background context menu (Qt's
-    // BackgroundContextMenu). Position uses viewport coords so the menu is
-    // `position: fixed` and anchored at the cursor. Snapshot scene-empty at
-    // open-time so the enable-states match Qt's updateActions() without
-    // needing a live subscription while the menu is open.
+    // Right-click on the canvas → route to the selection-context menu when
+    // a selection exists, otherwise the background-context menu. Mirrors
+    // Qt's SketcherView::contextMenuEvent dispatch
+    // (molviewer/sketcher_view.cpp): if hit-test lands on a selected item
+    // it opens SelectionContextMenu; otherwise it opens
+    // BackgroundContextMenu. We don't have item hit-test yet so we collapse
+    // the two cases to "any active selection → selection menu", which is
+    // sound because the only way to right-click off an item with selection
+    // present is via a deliberate background click — and in that case Qt's
+    // existing behavior is to keep the selection and act on it, same as
+    // here.
     const onCanvasContextMenu = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
             e.preventDefault();
             const m = modelRef.current;
+            // Snapshot scene state once — used by both menu paths.
             let sceneEmpty = true;
+            let selAtoms = 0;
+            let selBonds = 0;
             if (m) {
-                if (m.numAtoms() > 0) {
-                    sceneEmpty = false;
-                } else {
-                    try {
-                        const rd = JSON.parse(m.description()) as RenderDesc;
-                        if (rd.nonMol && rd.nonMol.length > 0) {
-                            sceneEmpty = false;
-                        }
-                    } catch {
-                        // empty description → keep sceneEmpty true
-                    }
+                try {
+                    const rd = JSON.parse(m.description()) as RenderDesc;
+                    if (rd.atoms.length > 0) sceneEmpty = false;
+                    if (rd.nonMol && rd.nonMol.length > 0) sceneEmpty = false;
+                    for (const a of rd.atoms) if (a.sel) selAtoms++;
+                    for (const b of rd.bonds) if (b.sel) selBonds++;
+                } catch {
+                    // empty description → keep defaults
                 }
             }
-            setBgContextMenu({ x: e.clientX, y: e.clientY, sceneEmpty });
+            if (selAtoms > 0 || selBonds > 0) {
+                setSelContextMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    nAtoms: selAtoms,
+                    nBonds: selBonds,
+                });
+                setBgContextMenu(null);
+            } else {
+                setBgContextMenu({ x: e.clientX, y: e.clientY, sceneEmpty });
+                setSelContextMenu(null);
+            }
         },
         [],
     );
@@ -4982,6 +5032,123 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     <div style={styles.moreDivider} />
                     <MoreItem label='Clear Sketcher' testid='ctx-clear'
                         onClick={() => { setBgContextMenu(null); doClear(); }} />
+                </div>
+            )}
+            {/* Selection context menu — mirrors Qt's SelectionContextMenu
+                (menu/selection_context_menu.cpp). Order/labels follow that
+                file; sections that need infrastructure not yet ported are
+                intentionally omitted (Cut: no separate cut handler;
+                Clean Up Region: needs is_contiguous_region; Modify Atoms /
+                Modify Bonds submenus: large dependency; Add to Selection:
+                needs bracket subgroup + variable attachment bond). Flip is
+                always rendered as the "Flip Molecule" submenu form
+                (Horizontally/Vertically) since the bond-crossing-count
+                logic that picks between "Flip" and "Flip Molecule" needs
+                adjacency data we don't surface client-side yet — the
+                submenu form is the more general of the two. */}
+            {selContextMenu && (
+                <div
+                    ref={selContextMenuRef}
+                    style={{
+                        ...styles.bgContextMenu,
+                        left: selContextMenu.x,
+                        top: selContextMenu.y,
+                    }}
+                    data-testid='sel-context-menu'
+                    onContextMenu={(e) => e.preventDefault()}
+                >
+                    <MoreItem label='Invert Selection'
+                        testid='sel-ctx-invert'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            doInvertSelection();
+                        }} />
+                    <div style={styles.moreDivider} />
+                    <MoreItem label='Copy' testid='sel-ctx-copy'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            void doCopyMolBlockV3000();
+                        }} />
+                    <div style={styles.moreSectionLabel}>Copy As</div>
+                    <MoreItem label='MDL SD V3000'
+                        testid='sel-ctx-copy-as-mol-v3000'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            void doCopyAs('mdl_molv3000', 'MOL V3000');
+                        }} />
+                    <MoreItem label='Maestro' testid='sel-ctx-copy-as-maestro'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            void doCopyAs('maestro', 'Maestro');
+                        }} />
+                    <MoreItem label='SMILES' testid='sel-ctx-copy-as-smiles'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            void doCopyAs('smiles', 'SMILES');
+                        }} />
+                    <MoreItem label='Extended SMILES'
+                        testid='sel-ctx-copy-as-extended-smiles'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            void doCopyAs('extended_smiles', 'Extended SMILES');
+                        }} />
+                    <MoreItem label='SMARTS' testid='sel-ctx-copy-as-smarts'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            void doCopyAs('smarts', 'SMARTS');
+                        }} />
+                    <MoreItem label='Extended SMARTS'
+                        testid='sel-ctx-copy-as-extended-smarts'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            void doCopyAs('extended_smarts', 'Extended SMARTS');
+                        }} />
+                    <MoreItem label='InChI' testid='sel-ctx-copy-as-inchi'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            void doCopyAs('inchi', 'InChI');
+                        }} />
+                    <MoreItem label='InChIKey' testid='sel-ctx-copy-as-inchikey'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            void doCopyAs('inchikey', 'InChIKey');
+                        }} />
+                    <MoreItem label='PDB' testid='sel-ctx-copy-as-pdb'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            void doCopyAs('pdb', 'PDB');
+                        }} />
+                    <MoreItem label='XYZ' testid='sel-ctx-copy-as-xyz'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            void doCopyAs('xyz', 'XYZ');
+                        }} />
+                    <MoreItem label='Marvin Document'
+                        testid='sel-ctx-copy-as-mrv'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            void doCopyAs('mrv', 'Marvin');
+                        }} />
+                    <div style={styles.moreDivider} />
+                    <div style={styles.moreSectionLabel}>Flip Molecule</div>
+                    <MoreItem label='Horizontally'
+                        testid='sel-ctx-flip-horizontal'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            doFlip(true, 'flipped horizontal');
+                        }} />
+                    <MoreItem label='Vertically'
+                        testid='sel-ctx-flip-vertical'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            doFlip(false, 'flipped vertical');
+                        }} />
+                    <div style={styles.moreDivider} />
+                    <MoreItem label='Delete' testid='sel-ctx-delete'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            doDeleteSelected();
+                        }} />
                 </div>
             )}
             {pasteModalOpen && (
