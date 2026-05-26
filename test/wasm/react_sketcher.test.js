@@ -4416,4 +4416,93 @@ test.describe('React Sketcher', () => {
         await expect(page.getByTestId('bond-context-menu')).toHaveCount(0);
     });
 
+    // -------- Batch 39: Set Element submenu in atom context menu --------
+    // Mirrors Qt's ModifyAtomsMenu::createElementMenu → SetAtomMenuWidget
+    // (8-element grid). Backed by MolModel.setAtomElement(idx, atomicNum).
+    test('atom context menu: Set Element strip exposes all 8 fixed elements', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        for (const el of ['C', 'H', 'N', 'O', 'P', 'S', 'F', 'Cl']) {
+            await expect(page.getByTestId(`atom-ctx-set-${el}`)).toBeVisible();
+        }
+    });
+
+    test('atom context menu: clicking N swaps element on the right-clicked atom', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        const before = await snapshot(page);
+        expect(before.atoms[0].el).toBe('C');
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await page.getByTestId('atom-ctx-set-N').click();
+        await expect(page.getByTestId('atom-context-menu')).toHaveCount(0);
+        const after = await snapshot(page);
+        expect(after.atoms[0].el).toBe('N');
+        // No leftover selection — setAtomElement preserves whatever was
+        // selected at call time (nothing here).
+        expect(after.atoms[0].sel).toBeUndefined();
+        // Single undo restores carbon.
+        await page.getByTestId('undo').click();
+        const undone = await snapshot(page);
+        expect(undone.atoms[0].el).toBe('C');
+    });
+
+    test('atom context menu: Set Element resets formal charge to defaults', async ({
+        page,
+    }) => {
+        // C+ atom, then swap to N — Qt mutates by constructing a fresh
+        // RDKit::Atom(element), which zeros the formal charge. Match that.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await page.getByTestId('atom-ctx-charge-plus').click();
+        let rd = await snapshot(page);
+        expect(rd.atoms[0].q).toBe(1);
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await page.getByTestId('atom-ctx-set-N').click();
+        rd = await snapshot(page);
+        expect(rd.atoms[0].el).toBe('N');
+        expect(rd.atoms[0].q).toBeUndefined();
+        // Undo restores N → C and brings the +1 charge back along the way.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms[0].el).toBe('C');
+        expect(rd.atoms[0].q).toBe(1);
+    });
+
+    test('atom context menu: current element button is disabled (no-op self-swap)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        // The drawn atom is C — atom-ctx-set-C should be disabled, others enabled.
+        await expect(page.getByTestId('atom-ctx-set-C')).toBeDisabled();
+        await expect(page.getByTestId('atom-ctx-set-N')).toBeEnabled();
+    });
+
+    test('atom context menu: Set Element disabled for R-groups (preserves dummy)', async ({
+        page,
+    }) => {
+        // R-group atoms carry the _MolFileRLabel dummy property; replaceAtom
+        // would discard it, so Qt's ReplaceAtomsWithMenu / ModifyAtomsMenu
+        // route those through mutateRGroups instead. We gate the inline strip.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('rgroup').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 200, y: 200 }, button: 'right' });
+        for (const el of ['C', 'H', 'N', 'O', 'P', 'S', 'F', 'Cl']) {
+            await expect(page.getByTestId(`atom-ctx-set-${el}`)).toBeDisabled();
+        }
+    });
+
 });

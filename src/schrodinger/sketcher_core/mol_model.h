@@ -206,6 +206,18 @@ class MolModel : public UndoableModel
     void adjustChargeOnSelectedAtoms(int delta);
 
     /**
+     * Replace the element of a single atom (by index) with the element whose
+     * RDKit atomic number is `atomic_num`. Used by the atom context menu's
+     * "Set Element" submenu (Qt: ModifyAtomsMenu::createElementMenu →
+     * SetAtomMenuWidget). Resets formal charge and explicit-H count to the
+     * new element's defaults so the implicit-H cache reflects the swap, just
+     * like Qt's mutateAtoms with a fresh RDKit::Atom(element). Preserves the
+     * selection. Single undo step. Throws std::out_of_range if `idx` is past
+     * the atom count; no-op if the atom already has that atomic number.
+     */
+    void setAtomElement(unsigned int idx, unsigned int atomic_num);
+
+    /**
      * Replace every selected atom with a hydrogen of the given mass-number
      * isotope (Deuterium = 2, Tritium = 3, ordinary H = 1, "no specific
      * isotope" = 0). Mirrors Qt's D/T keyboard shortcuts

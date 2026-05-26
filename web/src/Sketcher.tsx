@@ -35,6 +35,12 @@ const FIXED_ELEMENTS: readonly Element[] =
     ['C', 'H', 'N', 'O', 'P', 'S', 'F', 'Cl'] as const;
 const LAST_PICKED_DEFAULT: Element = 'Si';
 
+// RDKit atomic numbers for the 8 fixed-element buttons. Used by the atom
+// context menu's Set Element submenu to call MolModel.setAtomElement.
+const FIXED_ELEMENT_ATOMIC_NUMS: Record<string, number> = {
+    H: 1, C: 6, N: 7, O: 8, F: 9, P: 15, S: 16, Cl: 17,
+};
+
 // Mirrors Qt's AtomQuery enum (definitions.h). Stubbed for v1: the popup
 // is visually faithful but picking a choice surfaces a coming-soon status
 // since the lean MolModel doesn't expose RDKit::QueryAtom yet.
@@ -5451,6 +5457,42 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 Math.abs(atomContextMenu.q)})`
                             : ''}
                     </div>
+                    {/* Set Element submenu (Qt: ModifyAtomsMenu::createElementMenu
+                        → SetAtomMenuWidget). Inline 4-col strip of the 8 fixed
+                        elements; periodic-table popup is deferred to a follow-up
+                        batch. Disabled for R-groups / attachment-points since
+                        replaceAtom would discard their dummy properties. */}
+                    <div style={styles.moreSectionLabel}>Set Element</div>
+                    <div style={styles.atomCtxElementGrid}>
+                        {FIXED_ELEMENTS.map((el) => {
+                            const active = atomContextMenu.el === el;
+                            const disabled = atomContextMenu.isRGroupOrAp
+                                || active;
+                            return (
+                                <LetterButton
+                                    key={el}
+                                    label={el}
+                                    color={ELEMENT_COLORS[el]}
+                                    active={active}
+                                    disabled={disabled}
+                                    testid={`atom-ctx-set-${el}`}
+                                    title={disabled ? (active
+                                        ? `Already ${el}`
+                                        : 'Cannot change R-group / attachment')
+                                        : `Set to ${el}`}
+                                    onClick={() => {
+                                        if (disabled) return;
+                                        const am = atomContextMenu;
+                                        setAtomContextMenu(null);
+                                        modelRef.current?.setAtomElement(
+                                            am.atomIdx,
+                                            FIXED_ELEMENT_ATOMIC_NUMS[el]);
+                                        setStatus(`Set element: ${el}`);
+                                    }} />
+                            );
+                        })}
+                    </div>
+                    <div style={styles.moreDivider} />
                     <MoreItem
                         label='+ Charge'
                         testid='atom-ctx-charge-plus'
@@ -6403,10 +6445,11 @@ interface LetterButtonProps {
     title?: string;
     active?: boolean;
     color?: string;
+    disabled?: boolean;
 }
 
 function LetterButton({
-    label, onClick, testid, title, active, color,
+    label, onClick, testid, title, active, color, disabled,
 }: LetterButtonProps): JSX.Element {
     const [hover, setHover] = useState(false);
     return (
@@ -6414,15 +6457,20 @@ function LetterButton({
             type='button'
             style={{
                 ...styles.letterBtn,
-                ...(color && !active ? { color } : {}),
-                ...(hover && !active ? styles.iconBtnHover : {}),
+                ...(color && !active && !disabled ? { color } : {}),
+                ...(hover && !active && !disabled ? styles.iconBtnHover : {}),
                 ...(active ? styles.iconBtnActive : {}),
+                ...(disabled
+                    ? { opacity: 0.4, cursor: 'not-allowed' }
+                    : {}),
             }}
             onClick={onClick}
             onMouseEnter={() => setHover(true)}
             onMouseLeave={() => setHover(false)}
             data-testid={testid}
             aria-pressed={active}
+            aria-disabled={disabled}
+            disabled={disabled}
             title={title}
         >
             {label}
@@ -6765,6 +6813,13 @@ const styles: Record<string, CSSProperties> = {
         gridTemplateColumns: `repeat(3, ${ICON_BTN_SIZE}px)`,
         gap: 2,
         justifyContent: 'center',
+    },
+    atomCtxElementGrid: {
+        display: 'grid',
+        gridTemplateColumns: `repeat(4, ${ICON_BTN_SIZE}px)`,
+        gap: 2,
+        justifyContent: 'center',
+        padding: '2px 6px',
     },
     atomQueryRow: {
         display: 'grid',

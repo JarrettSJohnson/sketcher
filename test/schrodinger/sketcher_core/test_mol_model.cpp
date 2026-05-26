@@ -814,6 +814,51 @@ BOOST_AUTO_TEST_CASE(testAdjustChargeNoOpWhenNothingSelectedOrDeltaZero)
     BOOST_CHECK_EQUAL(stack.count(), count_before);
 }
 
+BOOST_AUTO_TEST_CASE(testSetAtomElementSwapsAtomicNumAndIsUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    // Charge + explicit-H state on the original atom — set element resets
+    // both to the new element's defaults (mirrors Qt mutateAtoms semantics).
+    m.setAtomSelected(0, true);
+    m.adjustChargeOnSelectedAtoms(+1);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomicNum(), 6);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getFormalCharge(), 1);
+
+    m.setAtomElement(0, 7); // C → N
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomicNum(), 7);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getFormalCharge(), 0);
+    // Selection survives the swap.
+    BOOST_CHECK(m.isAtomSelected(0));
+
+    // Undo restores element AND prior charge.
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomicNum(), 6);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getFormalCharge(), 1);
+    stack.redo();
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomicNum(), 7);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getFormalCharge(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(testSetAtomElementNoOpWhenSameAtomicNum)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    const auto count_before = stack.count();
+    m.setAtomElement(0, 6); // already carbon
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+}
+
+BOOST_AUTO_TEST_CASE(testSetAtomElementThrowsOnOutOfRange)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    BOOST_CHECK_THROW(m.setAtomElement(99, 7), std::out_of_range);
+}
+
 BOOST_AUTO_TEST_CASE(testLoadFromSmilesReplacesMolWithCoords)
 {
     UndoStack stack;

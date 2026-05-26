@@ -543,6 +543,54 @@ void MolModel::adjustChargeOnSelectedAtoms(int delta)
               delta > 0 ? "Increase charge" : "Decrease charge");
 }
 
+void MolModel::setAtomElement(unsigned int idx, unsigned int atomic_num)
+{
+    if (idx >= m_mol.getNumAtoms()) {
+        throw std::out_of_range("setAtomElement: atom index out of range");
+    }
+    auto* a = m_mol.getAtomWithIdx(idx);
+    if (a->getAtomicNum() == static_cast<int>(atomic_num)) {
+        return;
+    }
+    // Capture full pre-state so undo restores the original element + the
+    // implicit-H-related defaults that we're about to reset. Stored as a POD
+    // so lambdas can copy cheaply (same pattern as
+    // setSelectedAtomsToHydrogenIsotope above).
+    struct AtomState {
+        int atomic_num;
+        int formal_charge;
+        unsigned int num_explicit_hs;
+    };
+    AtomState previous{a->getAtomicNum(), a->getFormalCharge(),
+                       a->getNumExplicitHs()};
+    auto refresh_cache = [this] {
+        try {
+            m_mol.updatePropertyCache(/*strict=*/false);
+        } catch (...) {
+        }
+    };
+    auto redo = [this, idx, atomic_num, refresh_cache] {
+        auto* atom = m_mol.getAtomWithIdx(idx);
+        atom->setAtomicNum(static_cast<int>(atomic_num));
+        // Qt mutates by constructing a fresh RDKit::Atom(element), which
+        // resets formal charge + explicit-H count to the new element's
+        // defaults. Match that so implicit-H counts re-perceive.
+        atom->setFormalCharge(0);
+        atom->setNumExplicitHs(0);
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    auto undo = [this, idx, previous, refresh_cache] {
+        auto* atom = m_mol.getAtomWithIdx(idx);
+        atom->setAtomicNum(previous.atomic_num);
+        atom->setFormalCharge(previous.formal_charge);
+        atom->setNumExplicitHs(previous.num_explicit_hs);
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    doCommand(std::move(redo), std::move(undo), "Set element");
+}
+
 void MolModel::setSelectedAtomsToHydrogenIsotope(unsigned int isotope)
 {
     if (m_selected_atoms.empty()) {

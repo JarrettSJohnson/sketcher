@@ -111,6 +111,14 @@ export interface MolModelInstance {
      * selection.
      */
     setSelectedAtomsToHydrogenIsotope(isotope: number): void;
+    /**
+     * Replace the element of a single atom by RDKit atomic number. Used by
+     * the atom context menu's "Set Element" submenu. Resets formal charge +
+     * explicit-H count to the new element's defaults so implicit-H valence
+     * re-perceives. Preserves selection. Single undo step. Throws if `idx`
+     * is out of range; no-op if the atom already has that atomic number.
+     */
+    setAtomElement(idx: number, atomicNum: number): void;
     /** Replace mol with parsed SMILES. Throws if SMILES is malformed. */
     loadFromSmiles(smiles: string): void;
     /** Replace mol with parsed text (auto-detects SMILES, MOL, etc.). Throws on failure. */
