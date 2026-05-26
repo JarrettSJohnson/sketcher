@@ -70,6 +70,23 @@ class MolModel : public UndoableModel
     void addRGroup(unsigned int r_group_num, double x, double y,
                    int bound_to_atom_idx = -1);
 
+    /**
+     * Append an attachment-point atom (dummy decorated with atomLabel
+     * "_AP<n>") at the given 2D position, single-bonded to the atom at
+     * `bound_to_atom_idx`. Unlike R-groups, attachment points are ALWAYS
+     * bonded — `rdkit_extensions::is_attachment_point_dummy` requires
+     * totalDegree == 1, so a stand-alone "AP" is meaningless. Mirrors Qt's
+     * `MolModel::addAttachmentPoint` (model/mol_model.cpp:650-664) which
+     * delegates to `sketcher::make_new_attachment_point` (rdkit/rgroup.cpp:52).
+     * Visually the AP atom is rendered as a wavy squiggle perpendicular to
+     * the bond (atom_item.cpp:302-304 — `label_is_visible=false`), not as
+     * the dummy "*" or "AP<n>" text. Single undo step. Throws
+     * std::invalid_argument when ap_num == 0 or bound_to_atom_idx is out
+     * of range.
+     */
+    void addAttachmentPoint(unsigned int ap_num, double x, double y,
+                            unsigned int bound_to_atom_idx);
+
     /** 2D position of the atom at `idx` (z is always 0). */
     void atomPos(unsigned int idx, double& x, double& y) const;
 

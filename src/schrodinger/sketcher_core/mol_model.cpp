@@ -27,8 +27,10 @@
 #include <GraphMol/Conformer.h>
 #include <GraphMol/MolOps.h>
 
+#include "schrodinger/rdkit_extensions/constants.h"
 #include "schrodinger/rdkit_extensions/convert.h"
 #include "schrodinger/rdkit_extensions/coord_utils.h"
+#include "schrodinger/rdkit_extensions/dummy_atom.h"
 #include "schrodinger/rdkit_extensions/molops.h"
 #include "schrodinger/rdkit_extensions/rgroup.h"
 #include "schrodinger/sketcher_core/undo_stack.h"
@@ -150,6 +152,46 @@ void MolModel::addRGroup(unsigned int r_group_num, double x, double y,
             }
         },
         "Add R-group");
+}
+
+void MolModel::addAttachmentPoint(unsigned int ap_num, double x, double y,
+                                  unsigned int bound_to_atom_idx)
+{
+    // Validate up front so we throw before opening the undo macro.
+    if (ap_num == 0) {
+        throw std::invalid_argument("Attachment-point number must be >= 1");
+    }
+    if (bound_to_atom_idx >= m_mol.getNumAtoms()) {
+        throw std::invalid_argument(
+            "addAttachmentPoint: bound_to_atom_idx out of range");
+    }
+    doMutation(
+        [this, ap_num, x, y, bound_to_atom_idx] {
+            // Mirrors sketcher::make_new_attachment_point (rdkit/rgroup.cpp:52):
+            // dummy atom (atomic num 0, QueryAtom w/ null query) decorated
+            // with atomLabel "_AP<n>". No isotope, no _MolFileRLabel.
+            auto atom_sp = rdkit_extensions::create_dummy_atom();
+            atom_sp->setProp(
+                RDKit::common_properties::atomLabel,
+                rdkit_extensions::ATTACHMENT_POINT_LABEL_PREFIX +
+                    std::to_string(ap_num));
+            auto atom = std::make_unique<RDKit::Atom>(*atom_sp);
+            const auto idx = m_mol.addAtom(atom.release(),
+                                           /*updateLabel=*/false,
+                                           /*takeOwnership=*/true);
+            auto& conf = m_mol.getConformer();
+            auto& positions = conf.getPositions();
+            if (positions.size() < m_mol.getNumAtoms()) {
+                positions.resize(m_mol.getNumAtoms(), RDGeom::Point3D(0, 0, 0));
+            }
+            conf.setAtomPos(idx, RDGeom::Point3D(x, y, 0));
+            // Attachment points are always bonded — is_attachment_point_dummy
+            // requires totalDegree == 1. The bond is part of the visual
+            // grammar (the squiggle is drawn perpendicular to it).
+            m_mol.addBond(bound_to_atom_idx, idx,
+                          RDKit::Bond::BondType::SINGLE);
+        },
+        "Add attachment point");
 }
 
 void MolModel::atomPos(unsigned int idx, double& x, double& y) const

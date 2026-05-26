@@ -16,6 +16,16 @@ export interface MolModelInstance {
      */
     addRGroup(rGroupNum: number, x: number, y: number,
               boundToAtomIdx: number): void;
+    /**
+     * Append an attachment-point dummy at (x, y), single-bonded to the atom
+     * at `boundToAtomIdx`. Unlike R-groups, attachment points are ALWAYS
+     * bonded — there is no -1 fallback (RDKit's is_attachment_point_dummy
+     * requires totalDegree == 1). The renderer paints a wavy squiggle
+     * perpendicular to the bond instead of an atom dot/label. Throws if
+     * `apNum == 0` or `boundToAtomIdx` is out of range.
+     */
+    addAttachmentPoint(apNum: number, x: number, y: number,
+                       boundToAtomIdx: number): void;
     addBond(begin: number, end: number, bondType: number): void;
     /**
      * addBond + setBondDirUndoable inside a single undo macro. Pass dir=0

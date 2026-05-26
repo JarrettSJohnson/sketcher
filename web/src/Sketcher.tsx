@@ -18,7 +18,7 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 // tests cover.
 
 type Tool = 'atom' | 'bond' | 'select' | 'move-rotate' | 'erase' | 'ring'
-    | 'atom-chain' | 'rgroup';
+    | 'atom-chain' | 'rgroup' | 'attachment-point';
 // SetAtomWidget.ui ships C/H/N/O/P/S/F/Cl/Si on the atomistic panel.
 // Element symbol — any RDKit-recognized symbol. The sidebar exposes
 // 8 fixed elements via dedicated buttons; everything else flows through
@@ -107,6 +107,12 @@ interface AtomDesc {
     // isotope hints that would otherwise leak from the underlying dummy atom).
     // Set by MolModel::addRGroup (Qt: MolModel::addRGroup, model/mol_model.cpp:643-648).
     rlabel?: number;
+    // Attachment-point number — atom is a dummy whose atomLabel starts with
+    // "_AP" (RDKit's is_attachment_point_dummy). The atom dot/label is
+    // suppressed; instead a wavy squiggle is drawn perpendicular to the
+    // bond from this atom to its single neighbor. Qt: atom_item.cpp:302-304
+    // (label_is_visible=false, squiggle_path=getWavyLine()).
+    ap?: number;
 }
 interface BondDesc {
     a: number;
@@ -142,6 +148,17 @@ const ROTATION_PIVOT_RADIUS = 8;
 const ROTATION_ARM_LENGTH = 130;
 const ROTATION_HANDLE_COLOR = '#ff9b00';
 const ROTATION_HANDLE_PEN = 3;
+// Attachment-point wavy line geometry from Qt (constants.h:283-290):
+// 3 waves × 8 scene-units wide × 3 scene-units tall, drawn perpendicular
+// to the bond at the AP atom's position. Qt scene units relate to model
+// units via VIEW_SCALE = floor(50 / 1.5) = 33 (constants.h:59). Pre-divide
+// so the renderer multiplies by view.scale (pixels per model unit) to land
+// at the right pixel size — at the React default scale (40 px/unit) the
+// squiggle measures ~29 px wide × ~3.6 px tall, matching the Qt render.
+const QT_VIEW_SCALE = 33;
+const AP_SQUIGGLE_NUM_WAVES = 3;
+const AP_SQUIGGLE_WIDTH_PER_WAVE_MODEL = 8.0 / QT_VIEW_SCALE;
+const AP_SQUIGGLE_HEIGHT_MODEL = 3.0 / QT_VIEW_SCALE;
 const BLANK_DESC: RenderDesc = { atoms: [], bonds: [] };
 
 // View transform. (scale = pixels per model unit; offsetX/offsetY shift the
@@ -348,6 +365,52 @@ function pixelFromModel(
     const cx = canvas.width / 2 + view.offsetX;
     const cy = canvas.height / 2 + view.offsetY;
     return { px: x * view.scale + cx, py: -y * view.scale + cy };
+}
+
+// Locate the neighbor atom index for an attachment-point dummy (which always
+// has totalDegree == 1). Returns -1 when no bond involves `apIdx` — a defensive
+// fallback that should never trigger for AP atoms created via addAttachmentPoint
+// but keeps a corrupt incoming description from crashing the renderer.
+function attachmentPointAnchor(apIdx: number, bonds: BondDesc[]): number {
+    for (const b of bonds) {
+        if (b.a === apIdx) return b.b;
+        if (b.b === apIdx) return b.a;
+    }
+    return -1;
+}
+
+// Stamp a wavy squiggle path at (cx, cy) rotated `angleRad`. The base path
+// is horizontal, centered on the origin, extending from -W/2 to +W/2 where
+// W = numWaves * widthPerWave (Qt: get_wavy_line_path in coord_utils.cpp:254-274).
+// Caller is responsible for ctx.strokeStyle / lineWidth. Quadratic curves
+// approximate Qt's arcs at this size — visually indistinguishable.
+function strokeWavyPath(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    angleRad: number,
+    widthPerWave: number,
+    height: number,
+    numWaves: number,
+): void {
+    const halfWidth = widthPerWave / 2;
+    const startX = -numWaves * halfWidth;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angleRad);
+    ctx.beginPath();
+    ctx.moveTo(startX, 0);
+    let x = startX;
+    for (let i = 0; i < numWaves; i++) {
+        // Down half-wave (positive screen y because canvas y is down).
+        ctx.quadraticCurveTo(x + halfWidth / 2, height, x + halfWidth, 0);
+        x += halfWidth;
+        // Up half-wave.
+        ctx.quadraticCurveTo(x + halfWidth / 2, -height, x + halfWidth, 0);
+        x += halfWidth;
+    }
+    ctx.stroke();
+    ctx.restore();
 }
 
 function nearestAtomIndex(
@@ -1021,6 +1084,14 @@ function drawSketch(
         const { px, py } = pixelFromModel(canvas, view, a.x, a.y);
         const isPending = pendingAtomIdx === a.i;
         const isHover = hoverAtomIdx === a.i;
+        // Attachment-point dummies render as a wavy squiggle (drawn in the
+        // pass below) instead of an atom dot/label. Skip the dot, label,
+        // and selection halo here — Qt does the same via
+        // label_is_visible=false (atom_item.cpp:302-304). Selection is still
+        // tracked, but visualizing it on a label-less dummy adds no signal.
+        if (typeof a.ap === 'number') {
+            continue;
+        }
         if (a.sel) {
             // Sage outline ring + light sage fill matches the Qt sketcher's
             // selection halo so a port user can't tell the renderer changed.
@@ -1123,6 +1194,37 @@ function drawSketch(
                 }
             }
         }
+    }
+
+    // Attachment-point squiggles. Drawn after the atom labels so the wavy
+    // line lays on top of any bond endpoint stub. Qt's geometry: a wavy
+    // path perpendicular to the bond, centered on the AP atom position
+    // (atom_item.cpp:409-415 + coord_utils.cpp:276-286).
+    {
+        const widthPx = AP_SQUIGGLE_WIDTH_PER_WAVE_MODEL * view.scale;
+        const heightPx = AP_SQUIGGLE_HEIGHT_MODEL * view.scale;
+        ctx.save();
+        ctx.strokeStyle = palette.bond;
+        ctx.lineWidth = 1.5;
+        ctx.lineCap = 'round';
+        for (const a of rd.atoms) {
+            if (typeof a.ap !== 'number') continue;
+            const anchorIdx = attachmentPointAnchor(a.i, rd.bonds);
+            if (anchorIdx < 0) continue;
+            const anchor = rd.atoms.find((x) => x.i === anchorIdx);
+            if (!anchor) continue;
+            const apPx = pixelFromModel(canvas, view, a.x, a.y);
+            const anchorPx =
+                pixelFromModel(canvas, view, anchor.x, anchor.y);
+            // Bond direction in pixel space (anchor → AP). Perpendicular
+            // = bond_angle + 90°; the wavy path is horizontal pre-rotation
+            // so this rotation seats it across the bond axis.
+            const bondAngle = Math.atan2(apPx.py - anchorPx.py,
+                                         apPx.px - anchorPx.px);
+            strokeWavyPath(ctx, apPx.px, apPx.py, bondAngle + Math.PI / 2,
+                           widthPx, heightPx, AP_SQUIGGLE_NUM_WAVES);
+        }
+        ctx.restore();
     }
 
     // Stereo labels: small text drawn just past the atom toward an empty
@@ -1496,6 +1598,9 @@ function buildSketchSvg(
     for (let i = 0; i < rd.atoms.length; i++) {
         const a = rd.atoms[i];
         const { px: ax, py: ay } = px(a.x, a.y);
+        // Attachment-point atoms render as a squiggle path below; skip the
+        // dot/label/selection-halo so the SVG matches the Canvas pass.
+        if (typeof a.ap === 'number') continue;
         if (a.sel) {
             parts.push(
                 `<circle cx='${f(ax)}' cy='${f(ay)}' r='13' ` +
@@ -1593,6 +1698,48 @@ function buildSketchSvg(
                     `${esc(chargeText)}</text>`,
                 );
             }
+        }
+    }
+    // Attachment-point squiggles — quadratic-bezier path matching the canvas
+    // renderer. Stroke color/width tracks the bond palette so the squiggle
+    // reads as a bond cap rather than a separate annotation.
+    {
+        const widthPx = AP_SQUIGGLE_WIDTH_PER_WAVE_MODEL * view.scale;
+        const heightPx = AP_SQUIGGLE_HEIGHT_MODEL * view.scale;
+        const halfWidth = widthPx / 2;
+        const startX = -AP_SQUIGGLE_NUM_WAVES * halfWidth;
+        for (const a of rd.atoms) {
+            if (typeof a.ap !== 'number') continue;
+            const anchorIdx = attachmentPointAnchor(a.i, rd.bonds);
+            if (anchorIdx < 0) continue;
+            const anchor = rd.atoms.find((x) => x.i === anchorIdx);
+            if (!anchor) continue;
+            const apP = px(a.x, a.y);
+            const anchorP = px(anchor.x, anchor.y);
+            const bondAngle = Math.atan2(apP.py - anchorP.py,
+                                         apP.px - anchorP.px);
+            const angle = bondAngle + Math.PI / 2;
+            // Build the SVG path in path-local coords (rotation handled via
+            // a transform) — mirrors how the canvas renderer wraps the path
+            // in save/translate/rotate.
+            let d = `M ${f(startX)} 0`;
+            let x = startX;
+            for (let i = 0; i < AP_SQUIGGLE_NUM_WAVES; i++) {
+                d += ` Q ${f(x + halfWidth / 2)} ${f(heightPx)} ` +
+                    `${f(x + halfWidth)} 0`;
+                x += halfWidth;
+                d += ` Q ${f(x + halfWidth / 2)} ${f(-heightPx)} ` +
+                    `${f(x + halfWidth)} 0`;
+                x += halfWidth;
+            }
+            // SVG rotate() takes degrees.
+            const angleDeg = (angle * 180) / Math.PI;
+            parts.push(
+                `<path d='${d}' fill='none' stroke='${palette.bond}' ` +
+                `stroke-width='1.5' stroke-linecap='round' ` +
+                `transform='translate(${f(apP.px)} ${f(apP.py)}) ` +
+                `rotate(${f(angleDeg)})'/>`,
+            );
         }
     }
     // Stereo labels — same direction-from-centroid pick as drawSketch so
@@ -2269,6 +2416,44 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     setStatus(
                         `added R${nextNum} at (${x.toFixed(2)}, ${y.toFixed(2)})`,
                     );
+                }
+                return;
+            }
+
+            if (tool === 'attachment-point') {
+                // Attachment-point tool: REQUIRES clicking an existing atom —
+                // an AP is always bonded (RDKit's is_attachment_point_dummy
+                // requires totalDegree == 1). The number auto-increments to
+                // max(existing) + 1, matching Qt's get_next_attachment_point_number
+                // (rdkit/rgroup.cpp). Mirrors Qt's DrawAttachmentPointSceneTool
+                // (tool/attachment_point_scene_tool.cpp) which calls
+                // MolModel::addAttachmentPoint(next_num, coords, atom).
+                if (hit < 0) {
+                    setStatus(
+                        'attachment-point: click an existing atom to attach',
+                    );
+                    return;
+                }
+                let nextNum = 0;
+                for (const a of rd.atoms) {
+                    if (typeof a.ap === 'number' && a.ap > nextNum) {
+                        nextNum = a.ap;
+                    }
+                }
+                nextNum += 1;
+                const anchor = rd.atoms[hit];
+                // Offset down-right one half-bond so the squiggle clears the
+                // anchor label; the bond direction is what orients the wavy
+                // line, so any non-zero offset works.
+                const x = anchor.x + 0.75;
+                const y = anchor.y - 0.75;
+                try {
+                    model.addAttachmentPoint(nextNum, x, y, hit);
+                    setStatus(
+                        `attached AP${nextNum} to atom #${hit}`,
+                    );
+                } catch (err) {
+                    setStatus(`attachment-point failed: ${String(err)}`);
                 }
                 return;
             }
@@ -4098,9 +4283,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     <hr style={styles.hr} />
 
                     {/* EnumerationToolWidget — rgroup, attachment_point,
-                        reaction. R-Group is wired (Qt:
-                        MolModel::addRGroup); attachment-point and reaction
-                        are still stubbed pending their MolModel primitives. */}
+                        reaction. R-Group + attachment-point are wired
+                        (Qt: MolModel::addRGroup / addAttachmentPoint);
+                        reaction is still stubbed pending the reaction
+                        primitives in the lean MolModel. */}
                     <div style={styles.row3}>
                         <LetterButton label='R' testid='rgroup'
                             title='R-Group'
@@ -4115,7 +4301,14 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         <IconButton icon='enumeration_attachment_point'
                             testid='attachment-point'
                             title='Attachment Point'
-                            onClick={() => comingSoon('Attachment point')} />
+                            active={tool === 'attachment-point'}
+                            onClick={() => {
+                                setTool('attachment-point');
+                                setPendingBondAtom(null);
+                                setStatus(
+                                    'attachment-point mode: click an atom to attach',
+                                );
+                            }} />
                         <IconButton icon='reaction_arrow'
                             testid='reaction'
                             title='Reaction'

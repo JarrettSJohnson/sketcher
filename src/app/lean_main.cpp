@@ -28,6 +28,7 @@
 #include "schrodinger/rdkit_extensions/convert.h"
 #include "schrodinger/rdkit_extensions/coord_utils.h"
 #include "schrodinger/rdkit_extensions/file_format.h"
+#include "schrodinger/rdkit_extensions/rgroup.h"
 #include "schrodinger/rdkit_extensions/stereochemistry.h"
 
 #include "schrodinger/sketcher_core/mol_model.h"
@@ -223,6 +224,29 @@ std::string mol_to_render_description(
                                    rlabel);
         if (is_rgroup) {
             os << ",\"rlabel\":" << rlabel;
+        }
+        // Attachment point (Qt: atom_item.cpp:302-304 — label_is_visible=false,
+        // squiggle drawn perpendicular to the bond). Detected by RDKit's
+        // is_attachment_point_dummy (atomic num 0, totalDegree 1, atomLabel
+        // starts with "_AP"). Emit the numeric suffix so the JS renderer can
+        // suppress the atom dot/label and paint the wavy line itself; this
+        // mirrors the rlabel pattern so the renderer's atom-rendering branch
+        // stays straightforward.
+        if (atom->getAtomicNum() == 0 && !is_rgroup &&
+            schrodinger::rdkit_extensions::is_attachment_point_dummy(*atom)) {
+            std::string label;
+            if (atom->getPropIfPresent(RDKit::common_properties::atomLabel,
+                                       label) &&
+                label.size() > 3) {
+                try {
+                    const unsigned int ap_num =
+                        static_cast<unsigned int>(std::stoul(label.substr(3)));
+                    os << ",\"ap\":" << ap_num;
+                } catch (...) {
+                    // Stay silent — malformed _AP labels fall through to the
+                    // default dummy rendering, matching Qt's defensive path.
+                }
+            }
         }
         const unsigned iso = atom->getIsotope();
         if (iso != 0 && !is_rgroup) {
@@ -451,6 +475,11 @@ class MolModelJS
                    int bound_to_atom_idx)
     {
         m_model.addRGroup(r_group_num, x, y, bound_to_atom_idx);
+    }
+    void addAttachmentPoint(unsigned int ap_num, double x, double y,
+                            unsigned int bound_to_atom_idx)
+    {
+        m_model.addAttachmentPoint(ap_num, x, y, bound_to_atom_idx);
     }
     void addBond(unsigned int begin, unsigned int end, int bond_type)
     {
@@ -766,6 +795,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .constructor<>()
         .function("addAtom", &MolModelJS::addAtom)
         .function("addRGroup", &MolModelJS::addRGroup)
+        .function("addAttachmentPoint", &MolModelJS::addAttachmentPoint)
         .function("addBond", &MolModelJS::addBond)
         .function("addBondWithDir", &MolModelJS::addBondWithDir)
         .function("removeAtom", &MolModelJS::removeAtom)

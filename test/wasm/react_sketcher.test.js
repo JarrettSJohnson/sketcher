@@ -834,6 +834,83 @@ test.describe('React Sketcher', () => {
         expect(body).toMatch(/<text [^>]*>R1<\/text>/);
     });
 
+    test('Attachment-point tool: clicking an atom attaches AP1, second attach is AP2, empty click is a no-op', async ({
+        page,
+    }) => {
+        // Qt EnumerationToolWidget / DrawAttachmentPointSceneTool: AP atoms
+        // are ALWAYS bonded (is_attachment_point_dummy requires
+        // totalDegree == 1), so a click on empty canvas is a no-op with a
+        // hint message. AP numbers auto-increment to max + 1, mirroring
+        // get_next_attachment_point_number (rdkit/rgroup.cpp).
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Place a carbon to attach to.
+        await canvas.click({ position: { x: 200, y: 200 } });
+        let rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        // Switch to attachment-point tool.
+        await page.getByTestId('attachment-point').click();
+        // Empty click: no-op, just a status message.
+        await canvas.click({ position: { x: 400, y: 100 } });
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/click an existing atom/);
+        // Click the carbon: adds AP1, bonded.
+        await canvas.click({ position: { x: 200, y: 200 } });
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+        expect(rd.bonds).toHaveLength(1);
+        const apAtom = rd.atoms.find((a) => typeof a.ap === 'number');
+        expect(apAtom).toBeTruthy();
+        expect(apAtom.ap).toBe(1);
+        // Click the carbon again: adds AP2 (max+1).
+        await canvas.click({ position: { x: 200, y: 200 } });
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(3);
+        const aps = rd.atoms
+            .map((a) => a.ap)
+            .filter((n) => typeof n === 'number')
+            .sort();
+        expect(aps).toEqual([1, 2]);
+        // Undo rolls back the second AP.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+    });
+
+    test('Attachment-point tool: SVG export renders a wavy <path> per AP and no element label', async ({
+        page,
+    }) => {
+        // Drop a C, attach an AP, then SVG-export. The export must include
+        // a <path> element for the squiggle and MUST NOT include any "*"
+        // text node (Qt hides the dummy label and replaces it with the
+        // squiggle — atom_item.cpp:302-304). The C label stays visible.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('element-N').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('attachment-point').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('export').click();
+        await page.getByTestId('export-save-image').click();
+        await page.getByTestId('save-image-format-select')
+            .selectOption('svg');
+        await page.getByTestId('save-image-width').fill('200');
+        await page.getByTestId('save-image-height').fill('120');
+        const downloadPromise = page.waitForEvent('download');
+        await page.getByTestId('save-image-save').click();
+        const download = await downloadPromise;
+        const path = await download.path();
+        const fs = await import('node:fs/promises');
+        const body = await fs.readFile(path, 'utf8');
+        // The wavy path uses quadratic curves — at minimum one `<path d='M`
+        // with a transform that rotates it to perpendicular.
+        expect(body).toMatch(/<path d='M [^']+'[^>]*transform='translate/);
+        // The dummy atom's "*" symbol must NOT appear as a text label.
+        expect(body).not.toMatch(/<text [^>]*>\*<\/text>/);
+        // The anchor heteroatom (N) is still labeled.
+        expect(body).toMatch(/<text [^>]*>N<\/text>/);
+    });
+
     test('Import menu: Paste in Text modal loads SMILES and closes', async ({
         page,
     }) => {
@@ -2392,20 +2469,19 @@ test.describe('React Sketcher', () => {
     }) => {
         // Several Qt-side widgets are present for visual fidelity but the
         // underlying action isn't wired yet (atom_query needs RDKit query
-        // atoms, bond_query needs the same, attachment point, reaction,
-        // monomeric mode). Import/Export open real menus (Batch 12); Save
-        // Image opens its own dialog (Batch 13); Settings is the Configure
-        // View dropdown (Batch 14); Help is its own dropdown (Batch 15)
-        // — all covered by their own tests. The remaining stubs route
-        // through comingSoon() → setStatus(...) so users can tell the
-        // button is intentional rather than broken. (R-Group was wired in
-        // Batch 28; periodic-table opens a real popup in Batch 7; both
-        // covered by their own tests.)
+        // atoms, bond_query needs the same, reaction, monomeric mode).
+        // Import/Export open real menus (Batch 12); Save Image opens its
+        // own dialog (Batch 13); Settings is the Configure View dropdown
+        // (Batch 14); Help is its own dropdown (Batch 15) — all covered by
+        // their own tests. The remaining stubs route through comingSoon()
+        // → setStatus(...) so users can tell the button is intentional
+        // rather than broken. (R-Group was wired in Batch 28;
+        // attachment-point in Batch 29; periodic-table opens a real popup
+        // in Batch 7; all covered by their own tests.)
         const status = page.getByTestId('sketcher-status');
         const stubs = [
             ['atom-query', /Atom query/],
             ['bond-query', /Bond query/],
-            ['attachment-point', /Attachment point/],
             ['reaction', /Reaction/],
             ['mode-monomeric', /Monomeric/],
         ];

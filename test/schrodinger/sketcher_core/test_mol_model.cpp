@@ -1413,3 +1413,76 @@ BOOST_AUTO_TEST_CASE(testAddRGroupRejectsRZero)
     BOOST_CHECK_EQUAL(m.numAtoms(), 0u);
     BOOST_CHECK_EQUAL(stack.count(), 0u);
 }
+
+BOOST_AUTO_TEST_CASE(testAddAttachmentPointPlacesDummyAtomWithApLabel)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0.0, 0.0);
+    m.addAttachmentPoint(1, 1.5, 0.0, /*bound_to_atom_idx=*/0);
+    BOOST_REQUIRE_EQUAL(m.numAtoms(), 2u);
+    const auto* atom = m.mol().getAtomWithIdx(1);
+    // Dummy atomic number — create_dummy_atom uses DUMMY_ATOMIC_NUMBER (0).
+    BOOST_CHECK_EQUAL(atom->getAtomicNum(), 0);
+    // No _MolFileRLabel — APs use atomLabel only.
+    BOOST_CHECK(!atom->hasProp(RDKit::common_properties::_MolFileRLabel));
+    std::string label;
+    BOOST_REQUIRE(
+        atom->getPropIfPresent(RDKit::common_properties::atomLabel, label));
+    BOOST_CHECK_EQUAL(label, "_AP1");
+    // Position is preserved.
+    double x = 0, y = 0;
+    m.atomPos(1, x, y);
+    BOOST_CHECK_CLOSE(x, 1.5, 1e-6);
+    BOOST_CHECK_CLOSE(y, 0.0, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(testAddAttachmentPointAlwaysBondsToExistingAtom)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0.0, 0.0);
+    m.addAttachmentPoint(7, 1.5, 0.0, /*bound_to_atom_idx=*/0);
+    // The bond is part of the contract: is_attachment_point_dummy requires
+    // totalDegree == 1, so APs are never free-standing.
+    BOOST_REQUIRE_EQUAL(m.numBonds(), 1u);
+    const auto* bond = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_REQUIRE(bond != nullptr);
+    BOOST_CHECK_EQUAL(bond->getBondType(), RDKit::Bond::BondType::SINGLE);
+}
+
+BOOST_AUTO_TEST_CASE(testAddAttachmentPointIsUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0.0, 0.0);
+    m.addAttachmentPoint(1, 1.5, 0.0, 0);
+    BOOST_CHECK_EQUAL(m.numAtoms(), 2u);
+    BOOST_CHECK_EQUAL(m.numBonds(), 1u);
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 1u);
+    BOOST_CHECK_EQUAL(m.numBonds(), 0u);
+    stack.redo();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 2u);
+    BOOST_CHECK_EQUAL(m.numBonds(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(testAddAttachmentPointRejectsZeroAndOutOfRangeAnchor)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0.0, 0.0);
+    // ap_num == 0 is meaningless — get_attachment_point_number returns 0 for
+    // both missing and zero-suffix labels, so the lookup would be ambiguous.
+    BOOST_CHECK_THROW(m.addAttachmentPoint(0, 1.5, 0.0, 0),
+                      std::invalid_argument);
+    // bound_to_atom_idx must reference an existing atom; out-of-range is
+    // a programmer error and surfaces as a throw rather than a silent no-op
+    // so misuse from JS shows up immediately.
+    BOOST_CHECK_THROW(m.addAttachmentPoint(1, 1.5, 0.0, 5),
+                      std::invalid_argument);
+    // Neither call should leave a partial mutation or dangling undo entry.
+    BOOST_CHECK_EQUAL(m.numAtoms(), 1u);
+    BOOST_CHECK_EQUAL(m.numBonds(), 0u);
+    BOOST_CHECK_EQUAL(stack.count(), 1u); // just the initial addAtom
+}
