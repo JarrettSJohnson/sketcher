@@ -1453,6 +1453,94 @@ test.describe('React Sketcher', () => {
             .toHaveValue('default');
     });
 
+    test('Preferences: Include undefined centers toggles "(?)" label on possible-but-unspecified stereo centers', async ({
+        page,
+    }) => {
+        // Qt's m_undefined_centers_labels_cb (rendering_settings_dialog.ui:274-281,
+        // default true; disabled when Show stereo annotations is off). When on,
+        // get_atom_chirality_label (rdkit/stereochemistry.cpp:45-53) returns
+        // "(?)" for atoms with _ChiralityPossible set + no _CIPCode. The lean
+        // C++ surface emits a per-atom `psbl: true` flag for exactly that case
+        // and the React renderer paints "(?)" when both Show stereo + Include
+        // undefined are on.
+        //
+        // FC(Cl)Br has a tetrahedral C bonded to F/Cl/Br/H — RDKit's
+        // assignStereochemistry(flagPossible=true) marks it as a possible
+        // stereo center, and the absence of wedges/dashes means CIPLabeler
+        // can't assign an R/S code → "(?)" is the only label that should fire.
+        await loadText(page, 'FC(Cl)Br');
+
+        const fs = await import('node:fs/promises');
+        const saveSvg = async () => {
+            await page.getByTestId('export').click();
+            await page.getByTestId('export-save-image').click();
+            await page.getByTestId('save-image-format-select')
+                .selectOption('svg');
+            const dl = page.waitForEvent('download');
+            await page.getByTestId('save-image-save').click();
+            const d = await dl;
+            const body = await fs.readFile(await d.path(), 'utf8');
+            await expect(page.getByTestId('save-image-modal'))
+                .toHaveCount(0);
+            return body;
+        };
+        const qmarkRe = /<text [^>]*>\(\?\)<\/text>/;
+
+        // Default: Include undefined is ON. SVG carries a "(?)" label.
+        const svgDefault = await saveSvg();
+        expect(svgDefault).toMatch(qmarkRe);
+
+        // Open Preferences and confirm the new checkbox starts checked.
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        const cb = page.getByTestId('preferences-include-undefined-stereo');
+        await expect(cb).toBeChecked();
+        await expect(cb).toBeEnabled();
+        await cb.click();
+        await expect(cb).not.toBeChecked();
+        await page.getByTestId('preferences-close').click();
+        const svgOff = await saveSvg();
+        expect(svgOff).not.toMatch(qmarkRe);
+
+        // Re-check and verify the label comes back.
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        await page.getByTestId('preferences-include-undefined-stereo').click();
+        await page.getByTestId('preferences-close').click();
+        const svgBackOn = await saveSvg();
+        expect(svgBackOn).toMatch(qmarkRe);
+
+        // Turning Show stereo annotations OFF disables the Include-undefined
+        // checkbox AND suppresses the "(?)" label even when the checkbox
+        // value stays checked. Matches Qt's updateWidgets gate at
+        // rendering_settings_dialog.cpp:107-109.
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        await page.getByTestId('preferences-show-stereo').click();
+        await expect(page.getByTestId('preferences-show-stereo'))
+            .not.toBeChecked();
+        await expect(page.getByTestId('preferences-include-undefined-stereo'))
+            .toBeDisabled();
+        await expect(page.getByTestId('preferences-include-undefined-stereo'))
+            .toBeChecked();
+        await page.getByTestId('preferences-close').click();
+        const svgStereoOff = await saveSvg();
+        expect(svgStereoOff).not.toMatch(qmarkRe);
+
+        // Reset to Defaults restores Show stereo + Include undefined → label
+        // returns. Re-open the modal first (Reset only fires inside it).
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        await page.getByTestId('preferences-reset').click();
+        await expect(page.getByTestId('preferences-show-stereo'))
+            .toBeChecked();
+        await expect(page.getByTestId('preferences-include-undefined-stereo'))
+            .toBeChecked();
+        await page.getByTestId('preferences-close').click();
+        const svgReset = await saveSvg();
+        expect(svgReset).toMatch(qmarkRe);
+    });
+
     test('Configure View: turning Heteroatom Colors off renders nitrogen in the carbon mono color', async ({
         page,
     }) => {

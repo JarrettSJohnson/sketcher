@@ -243,6 +243,19 @@ std::string mol_to_render_description(
             }
             os << '"';
         }
+        // Possible-but-unspecified stereo center (Qt: get_atom_chirality_label
+        // rdkit/stereochemistry.cpp:45-53 — emits "(?)" when show_unspecified).
+        // _ChiralityPossible is set by assignStereochemistry(flagPossible=true)
+        // above; _CIPCode is set by CIPLabeler::assignCIPLabels for defined
+        // centers. JS layer renders "(?)" iff Preferences > Include undefined
+        // centers is on (gated by Show stereo labels).
+        int chiral_possible = 0;
+        atom->getPropIfPresent(RDKit::common_properties::_ChiralityPossible,
+                               chiral_possible);
+        if (chiral_possible &&
+            !atom->hasProp(RDKit::common_properties::_CIPCode)) {
+            os << ",\"psbl\":true";
+        }
         if (model != nullptr && model->isAtomSelected(i)) {
             os << ",\"sel\":true";
         }

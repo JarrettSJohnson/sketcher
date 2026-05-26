@@ -98,6 +98,10 @@ interface AtomDesc {
     // small label drawn near the atom when Show Stereo Labels is enabled.
     // Qt: AtomItem::updateChiralityLabel (molviewer/atom_item.cpp:417-449).
     stereo?: string;
+    // Possible-but-unspecified stereo center (RDKit's _ChiralityPossible set,
+    // _CIPCode missing). Rendered as "(?)" iff Preferences > Include undefined
+    // centers is on. Qt: get_atom_chirality_label (rdkit/stereochemistry.cpp:45-53).
+    psbl?: boolean;
 }
 interface BondDesc {
     a: number;
@@ -456,6 +460,12 @@ interface DisplayOptions {
     // prefix shipped from `atom_chirality_label` (lean_main.cpp) is kept
     // in the rendered label ("abs (R)"); when false we strip it ("(R)").
     explicitAbsLabels: boolean;
+    // Qt's m_undefined_centers_labels_cb (rendering_settings_dialog.ui:274-281,
+    // default true). Disabled when Show stereo labels is off. When ON, atoms
+    // flagged as possible-but-unspecified stereo centers (AtomDesc.psbl) get
+    // a "(?)" label. Mirrors the StereoLabels::ALL vs DEFINED distinction in
+    // atom_display_settings.h (collapsed into showStereoLabels+this boolean).
+    includeUndefinedStereoCenters: boolean;
     // Qt's CarbonLabels enum (image_constants.h:24-32). Controls when
     // carbon atoms get a visible "C" label. NONE = bare-dot rendering
     // (the React default and Qt's default); TERMINAL = label carbons
@@ -482,6 +492,7 @@ const DEFAULT_DISPLAY_OPTIONS: DisplayOptions = {
     atomFontSize: DEFAULT_ATOM_FONT_SIZE,
     bondLineWidth: DEFAULT_BOND_LINE_WIDTH,
     explicitAbsLabels: false,
+    includeUndefinedStereoCenters: true,
     carbonLabels: 'none',
     colorScheme: 'default',
     bwColorScheme: 'default',
@@ -1117,7 +1128,15 @@ function drawSketch(
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         for (const a of rd.atoms) {
-            if (!a.stereo) continue;
+            let text: string | undefined;
+            if (a.stereo) {
+                text = renderedStereoLabel(
+                    a.stereo, displayOptions.explicitAbsLabels);
+            } else if (a.psbl &&
+                       displayOptions.includeUndefinedStereoCenters) {
+                text = '(?)';
+            }
+            if (!text) continue;
             const { px, py } = pixelFromModel(canvas, view, a.x, a.y);
             // Pick a direction away from the centroid so the label
             // doesn't sit on top of the bond lines pointing inward.
@@ -1128,10 +1147,7 @@ function drawSketch(
             // Flip dy sign — model y is up, pixel y is down.
             const lx = px + (dx / len) * offset;
             const ly = py - (dy / len) * offset;
-            ctx.fillText(
-                renderedStereoLabel(a.stereo, displayOptions.explicitAbsLabels),
-                lx, ly,
-            );
+            ctx.fillText(text, lx, ly);
         }
         ctx.restore();
     }
@@ -1560,7 +1576,15 @@ function buildSketchSvg(
     if (displayOptions.showStereoLabels) {
         const stereoFontPx = Math.max(7, Math.round(ATOM_FONT_PX * 10 / 13));
         for (const a of rd.atoms) {
-            if (!a.stereo) continue;
+            let text: string | undefined;
+            if (a.stereo) {
+                text = renderedStereoLabel(
+                    a.stereo, displayOptions.explicitAbsLabels);
+            } else if (a.psbl &&
+                       displayOptions.includeUndefinedStereoCenters) {
+                text = '(?)';
+            }
+            if (!text) continue;
             const { px: ax, py: ay } = px(a.x, a.y);
             const dx = a.x - centroidX;
             const dy = a.y - centroidY;
@@ -1568,8 +1592,6 @@ function buildSketchSvg(
             const offset = 16;
             const lx = ax + (dx / len) * offset;
             const ly = ay - (dy / len) * offset;
-            const text = renderedStereoLabel(
-                a.stereo, displayOptions.explicitAbsLabels);
             parts.push(
                 `<text x='${f(lx)}' y='${f(ly)}' fill='${palette.annotation}' ` +
                 `font-family='sans-serif' font-size='${stereoFontPx}' ` +
@@ -1676,7 +1698,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         | 'colorHeteroatoms'
         | 'showStereoLabels'
         | 'useImplicitHydrogens'
-        | 'explicitAbsLabels';
+        | 'explicitAbsLabels'
+        | 'includeUndefinedStereoCenters';
     const toggleDisplayOption = (key: BooleanDisplayOption): void => {
         setDisplayOptions((opt) => ({ ...opt, [key]: !opt[key] }));
     };
@@ -4549,6 +4572,23 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                                 'explicitAbsLabels')} />
                                     Use &lsquo;ABS&rsquo; prefix
                                 </label>
+                                <label style={{ ...styles.prefsCheckRow,
+                                    ...styles.prefsIndented,
+                                    opacity: displayOptions.showStereoLabels
+                                        ? 1 : 0.5 }}>
+                                    <input type='checkbox'
+                                        data-testid={
+                                            'preferences-include-undefined-stereo'}
+                                        disabled={
+                                            !displayOptions.showStereoLabels}
+                                        checked={
+                                            displayOptions
+                                                .includeUndefinedStereoCenters}
+                                        onChange={() =>
+                                            toggleDisplayOption(
+                                                'includeUndefinedStereoCenters')} />
+                                    Include undefined centers
+                                </label>
                                 <label style={styles.prefsCheckRow}>
                                     <input type='checkbox'
                                         data-testid={
@@ -4645,6 +4685,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                     colorHeteroatoms: true,
                                     showStereoLabels: true,
                                     explicitAbsLabels: false,
+                                    includeUndefinedStereoCenters: true,
                                     carbonLabels: 'none',
                                     colorScheme: 'default',
                                     bwColorScheme: 'default',
