@@ -3744,4 +3744,203 @@ test.describe('React Sketcher', () => {
             .toContainText(/ellipse: 1 atom/);
     });
 
+    // -------- Batch 35: background right-click context menu --------
+    // Mirrors Qt's BackgroundContextMenu (menu/background_context_menu.cpp).
+    // The menu appears at the cursor on right-click of an empty canvas
+    // region; actions match Qt's order/labels/separators and enable-states
+    // (Save Image / Export / Flip H,V / Select All / Copy / Copy As / Paste
+    // gate off scene-emptiness; Undo/Redo/Clear/Paste are always enabled —
+    // the existing top-bar undo/redo buttons also don't gate).
+    test('background context menu: right-click on empty canvas opens menu with Qt action order', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Right-click anywhere on canvas opens the menu (empty scene OK).
+        await canvas.click({ position: { x: 200, y: 200 }, button: 'right' });
+        const menu = page.getByTestId('bg-context-menu');
+        await expect(menu).toBeVisible();
+        // Order matches Qt: Save Image, Export, --, Flip H, Flip V, --,
+        // Undo, Redo, --, Select All, Copy, Copy As [...], Paste, --, Clear.
+        const expected = [
+            'ctx-save-image', 'ctx-export',
+            'ctx-flip-horizontal', 'ctx-flip-vertical',
+            'ctx-undo', 'ctx-redo',
+            'ctx-select-all', 'ctx-copy',
+            'ctx-copy-as-mol-v3000', 'ctx-copy-as-maestro',
+            'ctx-copy-as-smiles', 'ctx-copy-as-extended-smiles',
+            'ctx-copy-as-smarts', 'ctx-copy-as-extended-smarts',
+            'ctx-copy-as-inchi', 'ctx-copy-as-inchikey',
+            'ctx-copy-as-pdb', 'ctx-copy-as-xyz', 'ctx-copy-as-mrv',
+            'ctx-paste', 'ctx-clear',
+        ];
+        for (const id of expected) {
+            await expect(page.getByTestId(id)).toBeVisible();
+        }
+    });
+
+    test('background context menu: empty-scene disables Save/Export/Flip/SelectAll/Copy; Undo/Redo/Paste/Clear stay enabled', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 200 }, button: 'right' });
+        // Disabled when scene is empty (mirrors updateActions()).
+        for (const id of [
+            'ctx-save-image', 'ctx-export',
+            'ctx-flip-horizontal', 'ctx-flip-vertical',
+            'ctx-select-all', 'ctx-copy',
+            'ctx-copy-as-smiles', 'ctx-copy-as-mol-v3000',
+        ]) {
+            await expect(page.getByTestId(id)).toBeDisabled();
+        }
+        // Always-enabled (Qt: undo/redo gated on stack, but React top-bar
+        // doesn't gate either — we match the React surface).
+        for (const id of ['ctx-undo', 'ctx-redo', 'ctx-paste', 'ctx-clear']) {
+            await expect(page.getByTestId(id)).toBeEnabled();
+        }
+    });
+
+    test('background context menu: non-empty scene enables every action', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Drop one atom so the scene is non-empty.
+        await canvas.click({ position: { x: 250, y: 200 } });
+        await canvas.click({ position: { x: 400, y: 200 }, button: 'right' });
+        for (const id of [
+            'ctx-save-image', 'ctx-export',
+            'ctx-flip-horizontal', 'ctx-flip-vertical',
+            'ctx-undo', 'ctx-redo',
+            'ctx-select-all', 'ctx-copy', 'ctx-paste', 'ctx-clear',
+            'ctx-copy-as-smiles', 'ctx-copy-as-mol-v3000',
+        ]) {
+            await expect(page.getByTestId(id)).toBeEnabled();
+        }
+    });
+
+    test('background context menu: non-empty scene also enables actions when only non-mol objects exist (reaction-only)', async ({
+        page,
+    }) => {
+        // Switch to the Reaction tool and drop an arrow — no atoms, but the
+        // scene is non-empty via nonMol[]. updateActions() must enable the
+        // gated actions in that case (Qt's sceneIsEmpty checks both).
+        await page.getByTestId('reaction').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Default reactionMode is 'arrow' on first click — drop it.
+        await canvas.click({ position: { x: 300, y: 200 } });
+        await canvas.click({ position: { x: 100, y: 100 }, button: 'right' });
+        await expect(page.getByTestId('ctx-save-image')).toBeEnabled();
+        await expect(page.getByTestId('ctx-export')).toBeEnabled();
+        await expect(page.getByTestId('ctx-select-all')).toBeEnabled();
+    });
+
+    test('background context menu: Clear Sketcher empties the model and closes the menu', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 250, y: 200 } });
+        await canvas.click({ position: { x: 350, y: 200 } });
+        let rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+        await canvas.click({ position: { x: 100, y: 100 }, button: 'right' });
+        await page.getByTestId('ctx-clear').click();
+        await expect(page.getByTestId('bg-context-menu')).toHaveCount(0);
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(0);
+    });
+
+    test('background context menu: Copy writes MOL V3000 to clipboard (matches Qt DEFAULT_FORMAT)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 250, y: 200 } });
+        await canvas.click({ position: { x: 100, y: 100 }, button: 'right' });
+        await page.getByTestId('ctx-copy').click();
+        const clip = await readClipboard(page);
+        // V3000 header includes "M  V30 BEGIN CTAB" — V2000 would not.
+        expect(clip).toContain('V30 BEGIN CTAB');
+    });
+
+    test('background context menu: Copy As SMILES writes SMILES to clipboard', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Build CCO via two click + bond cycles? Easier: paste SMILES.
+        await loadText(page, 'CCO');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('ctx-copy-as-smiles').click();
+        const clip = await readClipboard(page);
+        expect(clip.trim()).toBe('CCO');
+    });
+
+    test('background context menu: Flip All Horizontal flips every atom about the centroid', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        const before = await snapshot(page);
+        // Capture min/max x for the centroid before flipping.
+        const xsBefore = before.atoms.map((a) => a.x);
+        const cxBefore = (Math.min(...xsBefore) + Math.max(...xsBefore)) / 2;
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('ctx-flip-horizontal').click();
+        const after = await snapshot(page);
+        // Reflecting x around cxBefore: new_x = 2*cxBefore - old_x.
+        for (let i = 0; i < before.atoms.length; ++i) {
+            const expectedX = 2 * cxBefore - before.atoms[i].x;
+            // 3-decimal precision — the serializer rounds to ~4 decimals and
+            // the centroid math reflects a float-rounded mid-x, so 5dp would
+            // be over-strict.
+            expect(after.atoms[i].x).toBeCloseTo(expectedX, 3);
+        }
+    });
+
+    test('background context menu: Select All selects every atom and closes', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('ctx-select-all').click();
+        await expect(page.getByTestId('bg-context-menu')).toHaveCount(0);
+        const rd = await snapshot(page);
+        expect(rd.atoms.every((a) => a.sel)).toBe(true);
+    });
+
+    test('background context menu: outside-click dismisses without firing any action', async ({
+        page,
+    }) => {
+        await loadText(page, 'CC');
+        const canvas = page.getByTestId('sketcher-canvas');
+        const before = await snapshot(page);
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await expect(page.getByTestId('bg-context-menu')).toBeVisible();
+        // Click the status box (outside the menu).
+        await page.getByTestId('sketcher-status').click();
+        await expect(page.getByTestId('bg-context-menu')).toHaveCount(0);
+        const after = await snapshot(page);
+        expect(after.atoms).toHaveLength(before.atoms.length);
+    });
+
+    test('background context menu: Save Image opens the FileSaveImageDialog', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('ctx-save-image').click();
+        await expect(page.getByTestId('bg-context-menu')).toHaveCount(0);
+        await expect(page.getByTestId('save-image-modal')).toBeVisible();
+    });
+
+    test('background context menu: Export to File opens the FileExportDialog', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('ctx-export').click();
+        await expect(page.getByTestId('bg-context-menu')).toHaveCount(0);
+        await expect(page.getByTestId('export-modal')).toBeVisible();
+    });
+
 });

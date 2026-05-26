@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useLayoutEffect,
     useReducer,
     useRef,
     useState,
@@ -1988,6 +1989,15 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [status, setStatus] = useState<string>('ready');
     const [view, setViewState] = useState<View>(DEFAULT_VIEW);
     const [moreMenuOpen, setMoreMenuOpen] = useState<boolean>(false);
+    // Right-click context menu on empty canvas — mirrors Qt's
+    // BackgroundContextMenu (menu/background_context_menu.cpp). Qt opens it
+    // from SketcherView::contextMenuEvent when the click lands on no item.
+    // `x`/`y` are viewport coords (position: fixed) and `sceneEmpty` is
+    // snapshotted at open time so the enable-states (Save Image, Export,
+    // Flip H/V, Select All) match Qt's BackgroundContextMenu::updateActions.
+    const [bgContextMenu, setBgContextMenu] = useState<
+        { x: number; y: number; sceneEmpty: boolean } | null
+    >(null);
     // Top-bar Import / Export dropdowns + their modals. Mirrors Qt's
     // ImportMenu / ExportMenu (menu/sketcher_top_bar_menus.cpp) + the
     // PasteInTextDialog / FileExportDialog popups they open.
@@ -2441,9 +2451,29 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const exportMenuWrapperRef = useRef<HTMLDivElement | null>(null);
     const configureViewWrapperRef = useRef<HTMLDivElement | null>(null);
     const helpMenuWrapperRef = useRef<HTMLDivElement | null>(null);
+    const bgContextMenuRef = useRef<HTMLDivElement | null>(null);
+    // Bounds-clamp the background context menu within the viewport — Qt's
+    // QMenu does this automatically (flips upward / leftward at edges). The
+    // menu has 21 items and tall layouts can easily push the bottom items
+    // below a 700px-tall window.
+    useLayoutEffect(() => {
+        if (!bgContextMenu) return;
+        const el = bgContextMenuRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        let { x, y } = bgContextMenu;
+        if (x + rect.width > vw) x = Math.max(0, vw - rect.width - 4);
+        if (y + rect.height > vh) y = Math.max(0, vh - rect.height - 4);
+        if (x !== bgContextMenu.x || y !== bgContextMenu.y) {
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+        }
+    }, [bgContextMenu]);
     useEffect(() => {
         if (!moreMenuOpen && !importMenuOpen && !exportMenuOpen
-            && !configureViewOpen && !helpMenuOpen) return;
+            && !configureViewOpen && !helpMenuOpen && !bgContextMenu) return;
         function onDocMouseDown(e: globalThis.MouseEvent): void {
             const t = e.target as Node;
             if (moreMenuOpen && moreMenuWrapperRef.current
@@ -2466,13 +2496,17 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 && !helpMenuWrapperRef.current.contains(t)) {
                 setHelpMenuOpen(false);
             }
+            if (bgContextMenu && bgContextMenuRef.current
+                && !bgContextMenuRef.current.contains(t)) {
+                setBgContextMenu(null);
+            }
         }
         document.addEventListener('mousedown', onDocMouseDown);
         return () => {
             document.removeEventListener('mousedown', onDocMouseDown);
         };
     }, [moreMenuOpen, importMenuOpen, exportMenuOpen, configureViewOpen,
-        helpMenuOpen]);
+        helpMenuOpen, bgContextMenu]);
 
     const onCanvasClick = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
@@ -3303,6 +3337,35 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             setStatus('chain cancelled');
         }
     }, [dragShape, chainDrag]);
+
+    // Right-click on the canvas → open the background context menu (Qt's
+    // BackgroundContextMenu). Position uses viewport coords so the menu is
+    // `position: fixed` and anchored at the cursor. Snapshot scene-empty at
+    // open-time so the enable-states match Qt's updateActions() without
+    // needing a live subscription while the menu is open.
+    const onCanvasContextMenu = useCallback(
+        (e: ReactMouseEvent<HTMLCanvasElement>): void => {
+            e.preventDefault();
+            const m = modelRef.current;
+            let sceneEmpty = true;
+            if (m) {
+                if (m.numAtoms() > 0) {
+                    sceneEmpty = false;
+                } else {
+                    try {
+                        const rd = JSON.parse(m.description()) as RenderDesc;
+                        if (rd.nonMol && rd.nonMol.length > 0) {
+                            sceneEmpty = false;
+                        }
+                    } catch {
+                        // empty description → keep sceneEmpty true
+                    }
+                }
+            }
+            setBgContextMenu({ x: e.clientX, y: e.clientY, sceneEmpty });
+        },
+        [],
+    );
 
     const doUndo = (): void => {
         modelRef.current?.undo();
@@ -4764,6 +4827,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         onMouseMove={onCanvasMove}
                         onMouseUp={onCanvasMouseUp}
                         onMouseLeave={onCanvasMouseLeave}
+                        onContextMenu={onCanvasContextMenu}
                         data-testid='sketcher-canvas'
                     />
                     <div style={styles.statusBox} data-testid='sketcher-status'>
@@ -4771,6 +4835,155 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     </div>
                 </div>
             </div>
+            {/* Background context menu — mirrors Qt's BackgroundContextMenu
+                (menu/background_context_menu.cpp). Order, labels, separators,
+                and enable-states all follow that file. Copy As is inlined as
+                a labelled section (same flattening choice as the More Actions
+                menu) rather than a nested submenu — known minor divergence.
+                Qt's plain "Copy" emits DEFAULT_FORMAT = MDL_MOLV3000 (
+                cut_copy_action_manager.cpp:16,45), which is exactly what the
+                Ctrl+C path here already does. */}
+            {bgContextMenu && (
+                <div
+                    ref={bgContextMenuRef}
+                    style={{
+                        ...styles.bgContextMenu,
+                        left: bgContextMenu.x,
+                        top: bgContextMenu.y,
+                    }}
+                    data-testid='bg-context-menu'
+                    onContextMenu={(e) => e.preventDefault()}
+                >
+                    <MoreItem label='Save Image...' testid='ctx-save-image'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            setImageModalOpen(true);
+                        }} />
+                    <MoreItem label='Export to File...' testid='ctx-export'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            setExportModalOpen(true);
+                        }} />
+                    <div style={styles.moreDivider} />
+                    <MoreItem label='Flip All Horizontal'
+                        testid='ctx-flip-horizontal'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            doFlip(true, 'flipped horizontal');
+                        }} />
+                    <MoreItem label='Flip All Vertical'
+                        testid='ctx-flip-vertical'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            doFlip(false, 'flipped vertical');
+                        }} />
+                    <div style={styles.moreDivider} />
+                    {/* Qt disables undo/redo via getUndoStackData(), but the
+                        existing React top-bar undo/redo buttons don't gate
+                        either — leaving these always-enabled keeps the two
+                        surfaces consistent. */}
+                    <MoreItem label='Undo' testid='ctx-undo'
+                        onClick={() => { setBgContextMenu(null); doUndo(); }} />
+                    <MoreItem label='Redo' testid='ctx-redo'
+                        onClick={() => { setBgContextMenu(null); doRedo(); }} />
+                    <div style={styles.moreDivider} />
+                    <MoreItem label='Select All' testid='ctx-select-all'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            doSelectAll();
+                        }} />
+                    <MoreItem label='Copy' testid='ctx-copy'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            void doCopyMolBlockV3000();
+                        }} />
+                    <div style={styles.moreSectionLabel}>Copy As</div>
+                    <MoreItem label='MDL SD V3000' testid='ctx-copy-as-mol-v3000'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            void doCopyAs('mdl_molv3000', 'MOL V3000');
+                        }} />
+                    <MoreItem label='Maestro' testid='ctx-copy-as-maestro'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            void doCopyAs('maestro', 'Maestro');
+                        }} />
+                    <MoreItem label='SMILES' testid='ctx-copy-as-smiles'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            void doCopyAs('smiles', 'SMILES');
+                        }} />
+                    <MoreItem label='Extended SMILES'
+                        testid='ctx-copy-as-extended-smiles'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            void doCopyAs('extended_smiles', 'Extended SMILES');
+                        }} />
+                    <MoreItem label='SMARTS' testid='ctx-copy-as-smarts'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            void doCopyAs('smarts', 'SMARTS');
+                        }} />
+                    <MoreItem label='Extended SMARTS'
+                        testid='ctx-copy-as-extended-smarts'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            void doCopyAs('extended_smarts', 'Extended SMARTS');
+                        }} />
+                    <MoreItem label='InChI' testid='ctx-copy-as-inchi'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            void doCopyAs('inchi', 'InChI');
+                        }} />
+                    <MoreItem label='InChIKey' testid='ctx-copy-as-inchikey'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            void doCopyAs('inchikey', 'InChIKey');
+                        }} />
+                    <MoreItem label='PDB' testid='ctx-copy-as-pdb'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            void doCopyAs('pdb', 'PDB');
+                        }} />
+                    <MoreItem label='XYZ' testid='ctx-copy-as-xyz'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            void doCopyAs('xyz', 'XYZ');
+                        }} />
+                    <MoreItem label='Marvin Document'
+                        testid='ctx-copy-as-mrv'
+                        disabled={bgContextMenu.sceneEmpty}
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            void doCopyAs('mrv', 'Marvin');
+                        }} />
+                    {/* Paste is always-enabled in Qt (clipboard agnostic) */}
+                    <MoreItem label='Paste' testid='ctx-paste'
+                        onClick={() => {
+                            setBgContextMenu(null);
+                            void doPaste();
+                        }} />
+                    <div style={styles.moreDivider} />
+                    <MoreItem label='Clear Sketcher' testid='ctx-clear'
+                        onClick={() => { setBgContextMenu(null); doClear(); }} />
+                </div>
+            )}
             {pasteModalOpen && (
                 <div style={styles.modalOverlay}
                     data-testid='paste-text-modal'
@@ -5396,21 +5609,27 @@ interface MoreItemProps {
     label: string;
     onClick: () => void;
     testid: string;
+    disabled?: boolean;
 }
 
-function MoreItem({ label, onClick, testid }: MoreItemProps): JSX.Element {
+function MoreItem(
+    { label, onClick, testid, disabled = false }: MoreItemProps,
+): JSX.Element {
     const [hover, setHover] = useState(false);
     return (
         <button
             type='button'
             style={{
                 ...styles.moreItem,
-                ...(hover ? styles.moreItemHover : {}),
+                ...(hover && !disabled ? styles.moreItemHover : {}),
+                ...(disabled ? styles.moreItemDisabled : {}),
             }}
             onClick={onClick}
             onMouseEnter={() => setHover(true)}
             onMouseLeave={() => setHover(false)}
             data-testid={testid}
+            disabled={disabled}
+            aria-disabled={disabled || undefined}
         >
             {label}
         </button>
@@ -6226,6 +6445,25 @@ const styles: Record<string, CSSProperties> = {
         display: 'block',
     },
     moreItemHover: { background: HOVER_BG },
+    moreItemDisabled: {
+        color: '#aaa',
+        cursor: 'default',
+        background: 'transparent',
+    },
+    bgContextMenu: {
+        position: 'fixed',
+        background: 'white',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 3,
+        boxShadow: '0 2px 8px rgba(0,0,0,0.18)',
+        zIndex: 50,
+        minWidth: 200,
+        padding: '4px 0',
+        // Tall menu (21 items) — Qt's QMenu auto-flips upward when it would
+        // clip; the layout effect below does the same here.
+        maxHeight: '90vh',
+        overflowY: 'auto',
+    },
     modalOverlay: {
         position: 'fixed',
         top: 0,
