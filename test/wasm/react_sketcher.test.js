@@ -4505,4 +4505,91 @@ test.describe('React Sketcher', () => {
         }
     });
 
+    // -------- Batch 40: AttachmentPointContextMenu --------
+    // Qt menu/attachment_point_context_menu.cpp:8 — a tiny dedicated menu
+    // (just "Attachment Point" title + Delete) that fires when right-click
+    // hits an attachment-point dummy. Distinct from the generic atom menu
+    // (which is what the React port previously showed for AP atoms, with
+    // everything but Delete disabled).
+    async function apAtomPx(page) {
+        // Compute the pixel-space position of the AP atom by combining the
+        // model-space atom position from the snapshot with the live
+        // SketcherView transform exposed on window for tests.
+        return await page.evaluate(() => {
+            const rd = JSON.parse(window.SketcherModel.description());
+            const ap = rd.atoms.find((a) => typeof a.ap === 'number');
+            if (!ap) return null;
+            const view = window.SketcherView.current;
+            const canvas = document.querySelector(
+                '[data-testid="sketcher-canvas"]');
+            const rect = canvas.getBoundingClientRect();
+            const cx = canvas.width / 2 + view.offsetX;
+            const cy = canvas.height / 2 + view.offsetY;
+            const px = ap.x * view.scale + cx;
+            const py = -ap.y * view.scale + cy;
+            // Convert canvas-internal coords to client coords using
+            // the canvas's CSS scaling ratio.
+            const sx = rect.width / canvas.width;
+            const sy = rect.height / canvas.height;
+            return { x: px * sx, y: py * sy };
+        });
+    }
+
+    test('attachment-point context menu: right-click on an AP opens the dedicated menu (not the atom menu)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('attachment-point').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('tool-select').click();
+        const pos = await apAtomPx(page);
+        expect(pos).not.toBeNull();
+        await canvas.click({ position: pos, button: 'right' });
+        await expect(page.getByTestId('ap-context-menu')).toBeVisible();
+        await expect(page.getByTestId('atom-context-menu')).toHaveCount(0);
+        await expect(page.getByTestId('bond-context-menu')).toHaveCount(0);
+        await expect(page.getByTestId('bg-context-menu')).toHaveCount(0);
+    });
+
+    test('attachment-point context menu: shows only Delete (and the title)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('attachment-point').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('tool-select').click();
+        const pos = await apAtomPx(page);
+        await canvas.click({ position: pos, button: 'right' });
+        await expect(page.getByTestId('ap-context-menu'))
+            .toContainText('Attachment Point');
+        await expect(page.getByTestId('ap-ctx-delete')).toBeVisible();
+        // Things the atom menu would have shown must not appear here.
+        await expect(page.getByTestId('atom-ctx-charge-plus')).toHaveCount(0);
+        await expect(page.getByTestId('atom-ctx-set-C')).toHaveCount(0);
+    });
+
+    test('attachment-point context menu: Delete removes only the AP atom + its bond', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('attachment-point').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('tool-select').click();
+        const before = await snapshot(page);
+        expect(before.atoms).toHaveLength(2);
+        expect(before.bonds).toHaveLength(1);
+        const pos = await apAtomPx(page);
+        await canvas.click({ position: pos, button: 'right' });
+        await page.getByTestId('ap-ctx-delete').click();
+        await expect(page.getByTestId('ap-context-menu')).toHaveCount(0);
+        const after = await snapshot(page);
+        // The host C survives; the AP and its single bond are gone.
+        expect(after.atoms).toHaveLength(1);
+        expect(after.bonds).toHaveLength(0);
+        expect(after.atoms[0].ap).toBeUndefined();
+    });
+
 });

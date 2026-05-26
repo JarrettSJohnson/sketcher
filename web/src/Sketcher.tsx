@@ -2039,6 +2039,14 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         { x: number; y: number; atomIdx: number; el: string;
           q: number; isRGroupOrAp: boolean } | null
     >(null);
+    // Attachment-point right-click menu — mirrors Qt's tiny
+    // AttachmentPointContextMenu (menu/attachment_point_context_menu.cpp:11),
+    // which is just a "Delete" entry under an "Attachment Point" title. Runs
+    // ahead of the generic atom menu when the hit atom carries an `ap`
+    // property (a wavy-squiggle dummy bound to a real atom).
+    const [apContextMenu, setApContextMenu] = useState<
+        { x: number; y: number; atomIdx: number } | null
+    >(null);
     // Top-bar Import / Export dropdowns + their modals. Mirrors Qt's
     // ImportMenu / ExportMenu (menu/sketcher_top_bar_menus.cpp) + the
     // PasteInTextDialog / FileExportDialog popups they open.
@@ -2496,6 +2504,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const selContextMenuRef = useRef<HTMLDivElement | null>(null);
     const bondContextMenuRef = useRef<HTMLDivElement | null>(null);
     const atomContextMenuRef = useRef<HTMLDivElement | null>(null);
+    const apContextMenuRef = useRef<HTMLDivElement | null>(null);
     // Bounds-clamp the right-click menus within the viewport — Qt's QMenu
     // does this automatically (flips upward / leftward at edges). The
     // background menu has 21 items and tall layouts can easily push the
@@ -2560,10 +2569,26 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             el.style.top = `${y}px`;
         }
     }, [atomContextMenu]);
+    useLayoutEffect(() => {
+        if (!apContextMenu) return;
+        const el = apContextMenuRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        let { x, y } = apContextMenu;
+        if (x + rect.width > vw) x = Math.max(0, vw - rect.width - 4);
+        if (y + rect.height > vh) y = Math.max(0, vh - rect.height - 4);
+        if (x !== apContextMenu.x || y !== apContextMenu.y) {
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+        }
+    }, [apContextMenu]);
     useEffect(() => {
         if (!moreMenuOpen && !importMenuOpen && !exportMenuOpen
             && !configureViewOpen && !helpMenuOpen && !bgContextMenu
-            && !selContextMenu && !bondContextMenu && !atomContextMenu) return;
+            && !selContextMenu && !bondContextMenu && !atomContextMenu
+            && !apContextMenu) return;
         function onDocMouseDown(e: globalThis.MouseEvent): void {
             const t = e.target as Node;
             if (moreMenuOpen && moreMenuWrapperRef.current
@@ -2602,6 +2627,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 && !atomContextMenuRef.current.contains(t)) {
                 setAtomContextMenu(null);
             }
+            if (apContextMenu && apContextMenuRef.current
+                && !apContextMenuRef.current.contains(t)) {
+                setApContextMenu(null);
+            }
         }
         document.addEventListener('mousedown', onDocMouseDown);
         return () => {
@@ -2609,7 +2638,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         };
     }, [moreMenuOpen, importMenuOpen, exportMenuOpen, configureViewOpen,
         helpMenuOpen, bgContextMenu, selContextMenu, bondContextMenu,
-        atomContextMenu]);
+        atomContextMenu, apContextMenu]);
 
     const onCanvasClick = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
@@ -3485,6 +3514,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 setBgContextMenu(null);
                 setBondContextMenu(null);
                 setAtomContextMenu(null);
+                setApContextMenu(null);
                 return;
             }
             // Item hit-tests run in Qt's per-item z-order: atoms before
@@ -3501,6 +3531,22 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 if (atomIdx >= 0) {
                     const ad = rd.atoms.find((a) => a.i === atomIdx);
                     if (ad) {
+                        // Attachment-point dummies get Qt's dedicated tiny
+                        // menu (just Delete), not the generic atom menu —
+                        // matches AttachmentPointContextMenu in
+                        // menu/attachment_point_context_menu.cpp:11.
+                        if (typeof ad.ap === 'number') {
+                            setApContextMenu({
+                                x: e.clientX,
+                                y: e.clientY,
+                                atomIdx,
+                            });
+                            setBgContextMenu(null);
+                            setSelContextMenu(null);
+                            setBondContextMenu(null);
+                            setAtomContextMenu(null);
+                            return;
+                        }
                         setAtomContextMenu({
                             x: e.clientX,
                             y: e.clientY,
@@ -3514,6 +3560,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         setBgContextMenu(null);
                         setSelContextMenu(null);
                         setBondContextMenu(null);
+                        setApContextMenu(null);
                         return;
                     }
                 }
@@ -3539,6 +3586,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     setBgContextMenu(null);
                     setSelContextMenu(null);
                     setAtomContextMenu(null);
+                    setApContextMenu(null);
                     return;
                 }
             }
@@ -3547,6 +3595,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             setSelContextMenu(null);
             setBondContextMenu(null);
             setAtomContextMenu(null);
+            setApContextMenu(null);
         },
         [],
     );
@@ -5518,6 +5567,29 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         onClick={() => {
                             const am = atomContextMenu;
                             setAtomContextMenu(null);
+                            modelRef.current?.removeAtom(am.atomIdx);
+                        }} />
+                </div>
+            )}
+            {/* AttachmentPointContextMenu (Qt:
+                menu/attachment_point_context_menu.cpp:8). Just a title +
+                Delete; reuses removeAtom which already strips the bond. */}
+            {apContextMenu && (
+                <div
+                    ref={apContextMenuRef}
+                    style={{
+                        ...styles.bgContextMenu,
+                        left: apContextMenu.x,
+                        top: apContextMenu.y,
+                    }}
+                    data-testid='ap-context-menu'
+                    onContextMenu={(e) => e.preventDefault()}
+                >
+                    <div style={styles.moreSectionLabel}>Attachment Point</div>
+                    <MoreItem label='Delete' testid='ap-ctx-delete'
+                        onClick={() => {
+                            const am = apContextMenu;
+                            setApContextMenu(null);
                             modelRef.current?.removeAtom(am.atomIdx);
                         }} />
                 </div>
