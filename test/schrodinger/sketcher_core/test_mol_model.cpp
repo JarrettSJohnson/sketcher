@@ -1486,3 +1486,74 @@ BOOST_AUTO_TEST_CASE(testAddAttachmentPointRejectsZeroAndOutOfRangeAnchor)
     BOOST_CHECK_EQUAL(m.numBonds(), 0u);
     BOOST_CHECK_EQUAL(stack.count(), 1u); // just the initial addAtom
 }
+
+BOOST_AUTO_TEST_CASE(testAddRxnArrowPlacesArrowAtCoords)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    BOOST_CHECK(!m.hasRxnArrow());
+    m.addRxnArrow(2.5, -1.0);
+    BOOST_CHECK(m.hasRxnArrow());
+    BOOST_CHECK_CLOSE(m.rxnArrow().first, 2.5, 1e-6);
+    BOOST_CHECK_CLOSE(m.rxnArrow().second, -1.0, 1e-6);
+    // Pure non-mol mutation shouldn't add atoms or bonds.
+    BOOST_CHECK_EQUAL(m.numAtoms(), 0u);
+    BOOST_CHECK_EQUAL(m.numBonds(), 0u);
+    // The model isn't "empty" once a non-mol object is present — matters for
+    // export/clear semantics (Qt: MolModel::isEmpty considers non-mol objects).
+    BOOST_CHECK(!m.isEmpty());
+}
+
+BOOST_AUTO_TEST_CASE(testAddRxnArrowRejectsSecondArrow)
+{
+    // Qt MolModel::addNonMolecularObject throws "Only one arrow allowed"
+    // when an arrow already exists. Pluses are unlimited; arrows are not.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addRxnArrow(0.0, 0.0);
+    BOOST_CHECK_THROW(m.addRxnArrow(3.0, 3.0), std::runtime_error);
+    // Failed call must not leave a partial mutation behind.
+    BOOST_CHECK(m.hasRxnArrow());
+    BOOST_CHECK_CLOSE(m.rxnArrow().first, 0.0, 1e-6);
+    BOOST_CHECK_CLOSE(m.rxnArrow().second, 0.0, 1e-6);
+    BOOST_CHECK_EQUAL(stack.count(), 1u); // just the first addRxnArrow
+}
+
+BOOST_AUTO_TEST_CASE(testAddRxnPlusAppendsMultiple)
+{
+    // Pluses are unbounded — each click drops another. Order preserved.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addRxnPlus(1.0, 0.0);
+    m.addRxnPlus(2.0, 0.0);
+    m.addRxnPlus(3.0, 0.0);
+    BOOST_CHECK_EQUAL(m.rxnPluses().size(), 3u);
+    BOOST_CHECK_CLOSE(m.rxnPluses()[0].first, 1.0, 1e-6);
+    BOOST_CHECK_CLOSE(m.rxnPluses()[1].first, 2.0, 1e-6);
+    BOOST_CHECK_CLOSE(m.rxnPluses()[2].first, 3.0, 1e-6);
+    BOOST_CHECK(!m.isEmpty());
+}
+
+BOOST_AUTO_TEST_CASE(testAddRxnArrowAndPlusAreUndoable)
+{
+    // doMutation snapshots non-mol state alongside the RWMol, so undo
+    // restores both atom topology and reaction objects atomically.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addRxnArrow(0.0, 0.0);
+    m.addRxnPlus(1.0, 0.0);
+    BOOST_CHECK(m.hasRxnArrow());
+    BOOST_CHECK_EQUAL(m.rxnPluses().size(), 1u);
+    stack.undo();
+    BOOST_CHECK(m.hasRxnArrow());
+    BOOST_CHECK_EQUAL(m.rxnPluses().size(), 0u);
+    stack.undo();
+    BOOST_CHECK(!m.hasRxnArrow());
+    BOOST_CHECK_EQUAL(m.rxnPluses().size(), 0u);
+    BOOST_CHECK(m.isEmpty());
+    // Redo should bring both objects back in order.
+    stack.redo();
+    BOOST_CHECK(m.hasRxnArrow());
+    stack.redo();
+    BOOST_CHECK_EQUAL(m.rxnPluses().size(), 1u);
+}

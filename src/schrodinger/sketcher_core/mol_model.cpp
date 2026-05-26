@@ -75,6 +75,8 @@ void MolModel::doMutation(const std::function<void()>& mutate,
     }
 
     RDKit::RWMol before(m_mol);
+    auto arrow_before = m_rxn_arrow;
+    auto pluses_before = m_rxn_pluses;
     mutate();
     // Refresh the implicit-valence / H-count property cache so render
     // description can read getTotalNumHs() without sanitizing the whole mol.
@@ -87,13 +89,19 @@ void MolModel::doMutation(const std::function<void()>& mutate,
         // Swallow: leaves the prior cache in place rather than aborting.
     }
     RDKit::RWMol after(m_mol);
+    auto arrow_after = m_rxn_arrow;
+    auto pluses_after = m_rxn_pluses;
 
-    auto redo = [this, after] {
+    auto redo = [this, after, arrow_after, pluses_after] {
         m_mol = after;
+        m_rxn_arrow = arrow_after;
+        m_rxn_pluses = pluses_after;
         emitSignal(modelChanged);
     };
-    auto undo = [this, before] {
+    auto undo = [this, before, arrow_before, pluses_before] {
         m_mol = before;
+        m_rxn_arrow = arrow_before;
+        m_rxn_pluses = pluses_before;
         emitSignal(modelChanged);
     };
     doCommand(std::move(redo), std::move(undo), description);
@@ -242,8 +250,31 @@ void MolModel::clear()
         [this] {
             m_mol = RDKit::RWMol();
             install_empty_2d_conformer(m_mol);
+            m_rxn_arrow.reset();
+            m_rxn_pluses.clear();
         },
         "Clear");
+}
+
+void MolModel::addRxnArrow(double x, double y)
+{
+    // Qt: MolModel::addNonMolecularObject (model/mol_model.cpp:1116-1118)
+    // throws "Only one arrow allowed" before opening the undo step. Mirror
+    // that here so the bridge surfaces a friendly status instead of silently
+    // dropping the second click.
+    if (m_rxn_arrow.has_value()) {
+        throw std::runtime_error("Only one arrow allowed");
+    }
+    doMutation(
+        [this, x, y] { m_rxn_arrow = std::make_pair(x, y); },
+        "Add reaction arrow");
+}
+
+void MolModel::addRxnPlus(double x, double y)
+{
+    doMutation(
+        [this, x, y] { m_rxn_pluses.emplace_back(x, y); },
+        "Add reaction plus");
 }
 
 void MolModel::setAtomPos(unsigned int idx, double x, double y)

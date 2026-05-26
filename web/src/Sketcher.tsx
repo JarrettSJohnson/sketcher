@@ -18,7 +18,13 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 // tests cover.
 
 type Tool = 'atom' | 'bond' | 'select' | 'move-rotate' | 'erase' | 'ring'
-    | 'atom-chain' | 'rgroup' | 'attachment-point';
+    | 'atom-chain' | 'rgroup' | 'attachment-point' | 'reaction';
+
+// Reaction sub-mode — Qt: EnumerationTool::{RXN_ARROW, RXN_PLUS} in the
+// reaction popup. The two map 1:1 to MolModel::addRxnArrow / addRxnPlus.
+// Add Mapping / Remove Mapping (also in Qt's ReactionPopup) are deferred —
+// they need atom-mapping primitives the lean MolModel doesn't expose yet.
+type ReactionMode = 'arrow' | 'plus';
 // SetAtomWidget.ui ships C/H/N/O/P/S/F/Cl/Si on the atomistic panel.
 // Element symbol — any RDKit-recognized symbol. The sidebar exposes
 // 8 fixed elements via dedicated buttons; everything else flows through
@@ -129,9 +135,20 @@ const BOND_DIR_WEDGE = 1;
 const BOND_DIR_DASH = 2;
 const BOND_DIR_EITHERDOUBLE = 5; // crossed double (cis/trans unknown)
 const BOND_DIR_UNKNOWN = 6;       // wavy single (up/down unknown)
+// Reaction objects live outside the RWMol — sketcher_core mirrors Qt's
+// `m_arrow` (optional) + `m_pluses` (vector) shape and emits them as a
+// flat `nonMol` array in render description JSON. Each entry's `type`
+// disambiguates which shape to draw. Qt: NonMolecularObject in
+// model/non_molecular_object.h.
+interface NonMolDesc {
+    type: 'arrow' | 'plus';
+    x: number;
+    y: number;
+}
 interface RenderDesc {
     atoms: AtomDesc[];
     bonds: BondDesc[];
+    nonMol?: NonMolDesc[];
 }
 
 const CANVAS_W = 540;
@@ -159,6 +176,17 @@ const QT_VIEW_SCALE = 33;
 const AP_SQUIGGLE_NUM_WAVES = 3;
 const AP_SQUIGGLE_WIDTH_PER_WAVE_MODEL = 8.0 / QT_VIEW_SCALE;
 const AP_SQUIGGLE_HEIGHT_MODEL = 3.0 / QT_VIEW_SCALE;
+// Reaction non-molecular constants (Qt molviewer/constants.h:309-316):
+//   ARROW_LENGTH = 40 scene-units (tail-to-tip)
+//   ARROW_WIDTH  = 10 scene-units (chevron height at tip)
+//   PLUS_LENGTH  = 20 scene-units (arm-to-arm)
+//   NON_MOLECULAR_PEN_WIDTH = 3.0 scene-units
+// Divided by VIEW_SCALE to land in model units; the renderer multiplies
+// by view.scale to get pixels.
+const RXN_ARROW_LENGTH_MODEL = 40.0 / QT_VIEW_SCALE;
+const RXN_ARROW_TIP_HALF_WIDTH_MODEL = 5.0 / QT_VIEW_SCALE; // ARROW_WIDTH/2
+const RXN_PLUS_HALF_LENGTH_MODEL = 10.0 / QT_VIEW_SCALE; // PLUS_LENGTH/2
+const RXN_PEN_WIDTH_MODEL = 3.0 / QT_VIEW_SCALE;
 const BLANK_DESC: RenderDesc = { atoms: [], bonds: [] };
 
 // View transform. (scale = pixels per model unit; offsetX/offsetY shift the
@@ -411,6 +439,47 @@ function strokeWavyPath(
     }
     ctx.stroke();
     ctx.restore();
+}
+
+// Stamp a reaction arrow centered at (cx, cy). Horizontal, tip on the right.
+// Mirrors Qt NonMolecularItem::updateCachedData (molviewer/non_molecular_item.cpp:44-66):
+// horizontal shaft from (-half, 0) to (+half, 0), then a chevron drawn as two
+// line segments from the tip back to (tip_start, ±half_width). Caller sets
+// strokeStyle / lineWidth.
+function strokeRxnArrow(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    lengthPx: number,
+    tipHalfWidthPx: number,
+): void {
+    const halfLen = lengthPx / 2;
+    const tipStartX = cx + halfLen - tipHalfWidthPx;
+    const tipX = cx + halfLen;
+    ctx.beginPath();
+    ctx.moveTo(cx - halfLen, cy);
+    ctx.lineTo(tipX, cy);
+    ctx.lineTo(tipStartX, cy - tipHalfWidthPx);
+    ctx.moveTo(tipX, cy);
+    ctx.lineTo(tipStartX, cy + tipHalfWidthPx);
+    ctx.stroke();
+}
+
+// Stamp a reaction plus sign centered at (cx, cy). Two crossed line segments
+// of total length PLUS_LENGTH each. Qt: NonMolecularItem::updateCachedData
+// (non_molecular_item.cpp:67-72).
+function strokeRxnPlus(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    halfLengthPx: number,
+): void {
+    ctx.beginPath();
+    ctx.moveTo(cx - halfLengthPx, cy);
+    ctx.lineTo(cx + halfLengthPx, cy);
+    ctx.moveTo(cx, cy - halfLengthPx);
+    ctx.lineTo(cx, cy + halfLengthPx);
+    ctx.stroke();
 }
 
 function nearestAtomIndex(
@@ -1227,6 +1296,28 @@ function drawSketch(
         ctx.restore();
     }
 
+    // Reaction non-molecular objects (arrow + pluses) — drawn after the
+    // mol so they sit on top visually. Qt: NonMolecularItem (Z = RXN_ARROW_AND_PLUS).
+    if (rd.nonMol && rd.nonMol.length > 0) {
+        const arrowLenPx = RXN_ARROW_LENGTH_MODEL * view.scale;
+        const tipHalfPx = RXN_ARROW_TIP_HALF_WIDTH_MODEL * view.scale;
+        const plusHalfPx = RXN_PLUS_HALF_LENGTH_MODEL * view.scale;
+        const penPx = RXN_PEN_WIDTH_MODEL * view.scale;
+        ctx.save();
+        ctx.strokeStyle = palette.bond;
+        ctx.lineWidth = penPx;
+        ctx.lineCap = 'round';
+        for (const obj of rd.nonMol) {
+            const { px, py } = pixelFromModel(canvas, view, obj.x, obj.y);
+            if (obj.type === 'arrow') {
+                strokeRxnArrow(ctx, px, py, arrowLenPx, tipHalfPx);
+            } else {
+                strokeRxnPlus(ctx, px, py, plusHalfPx);
+            }
+        }
+        ctx.restore();
+    }
+
     // Stereo labels: small text drawn just past the atom toward an empty
     // wedge of space around it. Qt uses CHIRALITY_LABEL_DISTANCE_RATIO=0.10
     // of the bond length plus the label's half-diagonal so the label sits
@@ -1742,6 +1833,42 @@ function buildSketchSvg(
             );
         }
     }
+    // Reaction non-molecular objects — drawn after the mol so they sit on
+    // top. Qt: NonMolecularItem (Z = RXN_ARROW_AND_PLUS, above bonds).
+    if (rd.nonMol && rd.nonMol.length > 0) {
+        const arrowLenPx = RXN_ARROW_LENGTH_MODEL * view.scale;
+        const tipHalfPx = RXN_ARROW_TIP_HALF_WIDTH_MODEL * view.scale;
+        const plusHalfPx = RXN_PLUS_HALF_LENGTH_MODEL * view.scale;
+        const penPx = RXN_PEN_WIDTH_MODEL * view.scale;
+        for (const obj of rd.nonMol) {
+            const { px: ox, py: oy } = px(obj.x, obj.y);
+            if (obj.type === 'arrow') {
+                const halfLen = arrowLenPx / 2;
+                const tipStartX = ox + halfLen - tipHalfPx;
+                const tipX = ox + halfLen;
+                const d =
+                    `M ${f(ox - halfLen)} ${f(oy)} ` +
+                    `L ${f(tipX)} ${f(oy)} ` +
+                    `L ${f(tipStartX)} ${f(oy - tipHalfPx)} ` +
+                    `M ${f(tipX)} ${f(oy)} ` +
+                    `L ${f(tipStartX)} ${f(oy + tipHalfPx)}`;
+                parts.push(
+                    `<path d='${d}' fill='none' stroke='${palette.bond}' ` +
+                    `stroke-width='${f(penPx)}' stroke-linecap='round'/>`,
+                );
+            } else {
+                const d =
+                    `M ${f(ox - plusHalfPx)} ${f(oy)} ` +
+                    `L ${f(ox + plusHalfPx)} ${f(oy)} ` +
+                    `M ${f(ox)} ${f(oy - plusHalfPx)} ` +
+                    `L ${f(ox)} ${f(oy + plusHalfPx)}`;
+                parts.push(
+                    `<path d='${d}' fill='none' stroke='${palette.bond}' ` +
+                    `stroke-width='${f(penPx)}' stroke-linecap='round'/>`,
+                );
+            }
+        }
+    }
     // Stereo labels — same direction-from-centroid pick as drawSketch so
     // the SVG and the canvas place the label in matching positions.
     if (displayOptions.showStereoLabels) {
@@ -1828,6 +1955,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [stereo2Mode, setStereo2Mode] = useState<BondMode>('dash');
     const [bondOrderMode, setBondOrderMode] = useState<BondMode>('double');
     const [ring, setRing] = useState<RingSpec>(RING_BENZENE);
+    // Reaction popup sub-mode. Mirrors Qt's EnumerationToolWidget slot icon —
+    // the slot defaults to RXN_ARROW (Qt: setEnumItem(RXN_ARROW) at
+    // widget/enumeration_tool_widget.cpp:23) and swaps to RXN_PLUS when the
+    // user picks the plus from the popup. The slot retains the picked mode
+    // until another popup choice changes it (the ModularToolButton pattern).
+    const [reactionMode, setReactionMode] = useState<ReactionMode>('arrow');
     const [pendingBondAtom, setPendingBondAtom] = useState<number | null>(null);
     const [hoverAtom, setHoverAtom] = useState<number | null>(null);
     const [dragShape, setDragShape] = useState<DragShape | null>(null);
@@ -2047,6 +2180,23 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         { value: 'MH', label: 'MH', title: 'Any Metal or H',     testid: 'atom-query-popup-MH' },
         { value: 'XH', label: 'XH', title: 'Any Halogen or H',   testid: 'atom-query-popup-XH' },
     ];
+
+    // Reaction popup — Qt ReactionPopup (ui/reaction_popup.ui) has 4 choices:
+    // arrow / plus / map-atoms / remove-mapping. Mapping requires reaction
+    // atom-map plumbing in the lean MolModel (not yet wired) so the port
+    // exposes the two placement primitives only; mapping is deferred.
+    const REACTION_CHOICES: PopupChoice<ReactionMode>[] = [
+        { value: 'arrow', icon: 'reaction_arrow', title: 'Reaction Arrow', testid: 'reaction-popup-arrow' },
+        { value: 'plus',  icon: 'reaction_plus',  title: 'Reaction Plus',  testid: 'reaction-popup-plus' },
+    ];
+    const REACTION_ICON: Record<ReactionMode, string> = {
+        arrow: 'reaction_arrow',
+        plus: 'reaction_plus',
+    };
+    const REACTION_TITLE: Record<ReactionMode, string> = {
+        arrow: 'Reaction Arrow',
+        plus: 'Reaction Plus',
+    };
 
     // Build the C++ MolModel once per mount, tear it down on unmount.
     useEffect(() => {
@@ -2420,6 +2570,31 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
 
+            if (tool === 'reaction') {
+                // Reaction tool: drop an arrow (RXN_ARROW) or plus (RXN_PLUS)
+                // at the click position. Qt: ArrowPlusSceneTool::onLeftButtonClick
+                // (tool/arrow_plus_scene_tool.cpp:21-26) calls
+                // MolModel::addNonMolecularObject(type, scene_xy). Only one
+                // arrow allowed — second click while an arrow already exists
+                // surfaces a friendly status (the C++ throws).
+                const { x, y } = modelFromPixel(canvas, viewRef.current, px, py);
+                try {
+                    if (reactionMode === 'arrow') {
+                        model.addRxnArrow(x, y);
+                        setStatus(
+                            `placed reaction arrow at (${x.toFixed(2)}, ${y.toFixed(2)})`,
+                        );
+                    } else {
+                        model.addRxnPlus(x, y);
+                        setStatus(
+                            `placed reaction plus at (${x.toFixed(2)}, ${y.toFixed(2)})`,
+                        );
+                    }
+                } catch (err) {
+                    setStatus(`reaction: ${String(err)}`);
+                }
+                return;
+            }
             if (tool === 'attachment-point') {
                 // Attachment-point tool: REQUIRES clicking an existing atom —
                 // an AP is always bonded (RDKit's is_attachment_point_dummy
@@ -2494,7 +2669,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 setPendingBondAtom(null);
             }
         },
-        [tool, element, ring],
+        [tool, element, ring, reactionMode],
     );
 
     const onCanvasMove = useCallback(
@@ -4283,10 +4458,13 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     <hr style={styles.hr} />
 
                     {/* EnumerationToolWidget — rgroup, attachment_point,
-                        reaction. R-Group + attachment-point are wired
-                        (Qt: MolModel::addRGroup / addAttachmentPoint);
-                        reaction is still stubbed pending the reaction
-                        primitives in the lean MolModel. */}
+                        reaction. All three are wired (Qt:
+                        MolModel::addRGroup / addAttachmentPoint /
+                        addNonMolecularObject for reaction arrow + plus).
+                        The reaction slot is a ModularToolButton in Qt;
+                        long-press opens ReactionPopup (arrow / plus /
+                        map / unmap). Mapping is deferred — needs reaction
+                        atom-map plumbing in the lean MolModel. */}
                     <div style={styles.row3}>
                         <LetterButton label='R' testid='rgroup'
                             title='R-Group'
@@ -4309,10 +4487,28 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                     'attachment-point mode: click an atom to attach',
                                 );
                             }} />
-                        <IconButton icon='reaction_arrow'
+                        <IconButtonWithPopup<ReactionMode>
+                            icon={REACTION_ICON[reactionMode]}
                             testid='reaction'
-                            title='Reaction'
-                            onClick={() => comingSoon('Reaction tool')} />
+                            title={`${REACTION_TITLE[reactionMode]} – press & hold to change`}
+                            active={tool === 'reaction'}
+                            choices={REACTION_CHOICES}
+                            onClick={() => {
+                                setTool('reaction');
+                                setPendingBondAtom(null);
+                                setStatus(
+                                    `reaction mode: click to place ${reactionMode}`,
+                                );
+                            }}
+                            onPick={(v) => {
+                                setReactionMode(v);
+                                setTool('reaction');
+                                setPendingBondAtom(null);
+                                setStatus(
+                                    `reaction mode: click to place ${v}`,
+                                );
+                            }}
+                        />
                     </div>
                 </aside>
 

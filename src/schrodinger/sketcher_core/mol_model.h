@@ -13,8 +13,11 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include <GraphMol/Bond.h>
 #include <GraphMol/RWMol.h>
@@ -40,7 +43,8 @@ class MolModel : public UndoableModel
     }
     bool isEmpty() const
     {
-        return m_mol.getNumAtoms() == 0;
+        return m_mol.getNumAtoms() == 0 && !m_rxn_arrow.has_value() &&
+               m_rxn_pluses.empty();
     }
     unsigned int numAtoms() const
     {
@@ -369,6 +373,41 @@ class MolModel : public UndoableModel
      *  selected atoms). No-op if the selection is empty. */
     void deleteSelected();
 
+    // -- Non-molecular objects (reaction arrow + pluses) ------------------
+    // Reaction schemes live outside the RWMol — Qt stores a single optional
+    // arrow plus a vector of pluses (model/mol_model.cpp:185-186). The
+    // sketcher_core port mirrors that shape: at most one arrow, any number
+    // of pluses. Both are persistent state and round-trip through doMutation
+    // snapshots so undo of any operation restores them faithfully.
+
+    /**
+     * Place the reaction arrow at (x, y). Throws std::runtime_error when an
+     * arrow already exists — Qt's MolModel::addNonMolecularObject enforces the
+     * same "Only one arrow allowed" rule (model/mol_model.cpp:1116-1118).
+     * Single undo step.
+     */
+    void addRxnArrow(double x, double y);
+
+    /**
+     * Append a reaction plus sign at (x, y). Pluses are unlimited (unlike the
+     * arrow); each click drops another. Single undo step.
+     */
+    void addRxnPlus(double x, double y);
+
+    bool hasRxnArrow() const
+    {
+        return m_rxn_arrow.has_value();
+    }
+    /** Coordinates of the arrow center; undefined behavior if !hasRxnArrow(). */
+    std::pair<double, double> rxnArrow() const
+    {
+        return m_rxn_arrow.value();
+    }
+    const std::vector<std::pair<double, double>>& rxnPluses() const
+    {
+        return m_rxn_pluses;
+    }
+
     /** Fired once per applied/undone/redone mutation. */
     Signal<> modelChanged;
 
@@ -387,6 +426,8 @@ class MolModel : public UndoableModel
     RDKit::RWMol m_mol;
     std::unordered_set<unsigned int> m_selected_atoms;
     std::unordered_set<unsigned int> m_selected_bonds;
+    std::optional<std::pair<double, double>> m_rxn_arrow;
+    std::vector<std::pair<double, double>> m_rxn_pluses;
 };
 
 } // namespace sketcher_core

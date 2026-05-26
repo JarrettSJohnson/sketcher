@@ -172,8 +172,38 @@ std::string mol_to_render_description(
     RDKit::RWMol& mol,
     const schrodinger::sketcher_core::MolModel* model = nullptr)
 {
+    // Non-molecular objects (reaction arrow + pluses) live outside the RWMol,
+    // so even an empty mol may have objects to render when the model carries
+    // a reaction scheme. Build that JSON fragment up front so the early-empty
+    // path can splice it in too.
+    std::string non_mol_fragment;
+    if (model != nullptr &&
+        (model->hasRxnArrow() || !model->rxnPluses().empty())) {
+        std::ostringstream os_nm;
+        os_nm.precision(4);
+        os_nm << std::fixed;
+        os_nm << "\"nonMol\":[";
+        bool first = true;
+        if (model->hasRxnArrow()) {
+            const auto [x, y] = model->rxnArrow();
+            os_nm << "{\"type\":\"arrow\",\"x\":" << x << ",\"y\":" << y << "}";
+            first = false;
+        }
+        for (const auto& [x, y] : model->rxnPluses()) {
+            if (!first) {
+                os_nm << ',';
+            }
+            os_nm << "{\"type\":\"plus\",\"x\":" << x << ",\"y\":" << y << "}";
+            first = false;
+        }
+        os_nm << "]";
+        non_mol_fragment = os_nm.str();
+    }
     if (mol.getNumAtoms() == 0) {
-        return R"({"atoms":[],"bonds":[]})";
+        if (non_mol_fragment.empty()) {
+            return R"({"atoms":[],"bonds":[]})";
+        }
+        return R"({"atoms":[],"bonds":[],)" + non_mol_fragment + "}";
     }
     apply_stereo_annotations(mol);
     const auto& conf = mol.getConformer();
@@ -324,7 +354,11 @@ std::string mol_to_render_description(
         }
         os << '}';
     }
-    os << "]}";
+    os << "]";
+    if (!non_mol_fragment.empty()) {
+        os << ',' << non_mol_fragment;
+    }
+    os << "}";
     return os.str();
 }
 
@@ -480,6 +514,14 @@ class MolModelJS
                             unsigned int bound_to_atom_idx)
     {
         m_model.addAttachmentPoint(ap_num, x, y, bound_to_atom_idx);
+    }
+    void addRxnArrow(double x, double y)
+    {
+        m_model.addRxnArrow(x, y);
+    }
+    void addRxnPlus(double x, double y)
+    {
+        m_model.addRxnPlus(x, y);
     }
     void addBond(unsigned int begin, unsigned int end, int bond_type)
     {
@@ -795,6 +837,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .constructor<>()
         .function("addAtom", &MolModelJS::addAtom)
         .function("addRGroup", &MolModelJS::addRGroup)
+        .function("addRxnArrow", &MolModelJS::addRxnArrow)
+        .function("addRxnPlus", &MolModelJS::addRxnPlus)
         .function("addAttachmentPoint", &MolModelJS::addAttachmentPoint)
         .function("addBond", &MolModelJS::addBond)
         .function("addBondWithDir", &MolModelJS::addBondWithDir)

@@ -911,6 +911,88 @@ test.describe('React Sketcher', () => {
         expect(body).toMatch(/<text [^>]*>N<\/text>/);
     });
 
+    test('Reaction tool: arrow mode places an arrow; popup switches to plus mode for subsequent clicks', async ({
+        page,
+    }) => {
+        // Qt ReactionPopup (ui/reaction_popup.ui) drives a ModularToolButton;
+        // long-press exposes arrow/plus and a pick swaps the active mode.
+        // MolModel::addNonMolecularObject allows at most one arrow but
+        // unlimited pluses, so the second click in arrow mode would throw;
+        // switching to plus mode lets us drop multiple +.
+        const canvas = page.getByTestId('sketcher-canvas');
+        const reactionBtn = page.getByTestId('reaction');
+
+        // Default mode is arrow — single click places one.
+        await reactionBtn.click();
+        await canvas.click({ position: { x: 250, y: 200 } });
+        let rd = await snapshot(page);
+        expect(rd.nonMol).toBeDefined();
+        expect(rd.nonMol.filter((o) => o.type === 'arrow')).toHaveLength(1);
+        expect(rd.nonMol.filter((o) => o.type === 'plus')).toHaveLength(0);
+
+        // Long-press to open popup; pick "plus" to flip the mode.
+        await reactionBtn.hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await expect(page.getByTestId('reaction-popup')).toBeVisible();
+        await expect(page.getByTestId('reaction-popup-arrow')).toBeVisible();
+        await expect(page.getByTestId('reaction-popup-plus')).toBeVisible();
+        await page.mouse.up();
+        await page.getByTestId('reaction-popup-plus').click();
+        await expect(page.getByTestId('reaction-popup')).toHaveCount(0);
+
+        // Two clicks in plus mode drop two pluses (no cap on count).
+        await canvas.click({ position: { x: 350, y: 200 } });
+        await canvas.click({ position: { x: 450, y: 200 } });
+        rd = await snapshot(page);
+        expect(rd.nonMol.filter((o) => o.type === 'arrow')).toHaveLength(1);
+        expect(rd.nonMol.filter((o) => o.type === 'plus')).toHaveLength(2);
+
+        // Undo removes the last plus.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.nonMol.filter((o) => o.type === 'plus')).toHaveLength(1);
+    });
+
+    test('Reaction tool: SVG export renders <path> for arrow + plus alongside the mol', async ({
+        page,
+    }) => {
+        // Place two carbons (the bbox math needs atoms — Save Image's
+        // empty-mol guard short-circuits when numAtoms == 0, so a pure
+        // non-mol scheme can't be exported in this skeleton yet), then
+        // an arrow + plus. The exported SVG must include at least two
+        // <path stroke=...> elements (one for the chevron arrow, one for
+        // the crossed plus) on top of the C-C bond path.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 100, y: 200 } });
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('reaction').click();
+        await canvas.click({ position: { x: 300, y: 200 } });
+        await page.getByTestId('reaction').hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await page.mouse.up();
+        await page.getByTestId('reaction-popup-plus').click();
+        await canvas.click({ position: { x: 400, y: 200 } });
+
+        await page.getByTestId('export').click();
+        await page.getByTestId('export-save-image').click();
+        await page.getByTestId('save-image-format-select')
+            .selectOption('svg');
+        await page.getByTestId('save-image-width').fill('400');
+        await page.getByTestId('save-image-height').fill('200');
+        const downloadPromise = page.waitForEvent('download');
+        await page.getByTestId('save-image-save').click();
+        const download = await downloadPromise;
+        const path = await download.path();
+        const fs = await import('node:fs/promises');
+        const body = await fs.readFile(path, 'utf8');
+        // Bonds emit <line> elements; only the reaction objects use
+        // <path>. So one arrow path + one plus path = 2 stroked <path>s.
+        const pathMatches = body.match(/<path [^>]*stroke=/g) || [];
+        expect(pathMatches.length).toBeGreaterThanOrEqual(2);
+    });
+
     test('Import menu: Paste in Text modal loads SMILES and closes', async ({
         page,
     }) => {
@@ -2469,20 +2551,20 @@ test.describe('React Sketcher', () => {
     }) => {
         // Several Qt-side widgets are present for visual fidelity but the
         // underlying action isn't wired yet (atom_query needs RDKit query
-        // atoms, bond_query needs the same, reaction, monomeric mode).
+        // atoms, bond_query needs the same, monomeric mode).
         // Import/Export open real menus (Batch 12); Save Image opens its
         // own dialog (Batch 13); Settings is the Configure View dropdown
         // (Batch 14); Help is its own dropdown (Batch 15) — all covered by
         // their own tests. The remaining stubs route through comingSoon()
         // → setStatus(...) so users can tell the button is intentional
         // rather than broken. (R-Group was wired in Batch 28;
-        // attachment-point in Batch 29; periodic-table opens a real popup
-        // in Batch 7; all covered by their own tests.)
+        // attachment-point in Batch 29; reaction in Batch 30;
+        // periodic-table opens a real popup in Batch 7; all covered by
+        // their own tests.)
         const status = page.getByTestId('sketcher-status');
         const stubs = [
             ['atom-query', /Atom query/],
             ['bond-query', /Bond query/],
-            ['reaction', /Reaction/],
             ['mode-monomeric', /Monomeric/],
         ];
         for (const [testid, pattern] of stubs) {

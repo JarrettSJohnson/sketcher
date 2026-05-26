@@ -26,6 +26,18 @@ export interface MolModelInstance {
      */
     addAttachmentPoint(apNum: number, x: number, y: number,
                        boundToAtomIdx: number): void;
+    /**
+     * Place the reaction arrow at (x, y). At most one arrow per model —
+     * throws "Only one arrow allowed" if one already exists (Qt:
+     * MolModel::addNonMolecularObject in model/mol_model.cpp). Single undo
+     * step.
+     */
+    addRxnArrow(x: number, y: number): void;
+    /**
+     * Append a reaction plus sign at (x, y). Pluses are unlimited; each
+     * click drops another. Single undo step.
+     */
+    addRxnPlus(x: number, y: number): void;
     addBond(begin: number, end: number, bondType: number): void;
     /**
      * addBond + setBondDirUndoable inside a single undo macro. Pass dir=0
