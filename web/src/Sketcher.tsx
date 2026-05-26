@@ -2021,6 +2021,18 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         { x: number; y: number; bondIdx: number; a: number; b: number;
           type: number; dir: number } | null
     >(null);
+    // Per-atom right-click context menu — mirrors Qt's AtomContextMenu
+    // (menu/atom_context_menu.cpp). Opens when right-click hits an atom and
+    // no selection is active. `atomIdx` is the atom's index in the render
+    // description; `el` is its element symbol, `q` its current formal
+    // charge, `isRGroupOrAp` flags R-groups / attachment points so we can
+    // disable charge edits on those (Qt: is_r_group gate in
+    // ModifyAtomsMenu::updateActions). Captured at open time so the menu
+    // can show the current state and gate actions without re-querying.
+    const [atomContextMenu, setAtomContextMenu] = useState<
+        { x: number; y: number; atomIdx: number; el: string;
+          q: number; isRGroupOrAp: boolean } | null
+    >(null);
     // Top-bar Import / Export dropdowns + their modals. Mirrors Qt's
     // ImportMenu / ExportMenu (menu/sketcher_top_bar_menus.cpp) + the
     // PasteInTextDialog / FileExportDialog popups they open.
@@ -2477,6 +2489,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const bgContextMenuRef = useRef<HTMLDivElement | null>(null);
     const selContextMenuRef = useRef<HTMLDivElement | null>(null);
     const bondContextMenuRef = useRef<HTMLDivElement | null>(null);
+    const atomContextMenuRef = useRef<HTMLDivElement | null>(null);
     // Bounds-clamp the right-click menus within the viewport — Qt's QMenu
     // does this automatically (flips upward / leftward at edges). The
     // background menu has 21 items and tall layouts can easily push the
@@ -2526,10 +2539,25 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             el.style.top = `${y}px`;
         }
     }, [bondContextMenu]);
+    useLayoutEffect(() => {
+        if (!atomContextMenu) return;
+        const el = atomContextMenuRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        let { x, y } = atomContextMenu;
+        if (x + rect.width > vw) x = Math.max(0, vw - rect.width - 4);
+        if (y + rect.height > vh) y = Math.max(0, vh - rect.height - 4);
+        if (x !== atomContextMenu.x || y !== atomContextMenu.y) {
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+        }
+    }, [atomContextMenu]);
     useEffect(() => {
         if (!moreMenuOpen && !importMenuOpen && !exportMenuOpen
             && !configureViewOpen && !helpMenuOpen && !bgContextMenu
-            && !selContextMenu && !bondContextMenu) return;
+            && !selContextMenu && !bondContextMenu && !atomContextMenu) return;
         function onDocMouseDown(e: globalThis.MouseEvent): void {
             const t = e.target as Node;
             if (moreMenuOpen && moreMenuWrapperRef.current
@@ -2564,13 +2592,18 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 && !bondContextMenuRef.current.contains(t)) {
                 setBondContextMenu(null);
             }
+            if (atomContextMenu && atomContextMenuRef.current
+                && !atomContextMenuRef.current.contains(t)) {
+                setAtomContextMenu(null);
+            }
         }
         document.addEventListener('mousedown', onDocMouseDown);
         return () => {
             document.removeEventListener('mousedown', onDocMouseDown);
         };
     }, [moreMenuOpen, importMenuOpen, exportMenuOpen, configureViewOpen,
-        helpMenuOpen, bgContextMenu, selContextMenu, bondContextMenu]);
+        helpMenuOpen, bgContextMenu, selContextMenu, bondContextMenu,
+        atomContextMenu]);
 
     const onCanvasClick = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
@@ -3445,10 +3478,40 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 });
                 setBgContextMenu(null);
                 setBondContextMenu(null);
+                setAtomContextMenu(null);
                 return;
             }
-            // Bond hit-test for the per-bond menu — needs canvas to compute
-            // pixel coords relative to the canvas viewport.
+            // Item hit-tests run in Qt's per-item z-order: atoms before
+            // bonds (a click landing inside an atom's hit-radius hits the
+            // atom even when a bond passes through). Both need the canvas
+            // to compute pixel coords relative to the viewport.
+            if (canvas && rd.atoms.length > 0) {
+                const rect = canvas.getBoundingClientRect();
+                const px = e.clientX - rect.left;
+                const py = e.clientY - rect.top;
+                const atomIdx = nearestAtomIndex(
+                    canvas, viewRef.current, rd.atoms, px, py,
+                );
+                if (atomIdx >= 0) {
+                    const ad = rd.atoms.find((a) => a.i === atomIdx);
+                    if (ad) {
+                        setAtomContextMenu({
+                            x: e.clientX,
+                            y: e.clientY,
+                            atomIdx,
+                            el: ad.el,
+                            q: ad.q ?? 0,
+                            isRGroupOrAp:
+                                typeof ad.rlabel === 'number'
+                                || typeof ad.ap === 'number',
+                        });
+                        setBgContextMenu(null);
+                        setSelContextMenu(null);
+                        setBondContextMenu(null);
+                        return;
+                    }
+                }
+            }
             if (canvas && rd.bonds.length > 0) {
                 const rect = canvas.getBoundingClientRect();
                 const px = e.clientX - rect.left;
@@ -3469,6 +3532,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     });
                     setBgContextMenu(null);
                     setSelContextMenu(null);
+                    setAtomContextMenu(null);
                     return;
                 }
             }
@@ -3476,6 +3540,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             setBgContextMenu({ x: e.clientX, y: e.clientY, sceneEmpty });
             setSelContextMenu(null);
             setBondContextMenu(null);
+            setAtomContextMenu(null);
         },
         [],
     );
@@ -3901,6 +3966,27 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             return;
         }
         model.adjustChargeOnSelectedAtoms(delta);
+        setStatus(delta > 0 ? 'charge +1' : 'charge −1');
+    };
+
+    // Per-atom charge edit driven by the right-click AtomContextMenu. The
+    // lean MolModel doesn't expose a single-atom charge primitive, so we
+    // adopt the temp-selection dance: select only the target atom, call
+    // the existing selection-based charge primitive, then clear selection.
+    // Safe because (a) atom right-click only fires when no selection is
+    // present (the dispatch routes to SelectionContextMenu otherwise), and
+    // (b) adjustChargeOnSelectedAtoms captures (idx, old_charge) inside
+    // its doCommand closure, so undo reverses only this one atom even
+    // though the selection state at undo time may differ. The selection
+    // mutations are non-undoable so only the charge edit hits the undo
+    // stack — single Ctrl+Z unwinds it.
+    const adjustChargeOnAtom = (atomIdx: number, delta: number): void => {
+        const model = modelRef.current;
+        if (!model) return;
+        model.clearSelection();
+        model.setAtomSelected(atomIdx, true);
+        model.adjustChargeOnSelectedAtoms(delta);
+        model.clearSelection();
         setStatus(delta > 0 ? 'charge +1' : 'charge −1');
     };
 
@@ -5323,6 +5409,74 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             const bm = bondContextMenu;
                             setBondContextMenu(null);
                             modelRef.current?.removeBond(bm.a, bm.b);
+                        }} />
+                </div>
+            )}
+            {/* Atom context menu — mirrors Qt's AtomContextMenu
+                (menu/atom_context_menu.cpp). Qt's menu order: Set Element /
+                + Charge / – Charge / -- / Add Explicit H + Add/Remove
+                Unpaired e– / -- / Edit Atom Properties... / Add Brackets...
+                / Replace with > / -- / Delete. The lean MolModel only
+                exposes adjustChargeOnSelectedAtoms + removeAtom right now,
+                so this batch ships the minimal subset (Charge ±, Delete).
+                Set Element / Add Explicit Hydrogens / Unpaired Electrons /
+                Edit Atom Properties / Brackets / Replace with all require
+                C++ primitives that aren't yet ported — they'll land in
+                follow-up batches. Charge actions use a temp-selection
+                dance: clearSelection → setAtomSelected(idx, true) →
+                adjustChargeOnSelectedAtoms(±1) → clearSelection. Selection
+                is non-undoable so the dance only adds one undo step (the
+                charge edit itself). adjustChargeOnSelectedAtoms uses
+                doCommand not doMutation, so the selection survives the
+                edit and the trailing clearSelection cleans up. R-groups
+                and attachment points can't take charges (Qt's is_r_group
+                gate in ModifyAtomsMenu::updateActions) — both ± items are
+                disabled when isRGroupOrAp. Charge cap is ±8 (Qt's
+                ATOM_CHARGE_LIMIT in molviewer/constants.h:29). */}
+            {atomContextMenu && (
+                <div
+                    ref={atomContextMenuRef}
+                    style={{
+                        ...styles.bgContextMenu,
+                        left: atomContextMenu.x,
+                        top: atomContextMenu.y,
+                    }}
+                    data-testid='atom-context-menu'
+                    onContextMenu={(e) => e.preventDefault()}
+                >
+                    <div style={styles.moreSectionLabel}>
+                        {atomContextMenu.el}
+                        {atomContextMenu.q !== 0
+                            ? ` (${atomContextMenu.q > 0 ? '+' : '−'}${
+                                Math.abs(atomContextMenu.q)})`
+                            : ''}
+                    </div>
+                    <MoreItem
+                        label='+ Charge'
+                        testid='atom-ctx-charge-plus'
+                        disabled={atomContextMenu.isRGroupOrAp
+                            || atomContextMenu.q >= 8}
+                        onClick={() => {
+                            const am = atomContextMenu;
+                            setAtomContextMenu(null);
+                            adjustChargeOnAtom(am.atomIdx, +1);
+                        }} />
+                    <MoreItem
+                        label='− Charge'
+                        testid='atom-ctx-charge-minus'
+                        disabled={atomContextMenu.isRGroupOrAp
+                            || atomContextMenu.q <= -8}
+                        onClick={() => {
+                            const am = atomContextMenu;
+                            setAtomContextMenu(null);
+                            adjustChargeOnAtom(am.atomIdx, -1);
+                        }} />
+                    <div style={styles.moreDivider} />
+                    <MoreItem label='Delete' testid='atom-ctx-delete'
+                        onClick={() => {
+                            const am = atomContextMenu;
+                            setAtomContextMenu(null);
+                            modelRef.current?.removeAtom(am.atomIdx);
                         }} />
                 </div>
             )}

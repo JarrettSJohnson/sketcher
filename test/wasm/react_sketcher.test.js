@@ -4255,4 +4255,165 @@ test.describe('React Sketcher', () => {
         expect(after.bonds[0].dir).toBe(before.bonds[0].dir);
     });
 
+    // -------- Batch 38: atom right-click context menu --------
+    // Mirrors Qt's AtomContextMenu (menu/atom_context_menu.cpp). Atom
+    // hit-test runs before bond hit-test in onCanvasContextMenu, so a
+    // right-click landing inside an atom's hit-radius routes to the atom
+    // menu even when a bond passes through. Lean MolModel surface limits
+    // this batch to Charge ± and Delete; richer actions (Set Element,
+    // Add Explicit Hs, Unpaired Electrons, Edit Atom Properties, Add
+    // Brackets, Replace With) need C++ primitives not yet ported.
+    test('atom context menu: right-click on an atom opens AtomContextMenu (not Bond, not Background)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        // Right-click directly on atom 0's drawn position.
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await expect(page.getByTestId('atom-context-menu')).toBeVisible();
+        await expect(page.getByTestId('bg-context-menu')).toHaveCount(0);
+        await expect(page.getByTestId('bond-context-menu')).toHaveCount(0);
+    });
+
+    test('atom context menu: action set matches the lean port subset (Charge ±, Delete)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        for (const id of [
+            'atom-ctx-charge-plus',
+            'atom-ctx-charge-minus',
+            'atom-ctx-delete',
+        ]) {
+            await expect(page.getByTestId(id)).toBeVisible();
+        }
+    });
+
+    test('atom context menu: + Charge increments formal charge as one undo step', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        // C with no prior selection → q undefined (== 0).
+        let rd = await snapshot(page);
+        expect(rd.atoms[0].q).toBeUndefined();
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await page.getByTestId('atom-ctx-charge-plus').click();
+        await expect(page.getByTestId('atom-context-menu')).toHaveCount(0);
+        rd = await snapshot(page);
+        expect(rd.atoms[0].q).toBe(1);
+        // No leftover selection from the temp-selection dance.
+        expect(rd.atoms[0].sel).toBeUndefined();
+        // Single undo removes the +1.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms[0].q).toBeUndefined();
+    });
+
+    test('atom context menu: − Charge decrements formal charge', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await page.getByTestId('atom-ctx-charge-minus').click();
+        const rd = await snapshot(page);
+        expect(rd.atoms[0].q).toBe(-1);
+    });
+
+    test('atom context menu: header shows the element symbol and current charge', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('element-N').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        // Neutral N → just "N" (no charge in header).
+        await expect(page.getByTestId('atom-context-menu'))
+            .toContainText('N');
+        // Bump charge, reopen — header should now read "N (+1)".
+        await page.getByTestId('atom-ctx-charge-plus').click();
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await expect(page.getByTestId('atom-context-menu'))
+            .toContainText('N (+1)');
+    });
+
+    test('atom context menu: Delete removes the atom', async ({ page }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        const before = await snapshot(page);
+        expect(before.atoms).toHaveLength(2);
+        const survivorX = before.atoms[1].x;
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await page.getByTestId('atom-ctx-delete').click();
+        await expect(page.getByTestId('atom-context-menu')).toHaveCount(0);
+        const after = await snapshot(page);
+        expect(after.atoms).toHaveLength(1);
+        // The surviving atom is the one we didn't right-click (atom 1's
+        // original x ≈ survivorX, not atom 0's smaller x).
+        expect(after.atoms[0].x).toBeCloseTo(survivorX, 3);
+    });
+
+    test('atom context menu: outside-click dismisses without mutating the atom', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        const before = await snapshot(page);
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await expect(page.getByTestId('atom-context-menu')).toBeVisible();
+        await page.getByTestId('sketcher-status').click();
+        await expect(page.getByTestId('atom-context-menu')).toHaveCount(0);
+        const after = await snapshot(page);
+        expect(after.atoms[0].q).toBe(before.atoms[0].q);
+        expect(after.atoms).toHaveLength(before.atoms.length);
+    });
+
+    test('atom context menu: charge ± disabled for R-groups (Qt: is_r_group gate)', async ({
+        page,
+    }) => {
+        // Place a free R-group via the R-Group tool, then right-click it.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('rgroup').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 200, y: 200 }, button: 'right' });
+        await expect(page.getByTestId('atom-context-menu')).toBeVisible();
+        // Both charge actions should be disabled.
+        await expect(page.getByTestId('atom-ctx-charge-plus'))
+            .toBeDisabled();
+        await expect(page.getByTestId('atom-ctx-charge-minus'))
+            .toBeDisabled();
+        // Delete is still allowed.
+        await expect(page.getByTestId('atom-ctx-delete')).toBeEnabled();
+    });
+
+    test('atom context menu: atom hit-test wins over nearby bond hit', async ({
+        page,
+    }) => {
+        // Two carbons + a bond — right-click on atom 0's drawn position
+        // must route to AtomContextMenu, not BondContextMenu, even though
+        // the bond extends out from the atom.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await expect(page.getByTestId('atom-context-menu')).toBeVisible();
+        await expect(page.getByTestId('bond-context-menu')).toHaveCount(0);
+    });
+
 });
