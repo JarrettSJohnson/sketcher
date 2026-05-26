@@ -30,6 +30,7 @@
 #include "schrodinger/rdkit_extensions/convert.h"
 #include "schrodinger/rdkit_extensions/coord_utils.h"
 #include "schrodinger/rdkit_extensions/molops.h"
+#include "schrodinger/rdkit_extensions/rgroup.h"
 #include "schrodinger/sketcher_core/undo_stack.h"
 
 namespace schrodinger
@@ -113,6 +114,42 @@ void MolModel::addAtom(const std::string& element, double x, double y)
             conf.setAtomPos(idx, RDGeom::Point3D(x, y, 0));
         },
         "Add atom");
+}
+
+void MolModel::addRGroup(unsigned int r_group_num, double x, double y,
+                         int bound_to_atom_idx)
+{
+    // Validate up front so we throw outside the mutation (no half-applied
+    // edit, no spurious undo step). rdkit_extensions::make_new_r_group also
+    // throws for r_group_num == 0; mirror that contract here.
+    if (r_group_num == 0) {
+        throw std::invalid_argument("R-group number must be >= 1");
+    }
+    doMutation(
+        [this, r_group_num, x, y, bound_to_atom_idx] {
+            auto atom_sp = rdkit_extensions::make_new_r_group(r_group_num);
+            // Clone into a raw pointer for addAtom(takeOwnership=true) — the
+            // shared_ptr returned by make_new_r_group owns its copy, so a
+            // deep copy via the Atom::copy() ctor keeps ownership clean.
+            auto atom = std::make_unique<RDKit::Atom>(*atom_sp);
+            const auto idx = m_mol.addAtom(atom.release(),
+                                           /*updateLabel=*/false,
+                                           /*takeOwnership=*/true);
+            auto& conf = m_mol.getConformer();
+            auto& positions = conf.getPositions();
+            if (positions.size() < m_mol.getNumAtoms()) {
+                positions.resize(m_mol.getNumAtoms(), RDGeom::Point3D(0, 0, 0));
+            }
+            conf.setAtomPos(idx, RDGeom::Point3D(x, y, 0));
+            if (bound_to_atom_idx >= 0 &&
+                static_cast<unsigned int>(bound_to_atom_idx) <
+                    m_mol.getNumAtoms() &&
+                static_cast<unsigned int>(bound_to_atom_idx) != idx) {
+                m_mol.addBond(static_cast<unsigned int>(bound_to_atom_idx),
+                              idx, RDKit::Bond::BondType::SINGLE);
+            }
+        },
+        "Add R-group");
 }
 
 void MolModel::atomPos(unsigned int idx, double& x, double& y) const

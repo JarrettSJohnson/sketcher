@@ -18,7 +18,7 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 // tests cover.
 
 type Tool = 'atom' | 'bond' | 'select' | 'move-rotate' | 'erase' | 'ring'
-    | 'atom-chain';
+    | 'atom-chain' | 'rgroup';
 // SetAtomWidget.ui ships C/H/N/O/P/S/F/Cl/Si on the atomistic panel.
 // Element symbol — any RDKit-recognized symbol. The sidebar exposes
 // 8 fixed elements via dedicated buttons; everything else flows through
@@ -102,6 +102,11 @@ interface AtomDesc {
     // _CIPCode missing). Rendered as "(?)" iff Preferences > Include undefined
     // centers is on. Qt: get_atom_chirality_label (rdkit/stereochemistry.cpp:45-53).
     psbl?: boolean;
+    // R-group number — atom is a dummy with `_MolFileRLabel = n`. Rendered as
+    // "R<n>" instead of the element symbol (suppresses the implicit-H "H" and
+    // isotope hints that would otherwise leak from the underlying dummy atom).
+    // Set by MolModel::addRGroup (Qt: MolModel::addRGroup, model/mol_model.cpp:643-648).
+    rlabel?: number;
 }
 interface BondDesc {
     a: number;
@@ -1067,47 +1072,55 @@ function drawSketch(
             ctx.fill();
         } else {
             ctx.font = ATOM_FONT;
-            ctx.fillText(a.el, px, py);
-            // H count: render "H" or "Hn" to the right of non-C labels. Skip
-            // for C even when shown for charge — carbons typically suppress
-            // their Hs to keep the structure readable.
-            if (a.el !== 'C' && typeof a.nh === 'number' && a.nh > 0) {
-                ctx.textAlign = 'left';
-                const labelWidth = ctx.measureText(a.el).width;
-                const hX = px + labelWidth / 2 + 1;
-                ctx.fillText('H', hX, py);
-                if (a.nh > 1) {
-                    ctx.font = SUB_FONT;
-                    const hWidth = ctx.measureText('H').width;
-                    ctx.fillText(String(a.nh), hX + hWidth + 1, py + CHARGE_DY);
-                }
-                ctx.textAlign = 'center';
-                ctx.font = ATOM_FONT;
-            }
-            // Charge: superscript to the upper-right. "+" / "−" alone for ±1,
-            // otherwise "n+" / "n−". Unicode minus sign reads better than "-".
-            if (hasCharge) {
-                const q = a.q as number;
-                const sign = q > 0 ? '+' : '−';
-                const chargeText =
-                    Math.abs(q) === 1 ? sign : `${Math.abs(q)}${sign}`;
-                ctx.font = SUB_FONT;
-                ctx.textAlign = 'left';
-                const labelWidth = ctx.measureText(a.el).width;
-                // Push past the H label if one is rendered.
-                let chargeX = px + labelWidth / 2 + 1;
+            // R-group atoms render as "R<n>" instead of the dummy "*" symbol,
+            // and they suppress the H-count / charge superscripts the
+            // underlying dummy atom would otherwise advertise.
+            if (typeof a.rlabel === 'number') {
+                ctx.fillStyle = elementColor(palette, 'C');
+                ctx.fillText(`R${a.rlabel}`, px, py);
+            } else {
+                ctx.fillText(a.el, px, py);
+                // H count: render "H" or "Hn" to the right of non-C labels. Skip
+                // for C even when shown for charge — carbons typically suppress
+                // their Hs to keep the structure readable.
                 if (a.el !== 'C' && typeof a.nh === 'number' && a.nh > 0) {
-                    ctx.font = ATOM_FONT;
-                    chargeX += ctx.measureText('H').width;
+                    ctx.textAlign = 'left';
+                    const labelWidth = ctx.measureText(a.el).width;
+                    const hX = px + labelWidth / 2 + 1;
+                    ctx.fillText('H', hX, py);
                     if (a.nh > 1) {
                         ctx.font = SUB_FONT;
-                        chargeX += ctx.measureText(String(a.nh)).width + 1;
+                        const hWidth = ctx.measureText('H').width;
+                        ctx.fillText(String(a.nh), hX + hWidth + 1, py + CHARGE_DY);
                     }
-                    ctx.font = SUB_FONT;
+                    ctx.textAlign = 'center';
+                    ctx.font = ATOM_FONT;
                 }
-                ctx.fillText(chargeText, chargeX, py - CHARGE_DY);
-                ctx.textAlign = 'center';
-                ctx.font = ATOM_FONT;
+                // Charge: superscript to the upper-right. "+" / "−" alone for ±1,
+                // otherwise "n+" / "n−". Unicode minus sign reads better than "-".
+                if (hasCharge) {
+                    const q = a.q as number;
+                    const sign = q > 0 ? '+' : '−';
+                    const chargeText =
+                        Math.abs(q) === 1 ? sign : `${Math.abs(q)}${sign}`;
+                    ctx.font = SUB_FONT;
+                    ctx.textAlign = 'left';
+                    const labelWidth = ctx.measureText(a.el).width;
+                    // Push past the H label if one is rendered.
+                    let chargeX = px + labelWidth / 2 + 1;
+                    if (a.el !== 'C' && typeof a.nh === 'number' && a.nh > 0) {
+                        ctx.font = ATOM_FONT;
+                        chargeX += ctx.measureText('H').width;
+                        if (a.nh > 1) {
+                            ctx.font = SUB_FONT;
+                            chargeX += ctx.measureText(String(a.nh)).width + 1;
+                        }
+                        ctx.font = SUB_FONT;
+                    }
+                    ctx.fillText(chargeText, chargeX, py - CHARGE_DY);
+                    ctx.textAlign = 'center';
+                    ctx.font = ATOM_FONT;
+                }
             }
         }
     }
@@ -1512,6 +1525,17 @@ function buildSketchSvg(
             parts.push(
                 `<circle cx='${f(ax)}' cy='${f(ay)}' r='2.5' ` +
                 `fill='${labelColor}'/>`,
+            );
+        } else if (typeof a.rlabel === 'number') {
+            // R-group atoms: render "R<n>" instead of the dummy element
+            // symbol. Suppress H-count / charge superscripts (the underlying
+            // dummy atom's bookkeeping doesn't surface to the user).
+            const rColor = elementColor(palette, 'C');
+            parts.push(
+                `<text x='${f(ax)}' y='${f(ay)}' fill='${rColor}' ` +
+                `font-family='sans-serif' font-size='${ATOM_FONT_PX}' ` +
+                `text-anchor='middle' dominant-baseline='central'>` +
+                `${esc(`R${a.rlabel}`)}</text>`,
             );
         } else {
             // dominant-baseline=central + text-anchor=middle reproduces the
@@ -2213,6 +2237,39 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 setStatus(
                     `${ring.label.toLowerCase()} at (${x.toFixed(2)}, ${y.toFixed(2)})`,
                 );
+                return;
+            }
+
+            if (tool === 'rgroup') {
+                // R-Group tool: clicking an existing atom attaches a new R to
+                // it (single bond, offset down-right); clicking empty area
+                // drops a free-standing R. The R-group number auto-increments
+                // — pick the smallest positive integer not already taken by an
+                // existing rlabel. Mirrors Qt's EnumerationSceneTool flow,
+                // which calls MolModel::addRGroup(next_num, coords, target).
+                const used = new Set<number>();
+                for (const a of rd.atoms) {
+                    if (typeof a.rlabel === 'number') used.add(a.rlabel);
+                }
+                let nextNum = 1;
+                while (used.has(nextNum)) nextNum++;
+                if (hit >= 0) {
+                    // Offset the new R atom one bond-length down-right of the
+                    // anchor so it doesn't sit on top.
+                    const anchor = rd.atoms[hit];
+                    const x = anchor.x + 0.75;
+                    const y = anchor.y - 0.75;
+                    model.addRGroup(nextNum, x, y, hit);
+                    setStatus(
+                        `attached R${nextNum} to atom #${hit}`,
+                    );
+                } else {
+                    const { x, y } = modelFromPixel(canvas, viewRef.current, px, py);
+                    model.addRGroup(nextNum, x, y, -1);
+                    setStatus(
+                        `added R${nextNum} at (${x.toFixed(2)}, ${y.toFixed(2)})`,
+                    );
+                }
                 return;
             }
 
@@ -4041,11 +4098,20 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     <hr style={styles.hr} />
 
                     {/* EnumerationToolWidget — rgroup, attachment_point,
-                        reaction. Not ported yet — stub all three. */}
+                        reaction. R-Group is wired (Qt:
+                        MolModel::addRGroup); attachment-point and reaction
+                        are still stubbed pending their MolModel primitives. */}
                     <div style={styles.row3}>
                         <LetterButton label='R' testid='rgroup'
                             title='R-Group'
-                            onClick={() => comingSoon('R-Group')} />
+                            active={tool === 'rgroup'}
+                            onClick={() => {
+                                setTool('rgroup');
+                                setPendingBondAtom(null);
+                                setStatus(
+                                    'r-group mode: click empty area to add R, click an atom to attach R',
+                                );
+                            }} />
                         <IconButton icon='enumeration_attachment_point'
                             testid='attachment-point'
                             title='Attachment Point'

@@ -8,6 +8,14 @@
 
 export interface MolModelInstance {
     addAtom(element: string, x: number, y: number): void;
+    /**
+     * Append an R-group atom (dummy carrying `_MolFileRLabel`) at (x, y).
+     * Pass `boundToAtomIdx=-1` for a free-standing R-group, or a valid atom
+     * index to single-bond the new R to it. Throws if `rGroupNum == 0`
+     * (RDKit forbids R0).
+     */
+    addRGroup(rGroupNum: number, x: number, y: number,
+              boundToAtomIdx: number): void;
     addBond(begin: number, end: number, bondType: number): void;
     /**
      * addBond + setBondDirUndoable inside a single undo macro. Pass dir=0

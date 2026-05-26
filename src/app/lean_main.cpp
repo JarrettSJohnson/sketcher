@@ -209,8 +209,23 @@ std::string mol_to_render_description(
         if (nh != 0) {
             os << ",\"nh\":" << nh;
         }
+        // R-group label: dummy atoms tagged with _MolFileRLabel render as
+        // "R<n>" (Qt: atom_display_settings / rgroup atom_label). Emit the
+        // numeric label and let the JS renderer paint the "R<n>" text so
+        // the export round-trips through MOL block writers automatically.
+        // Detected before the iso branch because make_new_r_group sets
+        // isotope == r_group_num to keep extended-SMILES round-tripping
+        // sane; that isotope value is bookkeeping, not user-visible.
+        unsigned int rlabel = 0;
+        const bool is_rgroup =
+            atom->getAtomicNum() == 0 &&
+            atom->getPropIfPresent(RDKit::common_properties::_MolFileRLabel,
+                                   rlabel);
+        if (is_rgroup) {
+            os << ",\"rlabel\":" << rlabel;
+        }
         const unsigned iso = atom->getIsotope();
-        if (iso != 0) {
+        if (iso != 0 && !is_rgroup) {
             os << ",\"iso\":" << iso;
         }
         if (atom->getIsAromatic()) {
@@ -431,6 +446,11 @@ class MolModelJS
     void addAtom(const std::string& element, double x, double y)
     {
         m_model.addAtom(element, x, y);
+    }
+    void addRGroup(unsigned int r_group_num, double x, double y,
+                   int bound_to_atom_idx)
+    {
+        m_model.addRGroup(r_group_num, x, y, bound_to_atom_idx);
     }
     void addBond(unsigned int begin, unsigned int end, int bond_type)
     {
@@ -745,6 +765,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
     emscripten::class_<MolModelJS>("MolModel")
         .constructor<>()
         .function("addAtom", &MolModelJS::addAtom)
+        .function("addRGroup", &MolModelJS::addRGroup)
         .function("addBond", &MolModelJS::addBond)
         .function("addBondWithDir", &MolModelJS::addBondWithDir)
         .function("removeAtom", &MolModelJS::removeAtom)

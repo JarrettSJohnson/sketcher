@@ -762,6 +762,78 @@ test.describe('React Sketcher', () => {
         expect(after.bonds).toHaveLength(0);
     });
 
+    test('R-Group tool: free-standing click adds R1, second click adds R2, click on atom attaches R3', async ({
+        page,
+    }) => {
+        // Qt EnumerationToolWidget: the R button activates the R-Group
+        // scene tool, which calls MolModel::addRGroup(next_num, coords,
+        // optional_target). Free clicks drop free-standing R atoms;
+        // clicking on an existing atom bonds a new R to it. Numbers auto-
+        // increment to the smallest free positive integer.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('rgroup').click();
+        // First free click → R1.
+        await canvas.click({ position: { x: 120, y: 150 } });
+        let rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].rlabel).toBe(1);
+        // Second free click → R2 (auto-incremented).
+        await canvas.click({ position: { x: 220, y: 150 } });
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+        const labels = rd.atoms.map((a) => a.rlabel).sort();
+        expect(labels).toEqual([1, 2]);
+        // Now place a C, click it with R-group tool → bonded R3.
+        await page.getByTestId('element-C').click();
+        await canvas.click({ position: { x: 320, y: 250 } });
+        await page.getByTestId('rgroup').click();
+        await canvas.click({ position: { x: 320, y: 250 } });
+        rd = await snapshot(page);
+        // Three R-groups + one C.
+        expect(rd.atoms).toHaveLength(4);
+        const rlabels = rd.atoms
+            .map((a) => a.rlabel)
+            .filter((n) => typeof n === 'number')
+            .sort();
+        expect(rlabels).toEqual([1, 2, 3]);
+        // The new R3 must be bonded to the carbon (the C is the only non-R).
+        const carbonIdx = rd.atoms.findIndex((a) => typeof a.rlabel !== 'number');
+        expect(carbonIdx).toBeGreaterThanOrEqual(0);
+        const carbonBonded = rd.bonds.some(
+            (b) => b.a === carbonIdx || b.b === carbonIdx);
+        expect(carbonBonded).toBe(true);
+        // Undo removes the attached R3 (back to 3 atoms, no bonds).
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(3);
+        expect(rd.bonds).toHaveLength(0);
+    });
+
+    test('R-Group tool: SVG export renders R-label text and survives the round trip', async ({
+        page,
+    }) => {
+        // Drop a single R1 atom, then run the same Save Image SVG flow the
+        // Save Image PNG/SVG tests use. The exported SVG must contain a
+        // <text>R1</text> element so anyone consuming the file sees the R
+        // label exactly as the canvas painted it.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('rgroup').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('export').click();
+        await page.getByTestId('export-save-image').click();
+        await page.getByTestId('save-image-format-select')
+            .selectOption('svg');
+        await page.getByTestId('save-image-width').fill('200');
+        await page.getByTestId('save-image-height').fill('120');
+        const downloadPromise = page.waitForEvent('download');
+        await page.getByTestId('save-image-save').click();
+        const download = await downloadPromise;
+        const path = await download.path();
+        const fs = await import('node:fs/promises');
+        const body = await fs.readFile(path, 'utf8');
+        expect(body).toMatch(/<text [^>]*>R1<\/text>/);
+    });
+
     test('Import menu: Paste in Text modal loads SMILES and closes', async ({
         page,
     }) => {
@@ -2320,20 +2392,19 @@ test.describe('React Sketcher', () => {
     }) => {
         // Several Qt-side widgets are present for visual fidelity but the
         // underlying action isn't wired yet (atom_query needs RDKit query
-        // atoms, bond_query needs the same, R-group, attachment
-        // point, reaction, monomeric mode). Import/Export open real menus
-        // (Batch 12); Save Image opens its own dialog (Batch 13);
-        // Settings is the Configure View dropdown (Batch 14); Help is
-        // its own dropdown (Batch 15) — all covered by their own tests.
-        // The remaining stubs route through comingSoon() → setStatus(...)
-        // so users can tell the button is intentional rather than
-        // broken. (periodic-table opens a real popup in Batch 7; covered
-        // by its own tests.)
+        // atoms, bond_query needs the same, attachment point, reaction,
+        // monomeric mode). Import/Export open real menus (Batch 12); Save
+        // Image opens its own dialog (Batch 13); Settings is the Configure
+        // View dropdown (Batch 14); Help is its own dropdown (Batch 15)
+        // — all covered by their own tests. The remaining stubs route
+        // through comingSoon() → setStatus(...) so users can tell the
+        // button is intentional rather than broken. (R-Group was wired in
+        // Batch 28; periodic-table opens a real popup in Batch 7; both
+        // covered by their own tests.)
         const status = page.getByTestId('sketcher-status');
         const stubs = [
             ['atom-query', /Atom query/],
             ['bond-query', /Bond query/],
-            ['rgroup', /R-Group/],
             ['attachment-point', /Attachment point/],
             ['reaction', /Reaction/],
             ['mode-monomeric', /Monomeric/],

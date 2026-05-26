@@ -54,6 +54,22 @@ class MolModel : public UndoableModel
     /** Append an atom by element symbol at the given 2D position. */
     void addAtom(const std::string& element, double x, double y);
 
+    /**
+     * Append an R-group atom (dummy atom carrying `_MolFileRLabel`) at the
+     * given 2D position. When `bound_to_atom_idx` is a valid existing atom
+     * index, the new R-group is single-bonded to it (extending the structure);
+     * pass -1 for a free-standing R-group. Mirrors Qt's
+     * `MolModel::addRGroup` (model/mol_model.cpp:643-648), which delegates to
+     * `addRGroupChain({r_group_num}, {coords}, bound_to_atom)` →
+     * `rdkit_extensions::make_new_r_group`. The dummy atom is decorated with
+     * the RDKit conventions: atomLabel "_R<n>", dummyLabel "R<n>", isotope
+     * == r_group_num, and `_MolFileRLabel` == r_group_num so MOL block export
+     * round-trips correctly. Single undo step. Throws std::invalid_argument
+     * for r_group_num == 0 (RDKit forbids R0).
+     */
+    void addRGroup(unsigned int r_group_num, double x, double y,
+                   int bound_to_atom_idx = -1);
+
     /** 2D position of the atom at `idx` (z is always 0). */
     void atomPos(unsigned int idx, double& x, double& y) const;
 

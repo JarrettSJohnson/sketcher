@@ -12,6 +12,9 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <stdexcept>
+
+#include <GraphMol/Atom.h>
 #include <GraphMol/Bond.h>
 
 #include "schrodinger/sketcher_core/mol_model.h"
@@ -1348,6 +1351,65 @@ BOOST_AUTO_TEST_CASE(testCleanUpIsNoOpOnEmptyMol)
     UndoStack stack;
     MolModel m(&stack);
     m.cleanUp();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 0u);
+    BOOST_CHECK_EQUAL(stack.count(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(testAddRGroupPlacesDummyAtomWithRLabel)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addRGroup(1, 3.0, 4.0, /*bound_to_atom_idx=*/-1);
+    BOOST_REQUIRE_EQUAL(m.numAtoms(), 1u);
+    const auto* atom = m.mol().getAtomWithIdx(0);
+    // Dummy atomic number — make_new_r_group uses DUMMY_ATOMIC_NUMBER (0).
+    BOOST_CHECK_EQUAL(atom->getAtomicNum(), 0);
+    unsigned int rlabel = 0;
+    BOOST_REQUIRE(atom->getPropIfPresent(
+        RDKit::common_properties::_MolFileRLabel, rlabel));
+    BOOST_CHECK_EQUAL(rlabel, 1u);
+    double x = 0, y = 0;
+    m.atomPos(0, x, y);
+    BOOST_CHECK_CLOSE(x, 3.0, 1e-6);
+    BOOST_CHECK_CLOSE(y, 4.0, 1e-6);
+    BOOST_CHECK_EQUAL(m.numBonds(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(testAddRGroupBondsToExistingAtom)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0.0, 0.0);
+    m.addRGroup(2, 1.5, 0.0, /*bound_to_atom_idx=*/0);
+    BOOST_REQUIRE_EQUAL(m.numAtoms(), 2u);
+    BOOST_REQUIRE_EQUAL(m.numBonds(), 1u);
+    const auto* bond = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_REQUIRE(bond != nullptr);
+    BOOST_CHECK_EQUAL(bond->getBondType(), RDKit::Bond::BondType::SINGLE);
+    unsigned int rlabel = 0;
+    BOOST_REQUIRE(m.mol().getAtomWithIdx(1)->getPropIfPresent(
+        RDKit::common_properties::_MolFileRLabel, rlabel));
+    BOOST_CHECK_EQUAL(rlabel, 2u);
+}
+
+BOOST_AUTO_TEST_CASE(testAddRGroupIsUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addRGroup(1, 0.0, 0.0, -1);
+    BOOST_CHECK_EQUAL(m.numAtoms(), 1u);
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 0u);
+    stack.redo();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(testAddRGroupRejectsRZero)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    BOOST_CHECK_THROW(m.addRGroup(0, 0.0, 0.0, -1), std::invalid_argument);
+    // Failed call must not leave a partial mutation or a dangling undo entry.
     BOOST_CHECK_EQUAL(m.numAtoms(), 0u);
     BOOST_CHECK_EQUAL(stack.count(), 0u);
 }
