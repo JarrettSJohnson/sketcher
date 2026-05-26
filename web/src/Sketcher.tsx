@@ -1945,6 +1945,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // placeholders until the C++ MolModel learns about monomers — see the
     // [[project-qt-removal]] memory for the staged plan.
     const [mode, setMode] = useState<'atomistic' | 'monomeric'>('atomistic');
+    // Inside the monomeric page, Qt has a second QStackedWidget
+    // (`amino_or_nucleic_stack`) gated by an AMINO/NUCLEIC toggle pair
+    // (`amino_monomer_btn` defaults to checked=true — see
+    // monomer_tool_widget.ui). 'amino' is the default to match.
+    const [monomerSubMode, setMonomerSubMode] =
+        useState<'amino' | 'nucleic'>('amino');
     const [element, setElement] = useState<Element>('C');
     // Element shown in the last-picked slot (Qt set_atom_widget.cpp:27 —
     // last_picked_element_btn defaults to Si). Updates whenever the user
@@ -2207,6 +2213,41 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         arrow: 'Reaction Arrow',
         plus: 'Reaction Plus',
     };
+
+    // Amino-acid roster + display order ported from Qt's
+    // src/schrodinger/sketcher/model/sketcher_model.h (AminoAcidTool +
+    // AMINO_ACID_TOOL_TO_RES_NAME + AMINO_ACID_TOOL_TO_FULL_NAME) and the
+    // 3-col×7-row button layout from src/schrodinger/sketcher/ui/
+    // monomer_tool_widget.ui. The grid is row-major; iterating this array
+    // and laying it out into 3 columns reproduces the Qt button positions
+    // exactly (ALA top-left, UNK bottom-right). Each entry is
+    // `[3-letter ID, 1-letter symbol, full name]`. The 1-letter is the
+    // button face (matches Qt's `<string>X</string>`); the full name goes
+    // into the tooltip. Clicks stub through comingSoon — the MolModel
+    // doesn't speak monomer yet, so this batch is layout-only.
+    const AMINO_ACIDS: Array<readonly [string, string, string]> = [
+        ['ala', 'A', 'Alanine'],
+        ['phe', 'F', 'Phenylalanine'],
+        ['gly', 'G', 'Glycine'],
+        ['ile', 'I', 'Isoleucine'],
+        ['leu', 'L', 'Leucine'],
+        ['met', 'M', 'Methionine'],
+        ['pro', 'P', 'Proline'],
+        ['val', 'V', 'Valine'],
+        ['trp', 'W', 'Tryptophan'],
+        ['cys', 'C', 'Cysteine'],
+        ['asn', 'N', 'Asparagine'],
+        ['gln', 'Q', 'Glutamine'],
+        ['ser', 'S', 'Serine'],
+        ['thr', 'T', 'Threonine'],
+        ['tyr', 'Y', 'Tyrosine'],
+        ['his', 'H', 'Histidine'],
+        ['lys', 'K', 'Lysine'],
+        ['arg', 'R', 'Arginine'],
+        ['asp', 'D', 'Aspartate'],
+        ['glu', 'E', 'Glutamate'],
+        ['unk', 'X', 'Unknown'],
+    ];
 
     // Build the C++ MolModel once per mount, tear it down on unmount.
     useEffect(() => {
@@ -4539,28 +4580,68 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     </>)}
 
                     {mode === 'monomeric' && (
-                    /* Placeholder for MonomerToolWidget — Qt's
-                       monomer_tool_widget.ui starts with an AMINO/NUCLEIC
-                       toggle, then a monomer grid (amino acids or
-                       nucleotides depending on the toggle), then chain-
-                       type buttons. We render the toggle row to convey
-                       the layout but the draw tools themselves are wired
-                       to comingSoon — MolModel doesn't speak monomer yet
-                       (planned for subsequent batches). */
+                    /* MonomerToolWidget port — Qt's monomer_tool_widget.ui:
+                       AMINO/NUCLEIC toggle row (AminoOrNucleicToggleButton
+                       pair, amino_or_nucleic_group), then a QStackedWidget
+                       (`amino_or_nucleic_stack`) with `amino_page` (3×7
+                       LetterButton grid, one button per natural amino acid)
+                       and `nucleic_page` (still placeholder — Batch 33).
+                       The amino tile clicks stub to comingSoon since the
+                       lean MolModel doesn't speak monomer yet. */
                     <div style={styles.monomericPage} data-testid='monomeric-page'>
                         <div style={styles.row2}>
-                            <TextLinkButton label='AMINO'
-                                testid='monomer-amino'
-                                title='Amino acid monomers'
-                                onClick={() => comingSoon('Amino acid monomers')} />
-                            <TextLinkButton label='NUCLEIC'
-                                testid='monomer-nucleic'
-                                title='Nucleic acid monomers'
-                                onClick={() => comingSoon('Nucleic acid monomers')} />
+                            <button type='button'
+                                style={{
+                                    ...styles.monomerTabBtn,
+                                    ...(monomerSubMode === 'amino'
+                                        ? styles.monomerTabBtnActive : {}),
+                                }}
+                                data-testid='monomer-amino'
+                                aria-pressed={monomerSubMode === 'amino'}
+                                title='Amino acids'
+                                onClick={() => {
+                                    if (monomerSubMode === 'amino') return;
+                                    setMonomerSubMode('amino');
+                                    setStatus('amino acid monomers');
+                                }}>
+                                AMINO
+                            </button>
+                            <button type='button'
+                                style={{
+                                    ...styles.monomerTabBtn,
+                                    ...(monomerSubMode === 'nucleic'
+                                        ? styles.monomerTabBtnActive : {}),
+                                }}
+                                data-testid='monomer-nucleic'
+                                aria-pressed={monomerSubMode === 'nucleic'}
+                                title='Nucleic acids'
+                                onClick={() => {
+                                    if (monomerSubMode === 'nucleic') return;
+                                    setMonomerSubMode('nucleic');
+                                    setStatus('nucleic acid monomers');
+                                }}>
+                                NUCLEIC
+                            </button>
                         </div>
-                        <div style={styles.monomericPlaceholder}>
-                            Monomer draw tools coming soon
+                        {monomerSubMode === 'amino' && (
+                        <div style={styles.elementGrid}
+                            data-testid='amino-acid-grid'>
+                            {AMINO_ACIDS.map(([id, sym, full]) => (
+                                <LetterButton key={id}
+                                    label={sym}
+                                    testid={`monomer-aa-${id}`}
+                                    title={`Draw ${full} (${sym})`}
+                                    onClick={() => comingSoon(
+                                        `Draw ${full} monomer`)} />
+                            ))}
                         </div>
+                        )}
+                        {monomerSubMode === 'nucleic' && (
+                        <div style={styles.monomericPlaceholder}
+                            data-testid='nucleic-placeholder'>
+                            Nucleic-acid grid coming soon
+                        </div>
+                        )}
                     </div>
                     )}
                 </aside>
@@ -5798,6 +5879,23 @@ const styles: Record<string, CSSProperties> = {
         fontStyle: 'italic',
         lineHeight: 1.3,
     },
+    monomerTabBtn: {
+        // AminoOrNucleicToggleButton in Qt (monomer_tool_widget.ui:38) is
+        // a checkable QPushButton with point-size 8 bold; the side bar
+        // gives it 46–50 px width. We reproduce the look as two side-by-
+        // side tab buttons inside the existing row2 grid.
+        height: ICON_BTN_SIZE,
+        background: 'transparent',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 3,
+        fontSize: 9,
+        fontWeight: 700,
+        letterSpacing: 0.5,
+        color: SECTION_LABEL_COLOR,
+        cursor: 'pointer',
+        padding: 0,
+    },
+    monomerTabBtnActive: { background: CHECKED_BG },
     selectSectionActive: { background: SELECT_ACTIVE_BG },
     sectionLabel: {
         fontSize: 9,

@@ -1001,18 +1001,13 @@ test.describe('React Sketcher', () => {
         // `monomeric_page`. The atomistic/monomeric header buttons act as
         // a QButtonGroup — toggling flips which page is mounted while the
         // SELECT cluster above the divider stays put in both modes
-        // (sketcher_side_bar.cpp:55-188). Monomer draw tools are a
-        // placeholder for now; we only verify the page swap, the active
-        // button reflects the current mode, and SELECT survives the swap.
+        // (sketcher_side_bar.cpp:55-188).
         await expect(page.getByTestId('mode-atomistic'))
             .toHaveAttribute('aria-pressed', 'true');
         await expect(page.getByTestId('mode-monomeric'))
             .toHaveAttribute('aria-pressed', 'false');
-        // Atomistic page renders the element grid; monomeric placeholder
-        // hasn't rendered yet.
         await expect(page.getByTestId('element-C')).toBeVisible();
         await expect(page.getByTestId('monomeric-page')).toHaveCount(0);
-        // SELECT block is present in atomistic mode.
         await expect(page.getByTestId('tool-select')).toBeVisible();
 
         await page.getByTestId('mode-monomeric').click();
@@ -1020,18 +1015,81 @@ test.describe('React Sketcher', () => {
             .toHaveAttribute('aria-pressed', 'false');
         await expect(page.getByTestId('mode-monomeric'))
             .toHaveAttribute('aria-pressed', 'true');
-        // Atomistic page unmounts; monomeric placeholder mounts.
         await expect(page.getByTestId('element-C')).toHaveCount(0);
         await expect(page.getByTestId('monomeric-page')).toBeVisible();
-        await expect(page.getByTestId('monomer-amino')).toBeVisible();
-        await expect(page.getByTestId('monomer-nucleic')).toBeVisible();
-        // SELECT block survives the page swap (Qt: lives outside the stack).
         await expect(page.getByTestId('tool-select')).toBeVisible();
 
-        // Flip back.
         await page.getByTestId('mode-atomistic').click();
         await expect(page.getByTestId('element-C')).toBeVisible();
         await expect(page.getByTestId('monomeric-page')).toHaveCount(0);
+    });
+
+    test('Monomer AMINO sub-mode renders all 21 natural amino acids in Qt display order', async ({
+        page,
+    }) => {
+        // Qt's monomer_tool_widget.ui has a QStackedWidget
+        // (`amino_or_nucleic_stack`) gated by AMINO / NUCLEIC tab buttons
+        // (`amino_monomer_btn` defaults to checked=true). The amino_page is
+        // a 3-col grid of 21 ModularToolButtons, one per natural amino
+        // acid, laid out per AMINO_ACID_TOOL_DISPLAY_ORDER in
+        // src/schrodinger/sketcher/model/sketcher_model.h. The tile clicks
+        // stub through comingSoon for now — the lean MolModel doesn't
+        // speak monomer yet.
+        await page.getByTestId('mode-monomeric').click();
+        // Default sub-mode is AMINO per Qt.
+        await expect(page.getByTestId('monomer-amino'))
+            .toHaveAttribute('aria-pressed', 'true');
+        await expect(page.getByTestId('monomer-nucleic'))
+            .toHaveAttribute('aria-pressed', 'false');
+        // Grid is mounted; placeholder is not.
+        await expect(page.getByTestId('amino-acid-grid')).toBeVisible();
+        await expect(page.getByTestId('nucleic-placeholder')).toHaveCount(0);
+        // All 21 amino-acid tiles render.
+        const grid = page.getByTestId('amino-acid-grid');
+        const tiles = await grid.locator('button').all();
+        expect(tiles.length).toBe(21);
+        // Verify the row-major Qt order: ALA top-left, UNK bottom-right,
+        // CYS at index 9 (row 3 col 0), GLU at index 19, etc.
+        const expectedLabels = [
+            'A', 'F', 'G',
+            'I', 'L', 'M',
+            'P', 'V', 'W',
+            'C', 'N', 'Q',
+            'S', 'T', 'Y',
+            'H', 'K', 'R',
+            'D', 'E', 'X',
+        ];
+        for (let i = 0; i < expectedLabels.length; i++) {
+            await expect(tiles[i]).toHaveText(expectedLabels[i]);
+        }
+        // Tooltip wires up the full name (used by future MolModel hook).
+        await expect(page.getByTestId('monomer-aa-cys'))
+            .toHaveAttribute('title', /Cysteine/);
+        // Clicking a tile surfaces the coming-soon status.
+        await page.getByTestId('monomer-aa-trp').click();
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/Tryptophan/);
+    });
+
+    test('Monomer AMINO/NUCLEIC sub-toggle flips the inner stack', async ({
+        page,
+    }) => {
+        // Qt's `amino_or_nucleic_stack` flips between amino_page and
+        // nucleic_page on the AMINO/NUCLEIC toggle. The nucleic grid lands
+        // in a follow-up batch — for now we only verify the toggle swaps
+        // panels and the active state survives a round-trip.
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-nucleic').click();
+        await expect(page.getByTestId('monomer-amino'))
+            .toHaveAttribute('aria-pressed', 'false');
+        await expect(page.getByTestId('monomer-nucleic'))
+            .toHaveAttribute('aria-pressed', 'true');
+        await expect(page.getByTestId('amino-acid-grid')).toHaveCount(0);
+        await expect(page.getByTestId('nucleic-placeholder')).toBeVisible();
+
+        await page.getByTestId('monomer-amino').click();
+        await expect(page.getByTestId('amino-acid-grid')).toBeVisible();
+        await expect(page.getByTestId('nucleic-placeholder')).toHaveCount(0);
     });
 
     test('Import menu: Paste in Text modal loads SMILES and closes', async ({
@@ -2613,15 +2671,12 @@ test.describe('React Sketcher', () => {
             await page.getByTestId(testid).click();
             await expect(status).toContainText(pattern);
         }
-        // Flip to monomeric page; AMINO/NUCLEIC buttons live there.
+        // Flip to monomeric page; every amino-acid tile is a stub for now
+        // (MolModel doesn't speak monomer yet). Probe one to confirm the
+        // routing — full grid is covered by the dedicated batch-32 test.
         await page.getByTestId('mode-monomeric').click();
-        for (const [testid, pattern] of [
-            ['monomer-amino', /Amino acid/],
-            ['monomer-nucleic', /Nucleic acid/],
-        ]) {
-            await page.getByTestId(testid).click();
-            await expect(status).toContainText(pattern);
-        }
+        await page.getByTestId('monomer-aa-ala').click();
+        await expect(status).toContainText(/Alanine/);
     });
 
     test('Wheel zoom is view-center-anchored and capped at DEFAULT_SCALE', async ({
