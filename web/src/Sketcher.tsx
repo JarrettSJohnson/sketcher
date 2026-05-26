@@ -1935,6 +1935,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const viewRef = useRef<View>(DEFAULT_VIEW);
 
     const [tool, setTool] = useState<Tool>('atom');
+    // Sidebar page toggle — Qt's sketcher_side_bar.ui has a QStackedWidget
+    // (`atomistic_or_monomeric_stack`) with two pages: `atomistic_page` (the
+    // SetAtomWidget + bonds + rings + enumeration cluster) and
+    // `monomeric_page` (the MonomerToolWidget). The two header buttons act
+    // as a QButtonGroup — only one mode is active at a time. The SELECT
+    // section above sits outside the stack and is visible in both modes
+    // (sketcher_side_bar.cpp:55-188). Monomeric draw tools themselves are
+    // placeholders until the C++ MolModel learns about monomers — see the
+    // [[project-qt-removal]] memory for the staged plan.
+    const [mode, setMode] = useState<'atomistic' | 'monomeric'>('atomistic');
     const [element, setElement] = useState<Element>('C');
     // Element shown in the last-picked slot (Qt set_atom_widget.cpp:27 —
     // last_picked_element_btn defaults to Si). Updates whenever the user
@@ -4291,21 +4301,37 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
 
                     <hr style={styles.hr} />
 
-                    {/* DRAW label + atomistic/monomeric toggle. Monomeric
-                        mode isn't ported yet — stub it. */}
+                    {/* DRAW label + atomistic/monomeric toggle. Mirrors Qt's
+                        sketcher_side_bar.cpp:55-188 — picking one button
+                        flips `atomistic_or_monomeric_stack` to the matching
+                        page. Monomeric draw tools themselves are still
+                        stubbed; flipping pages just swaps which widget
+                        column the user sees. */}
                     <div style={styles.sectionLabel}>DRAW</div>
                     <div style={styles.row2}>
                         <IconButton icon='mode_compound'
                             testid='mode-atomistic'
                             title='Atomistic'
-                            active
-                            onClick={() => { /* already atomistic */ }} />
+                            active={mode === 'atomistic'}
+                            onClick={() => {
+                                if (mode === 'atomistic') return;
+                                setMode('atomistic');
+                                setPendingBondAtom(null);
+                                setStatus('atomistic mode');
+                            }} />
                         <IconButton icon='mode_monomer'
                             testid='mode-monomeric'
                             title='Monomeric'
-                            onClick={() => comingSoon('Monomeric mode')} />
+                            active={mode === 'monomeric'}
+                            onClick={() => {
+                                if (mode === 'monomeric') return;
+                                setMode('monomeric');
+                                setPendingBondAtom(null);
+                                setStatus('monomeric mode (draw tools coming soon)');
+                            }} />
                     </div>
 
+                    {mode === 'atomistic' && (<>
                     {/* SetAtomWidget — 3 cols, 4 rows. Qt order:
                         row 0 C H N, row 1 O P S, row 2 F Cl <last_picked>,
                         row 3 atom_query (1 col) + periodic_table (2 cols).
@@ -4510,6 +4536,33 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             }}
                         />
                     </div>
+                    </>)}
+
+                    {mode === 'monomeric' && (
+                    /* Placeholder for MonomerToolWidget — Qt's
+                       monomer_tool_widget.ui starts with an AMINO/NUCLEIC
+                       toggle, then a monomer grid (amino acids or
+                       nucleotides depending on the toggle), then chain-
+                       type buttons. We render the toggle row to convey
+                       the layout but the draw tools themselves are wired
+                       to comingSoon — MolModel doesn't speak monomer yet
+                       (planned for subsequent batches). */
+                    <div style={styles.monomericPage} data-testid='monomeric-page'>
+                        <div style={styles.row2}>
+                            <TextLinkButton label='AMINO'
+                                testid='monomer-amino'
+                                title='Amino acid monomers'
+                                onClick={() => comingSoon('Amino acid monomers')} />
+                            <TextLinkButton label='NUCLEIC'
+                                testid='monomer-nucleic'
+                                title='Nucleic acid monomers'
+                                onClick={() => comingSoon('Nucleic acid monomers')} />
+                        </div>
+                        <div style={styles.monomericPlaceholder}>
+                            Monomer draw tools coming soon
+                        </div>
+                    </div>
+                    )}
                 </aside>
 
                 <div style={styles.canvasColumn}>
@@ -5730,6 +5783,20 @@ const styles: Record<string, CSSProperties> = {
         gap: 2,
         padding: '2px 0',
         borderRadius: 3,
+    },
+    monomericPage: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        padding: '4px 0',
+    },
+    monomericPlaceholder: {
+        fontSize: 9,
+        color: SECTION_LABEL_COLOR,
+        textAlign: 'center',
+        padding: '12px 4px',
+        fontStyle: 'italic',
+        lineHeight: 1.3,
     },
     selectSectionActive: { background: SELECT_ACTIVE_BG },
     sectionLabel: {

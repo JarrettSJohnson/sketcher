@@ -993,6 +993,47 @@ test.describe('React Sketcher', () => {
         expect(pathMatches.length).toBeGreaterThanOrEqual(2);
     });
 
+    test('Mode toggle: atomistic ↔ monomeric swaps the sidebar page; SELECT stays', async ({
+        page,
+    }) => {
+        // Qt's sketcher_side_bar.ui has a QStackedWidget
+        // (`atomistic_or_monomeric_stack`) with `atomistic_page` and
+        // `monomeric_page`. The atomistic/monomeric header buttons act as
+        // a QButtonGroup — toggling flips which page is mounted while the
+        // SELECT cluster above the divider stays put in both modes
+        // (sketcher_side_bar.cpp:55-188). Monomer draw tools are a
+        // placeholder for now; we only verify the page swap, the active
+        // button reflects the current mode, and SELECT survives the swap.
+        await expect(page.getByTestId('mode-atomistic'))
+            .toHaveAttribute('aria-pressed', 'true');
+        await expect(page.getByTestId('mode-monomeric'))
+            .toHaveAttribute('aria-pressed', 'false');
+        // Atomistic page renders the element grid; monomeric placeholder
+        // hasn't rendered yet.
+        await expect(page.getByTestId('element-C')).toBeVisible();
+        await expect(page.getByTestId('monomeric-page')).toHaveCount(0);
+        // SELECT block is present in atomistic mode.
+        await expect(page.getByTestId('tool-select')).toBeVisible();
+
+        await page.getByTestId('mode-monomeric').click();
+        await expect(page.getByTestId('mode-atomistic'))
+            .toHaveAttribute('aria-pressed', 'false');
+        await expect(page.getByTestId('mode-monomeric'))
+            .toHaveAttribute('aria-pressed', 'true');
+        // Atomistic page unmounts; monomeric placeholder mounts.
+        await expect(page.getByTestId('element-C')).toHaveCount(0);
+        await expect(page.getByTestId('monomeric-page')).toBeVisible();
+        await expect(page.getByTestId('monomer-amino')).toBeVisible();
+        await expect(page.getByTestId('monomer-nucleic')).toBeVisible();
+        // SELECT block survives the page swap (Qt: lives outside the stack).
+        await expect(page.getByTestId('tool-select')).toBeVisible();
+
+        // Flip back.
+        await page.getByTestId('mode-atomistic').click();
+        await expect(page.getByTestId('element-C')).toBeVisible();
+        await expect(page.getByTestId('monomeric-page')).toHaveCount(0);
+    });
+
     test('Import menu: Paste in Text modal loads SMILES and closes', async ({
         page,
     }) => {
@@ -2551,7 +2592,7 @@ test.describe('React Sketcher', () => {
     }) => {
         // Several Qt-side widgets are present for visual fidelity but the
         // underlying action isn't wired yet (atom_query needs RDKit query
-        // atoms, bond_query needs the same, monomeric mode).
+        // atoms, bond_query needs the same).
         // Import/Export open real menus (Batch 12); Save Image opens its
         // own dialog (Batch 13); Settings is the Configure View dropdown
         // (Batch 14); Help is its own dropdown (Batch 15) — all covered by
@@ -2559,15 +2600,25 @@ test.describe('React Sketcher', () => {
         // → setStatus(...) so users can tell the button is intentional
         // rather than broken. (R-Group was wired in Batch 28;
         // attachment-point in Batch 29; reaction in Batch 30;
-        // periodic-table opens a real popup in Batch 7; all covered by
-        // their own tests.)
+        // periodic-table opens a real popup in Batch 7; mode-monomeric
+        // swaps the sidebar to the placeholder MonomerToolWidget page in
+        // Batch 31 — its inner AMINO/NUCLEIC buttons are the new stubs;
+        // all covered by their own tests.)
         const status = page.getByTestId('sketcher-status');
-        const stubs = [
+        // Atomistic-page stubs.
+        for (const [testid, pattern] of [
             ['atom-query', /Atom query/],
             ['bond-query', /Bond query/],
-            ['mode-monomeric', /Monomeric/],
-        ];
-        for (const [testid, pattern] of stubs) {
+        ]) {
+            await page.getByTestId(testid).click();
+            await expect(status).toContainText(pattern);
+        }
+        // Flip to monomeric page; AMINO/NUCLEIC buttons live there.
+        await page.getByTestId('mode-monomeric').click();
+        for (const [testid, pattern] of [
+            ['monomer-amino', /Amino acid/],
+            ['monomer-nucleic', /Nucleic acid/],
+        ]) {
             await page.getByTestId(testid).click();
             await expect(status).toContainText(pattern);
         }
