@@ -1273,6 +1273,85 @@ test.describe('React Sketcher', () => {
         await expect(page.getByTestId('preferences-abs-prefix')).not.toBeChecked();
     });
 
+    test('Preferences: Label carbons toggles between none / terminal / all (Qt CarbonLabels parity)', async ({
+        page,
+    }) => {
+        // Qt's RenderingSettingsDialog (m_label_carbons_cb +
+        // m_label_terminal_C_rb / m_label_all_C_rb). NONE = bare dots
+        // (default); TERMINAL = label C atoms with exactly one heavy
+        // neighbour; ALL = label every C. The d=2-with-two-doubles case
+        // (allene central C) always labels in every mode — matches Qt's
+        // AtomItem::determineLabelIsVisible.
+        await loadText(page, 'CCC');
+
+        const fs = await import('node:fs/promises');
+        const saveSvg = async () => {
+            await page.getByTestId('export').click();
+            await page.getByTestId('export-save-image').click();
+            await page.getByTestId('save-image-format-select')
+                .selectOption('svg');
+            const dl = page.waitForEvent('download');
+            await page.getByTestId('save-image-save').click();
+            const d = await dl;
+            const body = await fs.readFile(await d.path(), 'utf8');
+            await expect(page.getByTestId('save-image-modal'))
+                .toHaveCount(0);
+            return body;
+        };
+        const countC = (svg) =>
+            (svg.match(/<text [^>]*>C<\/text>/g) ?? []).length;
+
+        // Default: NONE — no "C" text labels for the three carbons of
+        // propane (rendered as bare dots).
+        const svgNone = await saveSvg();
+        expect(countC(svgNone)).toBe(0);
+
+        // Open Preferences, enable Label carbons (defaults to Terminal-only
+        // per Qt's m_label_terminal_C_rb checked=true). Two of three
+        // propane carbons are terminal (degree 1), so we expect 2 "C"
+        // labels.
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        const labelCb = page.getByTestId('preferences-label-carbons');
+        await expect(labelCb).not.toBeChecked();
+        await expect(page.getByTestId('preferences-label-terminal-rb'))
+            .toBeDisabled();
+        await expect(page.getByTestId('preferences-label-all-rb'))
+            .toBeDisabled();
+        await labelCb.click();
+        await expect(labelCb).toBeChecked();
+        await expect(page.getByTestId('preferences-label-terminal-rb'))
+            .toBeChecked();
+        await expect(page.getByTestId('preferences-label-all-rb'))
+            .not.toBeChecked();
+        await page.getByTestId('preferences-close').click();
+        const svgTerminal = await saveSvg();
+        expect(countC(svgTerminal)).toBe(2);
+
+        // Switch to ALL — every carbon gets a label.
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        await page.getByTestId('preferences-label-all-rb').click();
+        await expect(page.getByTestId('preferences-label-all-rb'))
+            .toBeChecked();
+        await page.getByTestId('preferences-close').click();
+        const svgAll = await saveSvg();
+        expect(countC(svgAll)).toBe(3);
+
+        // Reset to Defaults pulls Label carbons back to NONE (and the
+        // radios disable again).
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        await page.getByTestId('preferences-reset').click();
+        await expect(page.getByTestId('preferences-label-carbons'))
+            .not.toBeChecked();
+        await expect(page.getByTestId('preferences-label-terminal-rb'))
+            .toBeDisabled();
+        await page.getByTestId('preferences-close').click();
+        const svgAfterReset = await saveSvg();
+        expect(countC(svgAfterReset)).toBe(0);
+    });
+
     test('Configure View: turning Heteroatom Colors off renders nitrogen in the carbon mono color', async ({
         page,
     }) => {

@@ -302,7 +302,13 @@ interface DisplayOptions {
     // prefix shipped from `atom_chirality_label` (lean_main.cpp) is kept
     // in the rendered label ("abs (R)"); when false we strip it ("(R)").
     explicitAbsLabels: boolean;
+    // Qt's CarbonLabels enum (image_constants.h:24-32). Controls when
+    // carbon atoms get a visible "C" label. NONE = bare-dot rendering
+    // (the React default and Qt's default); TERMINAL = label carbons
+    // with exactly one heavy-atom bond; ALL = label every carbon.
+    carbonLabels: CarbonLabelMode;
 }
+type CarbonLabelMode = 'none' | 'terminal' | 'all';
 const DEFAULT_ATOM_FONT_SIZE = 13;
 const DEFAULT_BOND_LINE_WIDTH = 2;
 const DEFAULT_DISPLAY_OPTIONS: DisplayOptions = {
@@ -313,6 +319,7 @@ const DEFAULT_DISPLAY_OPTIONS: DisplayOptions = {
     atomFontSize: DEFAULT_ATOM_FONT_SIZE,
     bondLineWidth: DEFAULT_BOND_LINE_WIDTH,
     explicitAbsLabels: false,
+    carbonLabels: 'none',
 };
 
 // Matches rdkit_extensions::ABSOLUTE_STEREO_PREFIX = "abs" + HAIR_SPACE
@@ -606,6 +613,25 @@ function drawSketch(
     }
     const centroidPx = pixelFromModel(canvas, view, centroidX, centroidY);
 
+    // Per-atom degree + double-bond count — feeds the carbon-label rule
+    // (mirrors AtomItem::determineLabelIsVisible at molviewer/atom_item.cpp:
+    // 677-720). Computed once per draw so the inner atom loop is O(1).
+    const degree = new Array<number>(rd.atoms.length).fill(0);
+    const doubleCount = new Array<number>(rd.atoms.length).fill(0);
+    for (const bb of rd.bonds) {
+        degree[bb.a]++; degree[bb.b]++;
+        if (bb.o === 2) { doubleCount[bb.a]++; doubleCount[bb.b]++; }
+    }
+    const shouldLabelCarbon = (i: number, a: AtomDesc): boolean => {
+        if (a.el !== 'C') return false;
+        if (displayOptions.carbonLabels === 'all') return true;
+        const d = degree[i];
+        if (d === 0) return true;
+        if (displayOptions.carbonLabels === 'terminal' && d === 1) return true;
+        if (d === 2 && doubleCount[i] === 2) return true;
+        return false;
+    };
+
     for (let i = 0; i < rd.bonds.length; ++i) {
         const b = rd.bonds[i];
         const p1 = pixelFromModel(canvas, view, rd.atoms[b.a].x, rd.atoms[b.a].y);
@@ -805,7 +831,8 @@ function drawSketch(
         }
         ctx.restore();
     }
-    for (const a of rd.atoms) {
+    for (let i = 0; i < rd.atoms.length; i++) {
+        const a = rd.atoms[i];
         const { px, py } = pixelFromModel(canvas, view, a.x, a.y);
         const isPending = pendingAtomIdx === a.i;
         const isHover = hoverAtomIdx === a.i;
@@ -828,10 +855,12 @@ function drawSketch(
             ctx.fill();
         }
         const hasCharge = typeof a.q === 'number' && a.q !== 0;
-        // Carbons get only a dot unless they carry a charge — otherwise the
-        // canvas turns into a wall of "C" labels for every backbone atom.
+        // Carbons get only a dot unless they carry a charge OR the user
+        // turned on Preferences → Label Carbons (none/terminal/all,
+        // mirrors Qt's CarbonLabels enum + AtomItem::determineLabelIsVisible).
         const dotOnly =
-            a.el === 'C' && !hasCharge && !isPending && !isHover && !a.sel;
+            a.el === 'C' && !hasCharge && !isPending && !isHover && !a.sel
+            && !shouldLabelCarbon(i, a);
         if (dotOnly) {
             ctx.fillStyle = '#333';
             ctx.beginPath();
@@ -851,7 +880,8 @@ function drawSketch(
         ctx.fillStyle = displayOptions.colorHeteroatoms
             ? (ELEMENT_COLORS[a.el] ?? '#333')
             : ELEMENT_COLORS.C;
-        if (a.el === 'C' && a.sel && !isPending && !isHover && !hasCharge) {
+        if (a.el === 'C' && a.sel && !isPending && !isHover && !hasCharge
+            && !shouldLabelCarbon(i, a)) {
             ctx.beginPath();
             ctx.arc(px, py, 2.5, 0, 2 * Math.PI);
             ctx.fill();
@@ -1096,6 +1126,24 @@ function buildSketchSvg(
     }
     const centroidPx = px(centroidX, centroidY);
 
+    // Carbon-label rule mirrors drawSketch (and Qt's
+    // AtomItem::determineLabelIsVisible). Computed once per build.
+    const degree = new Array<number>(rd.atoms.length).fill(0);
+    const doubleCount = new Array<number>(rd.atoms.length).fill(0);
+    for (const bb of rd.bonds) {
+        degree[bb.a]++; degree[bb.b]++;
+        if (bb.o === 2) { doubleCount[bb.a]++; doubleCount[bb.b]++; }
+    }
+    const shouldLabelCarbon = (i: number, a: AtomDesc): boolean => {
+        if (a.el !== 'C') return false;
+        if (displayOptions.carbonLabels === 'all') return true;
+        const d = degree[i];
+        if (d === 0) return true;
+        if (displayOptions.carbonLabels === 'terminal' && d === 1) return true;
+        if (d === 2 && doubleCount[i] === 2) return true;
+        return false;
+    };
+
     for (const b of rd.bonds) {
         const p1 = px(rd.atoms[b.a].x, rd.atoms[b.a].y);
         const p2 = px(rd.atoms[b.b].x, rd.atoms[b.b].y);
@@ -1245,7 +1293,8 @@ function buildSketchSvg(
             );
         }
     }
-    for (const a of rd.atoms) {
+    for (let i = 0; i < rd.atoms.length; i++) {
+        const a = rd.atoms[i];
         const { px: ax, py: ay } = px(a.x, a.y);
         if (a.sel) {
             parts.push(
@@ -1256,7 +1305,8 @@ function buildSketchSvg(
             );
         }
         const hasCharge = typeof a.q === 'number' && a.q !== 0;
-        const dotOnly = a.el === 'C' && !hasCharge && !a.sel;
+        const dotOnly = a.el === 'C' && !hasCharge && !a.sel
+            && !shouldLabelCarbon(i, a);
         if (dotOnly) {
             parts.push(
                 `<circle cx='${f(ax)}' cy='${f(ay)}' r='2.5' fill='#333'/>`,
@@ -1272,7 +1322,7 @@ function buildSketchSvg(
         const labelColor = displayOptions.colorHeteroatoms
             ? (ELEMENT_COLORS[a.el] ?? '#333')
             : ELEMENT_COLORS.C;
-        if (a.el === 'C' && a.sel && !hasCharge) {
+        if (a.el === 'C' && a.sel && !hasCharge && !shouldLabelCarbon(i, a)) {
             parts.push(
                 `<circle cx='${f(ax)}' cy='${f(ay)}' r='2.5' ` +
                 `fill='${labelColor}'/>`,
@@ -4227,16 +4277,75 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         <div style={styles.prefsSeparator} />
                         <div style={styles.prefsGrid}>
                             <div>
+                                {/* Qt's m_label_carbons_cb +
+                                    m_label_terminal_C_rb / m_label_all_C_rb
+                                    (rendering_settings_dialog.ui:103-225).
+                                    Default is unchecked (NONE); first toggle
+                                    selects Terminal-only to match Qt's
+                                    `<bool>true</bool>` on m_label_terminal_C_rb.
+                                    Radios disable when the checkbox is off. */}
                                 <label style={styles.prefsCheckRow}>
                                     <input type='checkbox'
                                         data-testid={
-                                            'preferences-color-heteroatoms'}
+                                            'preferences-label-carbons'}
                                         checked={
-                                            displayOptions.colorHeteroatoms}
-                                        onChange={() =>
-                                            toggleDisplayOption(
-                                                'colorHeteroatoms')} />
-                                    Color heteroatoms
+                                            displayOptions.carbonLabels
+                                                !== 'none'}
+                                        onChange={(e) => {
+                                            setDisplayOptions((opt) => ({
+                                                ...opt,
+                                                carbonLabels: e.target.checked
+                                                    ? 'terminal'
+                                                    : 'none',
+                                            }));
+                                        }} />
+                                    Label carbons:
+                                </label>
+                                <label style={{ ...styles.prefsCheckRow,
+                                    ...styles.prefsIndented,
+                                    opacity:
+                                        displayOptions.carbonLabels !== 'none'
+                                            ? 1 : 0.5 }}>
+                                    <input type='radio'
+                                        name='preferences-label-carbons-mode'
+                                        data-testid={
+                                            'preferences-label-terminal-rb'}
+                                        disabled={
+                                            displayOptions.carbonLabels
+                                                === 'none'}
+                                        checked={
+                                            displayOptions.carbonLabels
+                                                === 'terminal'}
+                                        onChange={() => {
+                                            setDisplayOptions((opt) => ({
+                                                ...opt,
+                                                carbonLabels: 'terminal',
+                                            }));
+                                        }} />
+                                    Terminal only
+                                </label>
+                                <label style={{ ...styles.prefsCheckRow,
+                                    ...styles.prefsIndented,
+                                    opacity:
+                                        displayOptions.carbonLabels !== 'none'
+                                            ? 1 : 0.5 }}>
+                                    <input type='radio'
+                                        name='preferences-label-carbons-mode'
+                                        data-testid={
+                                            'preferences-label-all-rb'}
+                                        disabled={
+                                            displayOptions.carbonLabels
+                                                === 'none'}
+                                        checked={
+                                            displayOptions.carbonLabels
+                                                === 'all'}
+                                        onChange={() => {
+                                            setDisplayOptions((opt) => ({
+                                                ...opt,
+                                                carbonLabels: 'all',
+                                            }));
+                                        }} />
+                                    All
                                 </label>
                             </div>
                             <div>
@@ -4266,6 +4375,17 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                                 'explicitAbsLabels')} />
                                     Use &lsquo;ABS&rsquo; prefix
                                 </label>
+                                <label style={styles.prefsCheckRow}>
+                                    <input type='checkbox'
+                                        data-testid={
+                                            'preferences-color-heteroatoms'}
+                                        checked={
+                                            displayOptions.colorHeteroatoms}
+                                        onChange={() =>
+                                            toggleDisplayOption(
+                                                'colorHeteroatoms')} />
+                                    Color heteroatoms
+                                </label>
                             </div>
                         </div>
                         <div style={styles.modalButtons}>
@@ -4278,6 +4398,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                     colorHeteroatoms: true,
                                     showStereoLabels: true,
                                     explicitAbsLabels: false,
+                                    carbonLabels: 'none',
                                 }))}>
                                 Reset to Defaults
                             </button>
