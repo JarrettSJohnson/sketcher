@@ -1075,9 +1075,9 @@ test.describe('React Sketcher', () => {
         page,
     }) => {
         // Qt's `amino_or_nucleic_stack` flips between amino_page and
-        // nucleic_page on the AMINO/NUCLEIC toggle. The nucleic grid lands
-        // in a follow-up batch — for now we only verify the toggle swaps
-        // panels and the active state survives a round-trip.
+        // nucleic_page on the AMINO/NUCLEIC toggle. We verify the toggle
+        // swaps panels and the active state survives a round-trip; the
+        // amino + nucleic grids each get their own coverage tests.
         await page.getByTestId('mode-monomeric').click();
         await page.getByTestId('monomer-nucleic').click();
         await expect(page.getByTestId('monomer-amino'))
@@ -1085,11 +1085,56 @@ test.describe('React Sketcher', () => {
         await expect(page.getByTestId('monomer-nucleic'))
             .toHaveAttribute('aria-pressed', 'true');
         await expect(page.getByTestId('amino-acid-grid')).toHaveCount(0);
-        await expect(page.getByTestId('nucleic-placeholder')).toBeVisible();
+        await expect(page.getByTestId('nucleic-acid-grid')).toBeVisible();
 
         await page.getByTestId('monomer-amino').click();
         await expect(page.getByTestId('amino-acid-grid')).toBeVisible();
-        await expect(page.getByTestId('nucleic-placeholder')).toHaveCount(0);
+        await expect(page.getByTestId('nucleic-acid-grid')).toHaveCount(0);
+    });
+
+    test('Monomer NUCLEIC sub-mode renders RNA/DNA/Custom selectors + base letters + sugar/phosphate blocks', async ({
+        page,
+    }) => {
+        // Qt's nucleic_page (monomer_tool_widget.ui):
+        //   row 0 (colspan 4): na_rna_btn (RNA selector)
+        //   row 1 (colspan 3): na_dna_btn (DNA selector)
+        //   row 2 (colspan 3): na_custom_nt_btn (Custom popup)
+        //   rows 4-5: 3-col base letters [A C N / G U T]
+        //   row 8:    3-col building blocks [R dR P]
+        // All clicks stub through comingSoon for now (lean MolModel
+        // doesn't speak monomer yet; popups deferred).
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-nucleic').click();
+        const grid = page.getByTestId('nucleic-acid-grid');
+        await expect(grid).toBeVisible();
+        // Three wide selectors.
+        await expect(page.getByTestId('monomer-na-rna'))
+            .toHaveText('RNA');
+        await expect(page.getByTestId('monomer-na-dna'))
+            .toHaveText('DNA');
+        await expect(page.getByTestId('monomer-na-custom'))
+            .toHaveText('Custom');
+        // Six base letters in Qt grid order [A C N / G U T].
+        const baseLabels = ['A', 'C', 'N', 'G', 'U', 'T'];
+        for (const letter of baseLabels) {
+            await expect(
+                page.getByTestId(`monomer-na-${letter.toLowerCase()}`),
+            ).toHaveText(letter);
+        }
+        // Three building blocks [R dR P].
+        await expect(page.getByTestId('monomer-na-r')).toHaveText('R');
+        await expect(page.getByTestId('monomer-na-dr')).toHaveText('dR');
+        await expect(page.getByTestId('monomer-na-p')).toHaveText('P');
+        // Tooltip wires up the chemistry name.
+        await expect(page.getByTestId('monomer-na-dr'))
+            .toHaveAttribute('title', /Deoxyribose/);
+        // Clicks route to comingSoon — probe two representatives.
+        await page.getByTestId('monomer-na-rna').click();
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/RNA nucleotide/);
+        await page.getByTestId('monomer-na-g').click();
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/Guanine/);
     });
 
     test('Import menu: Paste in Text modal loads SMILES and closes', async ({

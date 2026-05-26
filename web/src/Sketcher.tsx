@@ -2249,6 +2249,32 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         ['unk', 'X', 'Unknown'],
     ];
 
+    // Nucleic-acid grid — Qt's nucleic_page in monomer_tool_widget.ui.
+    // Layout (top → bottom): wide RNA selector (row 0, colspan 4), wide
+    // DNA selector (row 1, colspan 3), wide Custom Nucleotide selector
+    // (row 2, colspan 3), then a 3-col letter grid laid out
+    // [A C N / G U T] (rows 4-5) for individual bases, and finally
+    // [R dR P] (row 8) for the sugar / deoxyribose / phosphate
+    // building blocks. Enum + display names mirror
+    // src/schrodinger/sketcher/model/sketcher_model.h::NucleicAcidTool.
+    // Like the amino tiles, every click stubs through comingSoon since
+    // the lean MolModel doesn't speak monomer yet; long-press popups
+    // (RNA/DNA base picker + Custom triple-builder) are deferred.
+    const NUCLEIC_LETTERS: Array<readonly [string, string, string]> = [
+        ['a',  'A',  'Adenine'],
+        ['c',  'C',  'Cytosine'],
+        ['n',  'N',  'Any base'],
+        ['g',  'G',  'Guanine'],
+        ['u',  'U',  'Uracil'],
+        ['t',  'T',  'Thymine'],
+    ];
+    const NUCLEIC_BUILDING_BLOCKS:
+        Array<readonly [string, string, string]> = [
+        ['r',  'R',  'Ribose'],
+        ['dr', 'dR', 'Deoxyribose'],
+        ['p',  'P',  'Phosphate'],
+    ];
+
     // Build the C++ MolModel once per mount, tear it down on unmount.
     useEffect(() => {
         const model = new Module.MolModel();
@@ -4637,9 +4663,54 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         </div>
                         )}
                         {monomerSubMode === 'nucleic' && (
-                        <div style={styles.monomericPlaceholder}
-                            data-testid='nucleic-placeholder'>
-                            Nucleic-acid grid coming soon
+                        <div style={styles.nucleicGrid}
+                            data-testid='nucleic-acid-grid'>
+                            <button type='button'
+                                style={styles.nucleicWideBtn}
+                                data-testid='monomer-na-rna'
+                                title='Add an RNA nucleotide (press & hold to pick a base)'
+                                onClick={() => comingSoon(
+                                    'Add RNA nucleotide')}>
+                                RNA
+                            </button>
+                            <button type='button'
+                                style={styles.nucleicWideBtn}
+                                data-testid='monomer-na-dna'
+                                title='Add a DNA nucleotide (press & hold to pick a base)'
+                                onClick={() => comingSoon(
+                                    'Add DNA nucleotide')}>
+                                DNA
+                            </button>
+                            <button type='button'
+                                style={styles.nucleicWideBtn}
+                                data-testid='monomer-na-custom'
+                                title='Build a custom sugar / base / phosphate nucleotide'
+                                onClick={() => comingSoon(
+                                    'Custom nucleotide')}>
+                                Custom
+                            </button>
+                            <div style={styles.elementGrid}>
+                                {NUCLEIC_LETTERS.map(
+                                    ([id, sym, full]) => (
+                                    <LetterButton key={id}
+                                        label={sym}
+                                        testid={`monomer-na-${id}`}
+                                        title={`Draw ${full} (${sym})`}
+                                        onClick={() => comingSoon(
+                                            `Draw ${full}`)} />
+                                ))}
+                            </div>
+                            <div style={styles.elementGrid}>
+                                {NUCLEIC_BUILDING_BLOCKS.map(
+                                    ([id, sym, full]) => (
+                                    <LetterButton key={id}
+                                        label={sym}
+                                        testid={`monomer-na-${id}`}
+                                        title={`Draw ${full} (${sym})`}
+                                        onClick={() => comingSoon(
+                                            `Draw ${full}`)} />
+                                ))}
+                            </div>
                         </div>
                         )}
                     </div>
@@ -5896,6 +5967,29 @@ const styles: Record<string, CSSProperties> = {
         padding: 0,
     },
     monomerTabBtnActive: { background: CHECKED_BG },
+    nucleicGrid: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+    },
+    nucleicWideBtn: {
+        // Qt's na_rna_btn / na_dna_btn / na_custom_nt_btn are 90-96 px
+        // wide × 32 px tall ModularToolButtons. Inside the 117 px sidebar
+        // (less padding) they span ~3 element-grid columns; matching the
+        // 3*ICON_BTN_SIZE + 2*gap track reproduces the Qt geometry.
+        height: ICON_BTN_SIZE,
+        width: ICON_BTN_SIZE * 3 + 4,
+        background: 'transparent',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 3,
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: 0.5,
+        color: SECTION_LABEL_COLOR,
+        cursor: 'pointer',
+        padding: 0,
+        alignSelf: 'center',
+    },
     selectSectionActive: { background: SELECT_ACTIVE_BG },
     sectionLabel: {
         fontSize: 9,
