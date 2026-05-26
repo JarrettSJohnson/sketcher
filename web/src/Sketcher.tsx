@@ -149,7 +149,12 @@ const DEFAULT_VIEW: View = { scale: DEFAULT_SCALE, offsetX: 0, offsetY: 0 };
 
 // Element colors approximate the CPK / Jmol conventions the original uses.
 // Chlorine is the deeper green used in the Qt build — pure #0c0 fights
-// the sage accent for attention.
+// the sage accent for attention. These match Qt's "Default" color scheme;
+// AVALON/CDK/DARK variants live in COLOR_PALETTES below and follow the
+// RDKit assign{Default,Avalon,CDK,DarkMode}Palette functions verbatim
+// (rdkit/.../MolDraw2D/MolDraw2DHelpers.h). The keys "default-elements"
+// and "ELEMENT_COLORS" stay public so the element picker keeps its
+// static color hint regardless of the active scheme.
 const ELEMENT_COLORS: Record<string, string> = {
     C: '#222',
     H: '#444',
@@ -161,6 +166,155 @@ const ELEMENT_COLORS: Record<string, string> = {
     Cl: '#3fa54f',
     Si: '#7d6f4a',
 };
+
+// Qt's ColorScheme enum (image_constants.h:39-48). The Preferences modal
+// holds TWO independent values — m_color_mode_combo (visible when Color
+// Heteroatoms is ON) cycles Default/Avalon/CDK/Dark; m_bw_mode_combo
+// (visible when OFF) cycles Default/Dark. The pair-aware mapping in
+// updateWidgets (rendering_settings_dialog.cpp:111-121) keeps both
+// combos in sync on the "Dark" bit so toggling Color Heteroatoms
+// preserves the user's light/dark intent. We mirror both pieces of state
+// in `displayOptions` and resolve to a single active scheme below.
+type ColorScheme = 'default' | 'avalon' | 'cdk' | 'dark';
+type BWColorScheme = 'default' | 'dark';
+type ActiveColorScheme = ColorScheme | 'bw' | 'white-black';
+
+// Render-time palette: rendering chrome (canvas BG, bond stroke, label
+// backdrop, annotation text) + per-element colors. All hex strings so
+// the canvas/SVG renderers can drop them in unchanged. Element keys are
+// the symbols emitted by the wasm side; missing keys fall back to the
+// palette's C color (Qt's `assignDefaultPalette`-style "-1" entry).
+interface RenderPalette {
+    bg: string;
+    bond: string;
+    labelBg: string;
+    annotation: string;
+    elements: Record<string, string>;
+}
+
+// f01 → 2-digit hex byte (RDKit DrawColour floats in [0,1]).
+const F = (v: number): string => {
+    const n = Math.max(0, Math.min(255, Math.round(v * 255)));
+    return n.toString(16).padStart(2, '0');
+};
+const RGB = (r: number, g: number, b: number): string =>
+    `#${F(r)}${F(g)}${F(b)}`;
+
+// Light-on-white: bond/strokes stay near-black; canvas background pure
+// white (matches Qt's QGraphicsView default; rendering_settings_dialog
+// doesn't override it for non-dark schemes).
+const LIGHT_BOND = '#222';
+// Keep the heteroatom label backdrop as the CSS keyword "white" (not
+// '#ffffff') so the SVG "transparent background" test can target the
+// background-fill rect uniquely by its hex form. Same pixel either way.
+const LIGHT_LABEL_BG = 'white';
+const LIGHT_BG = '#ffffff';
+
+// Dark-mode chrome — Qt swaps the scene BG via setBackgroundBrush and
+// the bond color to a light gray (scene.cpp / view.cpp). Pick a near-
+// black BG with light gray strokes for legibility (mirrors the
+// DARK_MODE palette's carbon color of 0.9,0.9,0.9 → #e6e6e6).
+const DARK_BOND = '#e6e6e6';
+const DARK_LABEL_BG = '#1a1a1a';
+const DARK_BG = '#1a1a1a';
+
+const COLOR_PALETTES: Record<ActiveColorScheme, RenderPalette> = {
+    // DEFAULT: preserve the existing ELEMENT_COLORS visuals exactly —
+    // we vetted these against the Qt sketcher's default-scheme output in
+    // earlier batches, so switching DEFAULT to RDKit's raw assignDefault
+    // values would visually regress the no-touch baseline.
+    'default': {
+        bg: LIGHT_BG,
+        bond: LIGHT_BOND,
+        labelBg: LIGHT_LABEL_BG,
+        annotation: '#444',
+        elements: ELEMENT_COLORS,
+    },
+    // AVALON: per assignAvalonPalette (MolDraw2DHelpers.h:96-110). F/Cl/
+    // Br all collapse to the same green (0,0.498,0); P is purple; S is
+    // brown; I is dark purple.
+    'avalon': {
+        bg: LIGHT_BG,
+        bond: LIGHT_BOND,
+        labelBg: LIGHT_LABEL_BG,
+        annotation: '#444',
+        elements: {
+            C: '#222', H: '#000', N: RGB(0, 0, 1), O: RGB(1, 0, 0),
+            F: RGB(0, 0.498, 0), Cl: RGB(0, 0.498, 0),
+            Br: RGB(0, 0.498, 0), I: RGB(0.247, 0, 0.498),
+            P: RGB(0.498, 0, 0.498), S: RGB(0.498, 0.247, 0),
+            Si: '#7d6f4a',
+        },
+    },
+    // CDK: per assignCDKPalette (MolDraw2DHelpers.h:118-133). Brighter
+    // N (0.188,0.314,0.972); pale-green F; salmon-red Br; lime Cl.
+    'cdk': {
+        bg: LIGHT_BG,
+        bond: LIGHT_BOND,
+        labelBg: LIGHT_LABEL_BG,
+        annotation: '#444',
+        elements: {
+            C: '#222', H: '#000', N: RGB(0.188, 0.314, 0.972),
+            O: RGB(1, 0.051, 0.051), F: RGB(0.565, 0.878, 0.314),
+            Cl: RGB(0.122, 0.498, 0.122), Br: RGB(0.651, 0.161, 0.161),
+            I: RGB(0.58, 0, 0.58), P: RGB(1, 0.5, 0),
+            S: RGB(0.776, 0.776, 0.173), B: RGB(1, 0.71, 0.71),
+            Si: '#7d6f4a',
+        },
+    },
+    // DARK_MODE: per assignDarkModePalette (MolDraw2DHelpers.h:136-150).
+    // Carbon = light gray; bonds + labels match. Adjusted N hue for
+    // legibility on dark BG.
+    'dark': {
+        bg: DARK_BG,
+        bond: DARK_BOND,
+        labelBg: DARK_LABEL_BG,
+        annotation: '#cccccc',
+        elements: {
+            C: DARK_BOND, H: DARK_BOND,
+            N: RGB(0.33, 0.41, 0.92), O: RGB(1, 0.2, 0.2),
+            F: RGB(0.2, 0.8, 0.8), Cl: RGB(0, 0.802, 0),
+            Br: RGB(0.71, 0.4, 0.07), I: RGB(0.89, 0.004, 1),
+            P: RGB(1, 0.5, 0), S: RGB(0.8, 0.8, 0),
+            Si: '#7d6f4a',
+        },
+    },
+    // BLACK_WHITE: Color Heteroatoms OFF on a light BG — every atom
+    // renders as the bond color (assignBWPalette only sets -1 to black).
+    'bw': {
+        bg: LIGHT_BG,
+        bond: LIGHT_BOND,
+        labelBg: LIGHT_LABEL_BG,
+        annotation: '#444',
+        elements: {},
+    },
+    // WHITE_BLACK: Color Heteroatoms OFF on a dark BG. Qt's comment
+    // (image_constants.h:46) calls this "very, very light gray structure
+    // (matches DARK_MODE's carbon color)" — every atom uses the dark
+    // bond color (#e6e6e6 light gray) against the dark BG.
+    'white-black': {
+        bg: DARK_BG,
+        bond: DARK_BOND,
+        labelBg: DARK_LABEL_BG,
+        annotation: '#cccccc',
+        elements: {},
+    },
+};
+
+function resolveActiveScheme(opt: DisplayOptions): ActiveColorScheme {
+    if (opt.colorHeteroatoms) {
+        return opt.colorScheme;
+    }
+    return opt.bwColorScheme === 'dark' ? 'white-black' : 'bw';
+}
+
+function getPalette(opt: DisplayOptions): RenderPalette {
+    return COLOR_PALETTES[resolveActiveScheme(opt)];
+}
+
+function elementColor(pal: RenderPalette, el: string): string {
+    return pal.elements[el] ?? pal.elements.C ?? pal.bond;
+}
 
 function modelFromPixel(
     canvas: HTMLCanvasElement,
@@ -307,6 +461,15 @@ interface DisplayOptions {
     // (the React default and Qt's default); TERMINAL = label carbons
     // with exactly one heavy-atom bond; ALL = label every carbon.
     carbonLabels: CarbonLabelMode;
+    // Qt's m_color_mode_combo / m_bw_mode_combo (rendering_settings_dialog.ui
+    // :137-154). The two values persist independently — only one combo is
+    // shown at a time (gated by Color Heteroatoms) but flipping back to
+    // the other preserves the user's Default/Dark/Avalon/CDK choice. The
+    // sync_comboboxes logic at rendering_settings_dialog.cpp:111-121
+    // mirrors only the "Dark" bit between them; we replicate that in the
+    // change handler so picking Dark in one combo nudges the other.
+    colorScheme: ColorScheme;
+    bwColorScheme: BWColorScheme;
 }
 type CarbonLabelMode = 'none' | 'terminal' | 'all';
 const DEFAULT_ATOM_FONT_SIZE = 13;
@@ -320,6 +483,8 @@ const DEFAULT_DISPLAY_OPTIONS: DisplayOptions = {
     bondLineWidth: DEFAULT_BOND_LINE_WIDTH,
     explicitAbsLabels: false,
     carbonLabels: 'none',
+    colorScheme: 'default',
+    bwColorScheme: 'default',
 };
 
 // Matches rdkit_extensions::ABSOLUTE_STEREO_PREFIX = "abs" + HAIR_SPACE
@@ -582,9 +747,13 @@ function drawSketch(
 ): void {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    // Original sketcher has no grid — a clean white canvas reads as the
-    // working area without competing for attention with the structure.
+    const palette = getPalette(displayOptions);
+    // Fill (not just clear) so dark-mode schemes get their BG color
+    // instead of the default-transparent canvas underneath.
+    ctx.fillStyle = palette.bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // Original sketcher has no grid — a clean working-area canvas reads
+    // without competing for attention with the structure.
 
     const BOND_STROKE = displayOptions.bondLineWidth;
     const BOND_DOUBLE_OFFSET = 4.5;
@@ -648,8 +817,8 @@ function drawSketch(
             ctx.stroke();
             ctx.lineCap = 'butt';
         }
-        ctx.strokeStyle = '#222';
-        ctx.fillStyle = '#222';
+        ctx.strokeStyle = palette.bond;
+        ctx.fillStyle = palette.bond;
         // Stereo bonds: wedge is a filled triangle expanding from begin to
         // end atom; dash is a sequence of perpendicular bars that grow in
         // length toward the end atom. Both replace the plain line stroke
@@ -862,24 +1031,24 @@ function drawSketch(
             a.el === 'C' && !hasCharge && !isPending && !isHover && !a.sel
             && !shouldLabelCarbon(i, a);
         if (dotOnly) {
-            ctx.fillStyle = '#333';
+            ctx.fillStyle = palette.bond;
             ctx.beginPath();
             ctx.arc(px, py, 2.5, 0, 2 * Math.PI);
             ctx.fill();
             continue;
         }
         if (a.el !== 'C') {
-            // White backdrop punches a hole in any bond line passing through.
-            ctx.fillStyle = 'white';
+            // Backdrop punches a hole in any bond line passing through —
+            // matches the scheme's BG so dark-mode doesn't leave a white
+            // square behind the letter.
+            ctx.fillStyle = palette.labelBg;
             ctx.fillRect(px - 9, py - 9, 18, 18);
         }
-        // ConfigureView "Heteroatom Colors" toggle. When OFF, every atom
-        // renders in the mono "carbon" color, matching Qt's behavior
-        // when COLOR_HETEROATOMS is unchecked (model/sketcher_model.cpp:
-        // 348-354 swaps the color scheme to the all-mono variant).
-        ctx.fillStyle = displayOptions.colorHeteroatoms
-            ? (ELEMENT_COLORS[a.el] ?? '#333')
-            : ELEMENT_COLORS.C;
+        // ConfigureView "Heteroatom Colors" toggle gates which palette
+        // is active (resolveActiveScheme flips to BW/WHITE_BLACK when
+        // OFF). Element lookups fall back to the palette's carbon color
+        // for unknown symbols.
+        ctx.fillStyle = elementColor(palette, a.el);
         if (a.el === 'C' && a.sel && !isPending && !isHover && !hasCharge
             && !shouldLabelCarbon(i, a)) {
             ctx.beginPath();
@@ -944,7 +1113,7 @@ function drawSketch(
         // label (matches the pre-Batch-24 visual default 10/13 px ratio).
         const stereoFontPx = Math.max(7, Math.round(ATOM_FONT_PX * 10 / 13));
         ctx.font = `${stereoFontPx}px sans-serif`;
-        ctx.fillStyle = '#333333';
+        ctx.fillStyle = palette.annotation;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         for (const a of rd.atoms) {
@@ -1100,13 +1269,15 @@ function buildSketchSvg(
     const esc = (s: string): string =>
         s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const parts: string[] = [];
+    const palette = getPalette(displayOptions);
     parts.push(
         `<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}' ` +
         `viewBox='0 0 ${w} ${h}'>`,
     );
     if (includeBackground) {
         parts.push(
-            `<rect x='0' y='0' width='${w}' height='${h}' fill='#ffffff'/>`,
+            `<rect x='0' y='0' width='${w}' height='${h}' ` +
+            `fill='${palette.bg}'/>`,
         );
     }
     // pixelFromModel only reads width/height — measureCanvas is sized to (w,h)
@@ -1165,7 +1336,7 @@ function buildSketchSvg(
             parts.push(
                 `<polygon points='${f(p1.px)},${f(p1.py)} ` +
                 `${f(p2.px + ox)},${f(p2.py + oy)} ` +
-                `${f(p2.px - ox)},${f(p2.py - oy)}' fill='#222'/>`,
+                `${f(p2.px - ox)},${f(p2.py - oy)}' fill='${palette.bond}'/>`,
             );
         } else if (dir === BOND_DIR_DASH && b.o === 1) {
             const dx = p2.px - p1.px;
@@ -1184,7 +1355,7 @@ function buildSketchSvg(
                 parts.push(
                     `<line x1='${f(cx + nx * halfW)}' y1='${f(cy + ny * halfW)}' ` +
                     `x2='${f(cx - nx * halfW)}' y2='${f(cy - ny * halfW)}' ` +
-                    `stroke='#222' stroke-width='1.6'/>`,
+                    `stroke='${palette.bond}' stroke-width='1.6'/>`,
                 );
             }
         } else if (dir === BOND_DIR_UNKNOWN && b.o === 1) {
@@ -1207,7 +1378,7 @@ function buildSketchSvg(
             }
             parts.push(
                 `<polyline points='${pts.join(' ')}' fill='none' ` +
-                `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+                `stroke='${palette.bond}' stroke-width='${BOND_STROKE}'/>`,
             );
         } else if (dir === BOND_DIR_EITHERDOUBLE && b.o === 2) {
             const dx = p2.px - p1.px;
@@ -1218,16 +1389,16 @@ function buildSketchSvg(
             parts.push(
                 `<line x1='${f(p1.px + ox)}' y1='${f(p1.py + oy)}' ` +
                 `x2='${f(p2.px - ox)}' y2='${f(p2.py - oy)}' ` +
-                `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+                `stroke='${palette.bond}' stroke-width='${BOND_STROKE}'/>`,
                 `<line x1='${f(p1.px - ox)}' y1='${f(p1.py - oy)}' ` +
                 `x2='${f(p2.px + ox)}' y2='${f(p2.py + oy)}' ` +
-                `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+                `stroke='${palette.bond}' stroke-width='${BOND_STROKE}'/>`,
             );
         } else if (b.arom) {
             parts.push(
                 `<line x1='${f(p1.px)}' y1='${f(p1.py)}' ` +
                 `x2='${f(p2.px)}' y2='${f(p2.py)}' ` +
-                `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+                `stroke='${palette.bond}' stroke-width='${BOND_STROKE}'/>`,
             );
             const dx = p2.px - p1.px;
             const dy = p2.py - p1.py;
@@ -1248,14 +1419,14 @@ function buildSketchSvg(
             parts.push(
                 `<line x1='${f(sx1)}' y1='${f(sy1)}' ` +
                 `x2='${f(sx2)}' y2='${f(sy2)}' ` +
-                `stroke='#222' stroke-width='1.5' ` +
+                `stroke='${palette.bond}' stroke-width='1.5' ` +
                 `stroke-dasharray='5,3'/>`,
             );
         } else {
             parts.push(
                 `<line x1='${f(p1.px)}' y1='${f(p1.py)}' ` +
                 `x2='${f(p2.px)}' y2='${f(p2.py)}' ` +
-                `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+                `stroke='${palette.bond}' stroke-width='${BOND_STROKE}'/>`,
             );
         }
         const isCrossedDouble = dir === BOND_DIR_EITHERDOUBLE && b.o === 2;
@@ -1268,13 +1439,13 @@ function buildSketchSvg(
             parts.push(
                 `<line x1='${f(p1.px + ox)}' y1='${f(p1.py + oy)}' ` +
                 `x2='${f(p2.px + ox)}' y2='${f(p2.py + oy)}' ` +
-                `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+                `stroke='${palette.bond}' stroke-width='${BOND_STROKE}'/>`,
             );
             if (b.o === 3) {
                 parts.push(
                     `<line x1='${f(p1.px - ox)}' y1='${f(p1.py - oy)}' ` +
                     `x2='${f(p2.px - ox)}' y2='${f(p2.py - oy)}' ` +
-                    `stroke='#222' stroke-width='${BOND_STROKE}'/>`,
+                    `stroke='${palette.bond}' stroke-width='${BOND_STROKE}'/>`,
                 );
             }
         }
@@ -1309,19 +1480,18 @@ function buildSketchSvg(
             && !shouldLabelCarbon(i, a);
         if (dotOnly) {
             parts.push(
-                `<circle cx='${f(ax)}' cy='${f(ay)}' r='2.5' fill='#333'/>`,
+                `<circle cx='${f(ax)}' cy='${f(ay)}' r='2.5' ` +
+                `fill='${palette.bond}'/>`,
             );
             continue;
         }
         if (a.el !== 'C') {
             parts.push(
                 `<rect x='${f(ax - 9)}' y='${f(ay - 9)}' ` +
-                `width='18' height='18' fill='white'/>`,
+                `width='18' height='18' fill='${palette.labelBg}'/>`,
             );
         }
-        const labelColor = displayOptions.colorHeteroatoms
-            ? (ELEMENT_COLORS[a.el] ?? '#333')
-            : ELEMENT_COLORS.C;
+        const labelColor = elementColor(palette, a.el);
         if (a.el === 'C' && a.sel && !hasCharge && !shouldLabelCarbon(i, a)) {
             parts.push(
                 `<circle cx='${f(ax)}' cy='${f(ay)}' r='2.5' ` +
@@ -1401,7 +1571,7 @@ function buildSketchSvg(
             const text = renderedStereoLabel(
                 a.stereo, displayOptions.explicitAbsLabels);
             parts.push(
-                `<text x='${f(lx)}' y='${f(ly)}' fill='#333333' ` +
+                `<text x='${f(lx)}' y='${f(ly)}' fill='${palette.annotation}' ` +
                 `font-family='sans-serif' font-size='${stereoFontPx}' ` +
                 `text-anchor='middle' dominant-baseline='central'>` +
                 `${esc(text)}</text>`,
@@ -3871,6 +4041,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         height={CANVAS_H}
                         style={{
                             ...styles.canvas,
+                            // Background must match the renderer's
+                            // palette so dark-mode schemes don't show a
+                            // white frame around the painted area.
+                            background: getPalette(displayOptions).bg,
                             cursor: tool === 'move-rotate' ? 'move'
                                 : tool === 'erase' ? 'not-allowed'
                                 : 'crosshair',
@@ -4386,6 +4560,79 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                                 'colorHeteroatoms')} />
                                     Color heteroatoms
                                 </label>
+                                {/* Qt's m_color_mode_combo / m_bw_mode_combo
+                                    (rendering_settings_dialog.ui:137-154 +
+                                    rendering_settings_dialog.cpp:67-82,
+                                    111-130). Only one combo shows at a
+                                    time, gated by Color Heteroatoms.
+                                    Picking "Dark" in one combo mirrors
+                                    the Dark bit to the other (mirrors
+                                    the sync_comboboxes lambda) so
+                                    toggling Color Heteroatoms preserves
+                                    the user's light/dark intent. */}
+                                <label style={{ ...styles.prefsCheckRow,
+                                    ...styles.prefsIndented }}>
+                                    Color mode:
+                                    {displayOptions.colorHeteroatoms ? (
+                                        <select
+                                            data-testid={
+                                                'preferences-color-mode'}
+                                            value={displayOptions.colorScheme}
+                                            onChange={(e) => {
+                                                const v: ColorScheme =
+                                                    e.target.value as ColorScheme;
+                                                setDisplayOptions((opt) => ({
+                                                    ...opt,
+                                                    colorScheme: v,
+                                                    bwColorScheme:
+                                                        v === 'dark'
+                                                            ? 'dark'
+                                                            : 'default',
+                                                }));
+                                            }}>
+                                            <option value='default'>
+                                                Default
+                                            </option>
+                                            <option value='avalon'>
+                                                Avalon
+                                            </option>
+                                            <option value='cdk'>
+                                                CDK
+                                            </option>
+                                            <option value='dark'>
+                                                Dark
+                                            </option>
+                                        </select>
+                                    ) : (
+                                        <select
+                                            data-testid={
+                                                'preferences-bw-mode'}
+                                            value={
+                                                displayOptions.bwColorScheme}
+                                            onChange={(e) => {
+                                                const v: BWColorScheme =
+                                                    e.target.value as BWColorScheme;
+                                                setDisplayOptions((opt) => ({
+                                                    ...opt,
+                                                    bwColorScheme: v,
+                                                    colorScheme:
+                                                        v === 'dark'
+                                                            ? 'dark'
+                                                            : (opt.colorScheme
+                                                                === 'dark'
+                                                                ? 'default'
+                                                                : opt.colorScheme),
+                                                }));
+                                            }}>
+                                            <option value='default'>
+                                                Default
+                                            </option>
+                                            <option value='dark'>
+                                                Dark
+                                            </option>
+                                        </select>
+                                    )}
+                                </label>
                             </div>
                         </div>
                         <div style={styles.modalButtons}>
@@ -4399,6 +4646,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                     showStereoLabels: true,
                                     explicitAbsLabels: false,
                                     carbonLabels: 'none',
+                                    colorScheme: 'default',
+                                    bwColorScheme: 'default',
                                 }))}>
                                 Reset to Defaults
                             </button>

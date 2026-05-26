@@ -1352,6 +1352,107 @@ test.describe('React Sketcher', () => {
         expect(countC(svgAfterReset)).toBe(0);
     });
 
+    test('Preferences: Color mode switches palette + Dark scheme swaps canvas BG; combos sync per Color Heteroatoms', async ({
+        page,
+    }) => {
+        // Qt's m_color_mode_combo / m_bw_mode_combo
+        // (rendering_settings_dialog.ui + rendering_settings_dialog.cpp).
+        // Combos hold independent state; only one is visible at a time
+        // (Color Heteroatoms gates). Picking Dark in either combo
+        // mirrors the Dark bit to the hidden combo. Switching to CDK /
+        // Avalon shifts the nitrogen color away from the default
+        // ELEMENT_COLORS value.
+        await loadText(page, 'N');
+
+        const fs = await import('node:fs/promises');
+        const saveSvg = async () => {
+            await page.getByTestId('export').click();
+            await page.getByTestId('export-save-image').click();
+            await page.getByTestId('save-image-format-select')
+                .selectOption('svg');
+            const dl = page.waitForEvent('download');
+            await page.getByTestId('save-image-save').click();
+            const d = await dl;
+            const body = await fs.readFile(await d.path(), 'utf8');
+            await expect(page.getByTestId('save-image-modal'))
+                .toHaveCount(0);
+            return body;
+        };
+
+        // Default scheme: N renders at the existing ELEMENT_COLORS value
+        // (#1f4faa). Background is white.
+        const svgDefault = await saveSvg();
+        expect(svgDefault).toMatch(
+            /<text [^>]*fill='#1f4faa'[^>]*>N<\/text>/);
+        expect(svgDefault).toContain(`fill='#ffffff'`);
+
+        // Switch to CDK: N color shifts to the CDK blue (0.188, 0.314,
+        // 0.972 → #3050f8).
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        const colorMode = page.getByTestId('preferences-color-mode');
+        await expect(colorMode).toBeVisible();
+        await expect(colorMode).toHaveValue('default');
+        await expect(page.getByTestId('preferences-bw-mode')).toHaveCount(0);
+        await colorMode.selectOption('cdk');
+        await page.getByTestId('preferences-close').click();
+        const svgCDK = await saveSvg();
+        expect(svgCDK).toMatch(/<text [^>]*fill='#3050f8'[^>]*>N<\/text>/);
+
+        // Switch to Dark: BG flips to near-black; N uses the dark-mode
+        // palette value (#5469eb from 0.33, 0.41, 0.92).
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        await page.getByTestId('preferences-color-mode').selectOption('dark');
+        await page.getByTestId('preferences-close').click();
+        const svgDark = await saveSvg();
+        expect(svgDark).toContain(`fill='#1a1a1a'`);
+        expect(svgDark).toMatch(/<text [^>]*fill='#5469eb'[^>]*>N<\/text>/);
+
+        // Turn Color Heteroatoms OFF: the color combo gets hidden, the
+        // B&W combo appears, and because we were in Dark the B&W combo
+        // starts on Dark (the sync_comboboxes mirror). BG stays dark; N
+        // renders in the carbon (mono) color, not its element color.
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        await page.getByTestId('preferences-color-heteroatoms').click();
+        const bwMode = page.getByTestId('preferences-bw-mode');
+        await expect(bwMode).toBeVisible();
+        await expect(bwMode).toHaveValue('dark');
+        await expect(page.getByTestId('preferences-color-mode')).toHaveCount(0);
+        await page.getByTestId('preferences-close').click();
+        const svgBwDark = await saveSvg();
+        expect(svgBwDark).toContain(`fill='#1a1a1a'`);
+        // N rendered in the light-gray bond color (#e6e6e6), not its
+        // element color.
+        expect(svgBwDark).toMatch(
+            /<text [^>]*fill='#e6e6e6'[^>]*>N<\/text>/);
+
+        // Flip B&W back to Default: BG returns to white; the hidden
+        // color combo follows the Dark→Default sync so re-enabling
+        // Color Heteroatoms gives Default, not the user's stale Dark.
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        await page.getByTestId('preferences-bw-mode').selectOption('default');
+        await page.getByTestId('preferences-color-heteroatoms').click();
+        await expect(page.getByTestId('preferences-color-mode'))
+            .toHaveValue('default');
+        await page.getByTestId('preferences-close').click();
+        const svgBackToDefault = await saveSvg();
+        expect(svgBackToDefault).toMatch(
+            /<text [^>]*fill='#1f4faa'[^>]*>N<\/text>/);
+        expect(svgBackToDefault).toContain(`fill='#ffffff'`);
+
+        // Reset to Defaults pulls both combos back to 'default'.
+        await page.getByTestId('settings').click();
+        await page.getByTestId('view-preferences').click();
+        await page.getByTestId('preferences-color-mode')
+            .selectOption('avalon');
+        await page.getByTestId('preferences-reset').click();
+        await expect(page.getByTestId('preferences-color-mode'))
+            .toHaveValue('default');
+    });
+
     test('Configure View: turning Heteroatom Colors off renders nitrogen in the carbon mono color', async ({
         page,
     }) => {
