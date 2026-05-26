@@ -4095,4 +4095,164 @@ test.describe('React Sketcher', () => {
         }
     });
 
+    test('selection context menu: Cut writes V3000 to clipboard and removes the selection', async ({
+        page,
+    }) => {
+        // Qt's CutCopyActionManager (cut_copy_action_manager.cpp:131-135):
+        // Cut = copy(SELECTION, MDL_MOLV3000) + removeSelected. React port
+        // mirrors via doCut → toFormatString('mdl_molv3000', true) +
+        // model.deleteSelected().
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-cut').click();
+        await expect(page.getByTestId('sel-context-menu')).toHaveCount(0);
+        const clip = await readClipboard(page);
+        expect(clip).toContain('V30 BEGIN CTAB');
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(0);
+    });
+
+    // -------- Batch 37: bond right-click context menu --------
+    // Mirrors Qt's BondContextMenu (menu/bond_context_menu.cpp). Right-click
+    // on a bond's midpoint when no selection is active routes to BondContext
+    // rather than BackgroundContext. Active bond-type / bond-dir items show
+    // a leading check; submenus that need query bond support (Other Type,
+    // Query, Topology) and Flip Substituent (needs adjacency data) are
+    // intentionally omitted.
+    test('bond context menu: right-click on a bond opens BondContextMenu (not Background, not Selection)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Two carbons side-by-side, then a single bond between them.
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        // Switch back to select so right-click doesn't conflict with a draw
+        // tool. The Bond hit-test runs regardless of active tool.
+        await page.getByTestId('tool-select').click();
+        // Right-click on the bond midpoint at ~ (190, 180).
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await expect(page.getByTestId('bond-context-menu')).toBeVisible();
+        await expect(page.getByTestId('bg-context-menu')).toHaveCount(0);
+        await expect(page.getByTestId('sel-context-menu')).toHaveCount(0);
+    });
+
+    test('bond context menu: action set matches Qt (Single/Double/Triple/Aromatic, Up/Down/None, Delete)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        for (const id of [
+            'bond-ctx-single', 'bond-ctx-double',
+            'bond-ctx-triple', 'bond-ctx-aromatic',
+            'bond-ctx-wedge-up', 'bond-ctx-wedge-down', 'bond-ctx-wedge-none',
+            'bond-ctx-delete',
+        ]) {
+            await expect(page.getByTestId(id)).toBeVisible();
+        }
+        // Active bond is single → "Single" gets the check; others don't.
+        await expect(page.getByTestId('bond-ctx-single'))
+            .toContainText('✓ Single');
+        await expect(page.getByTestId('bond-ctx-double'))
+            .not.toContainText('✓');
+    });
+
+    test('bond context menu: Double promotes the bond order (Qt setBondTypeUndoable=DOUBLE)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        let rd = await snapshot(page);
+        expect(rd.bonds[0].o).toBe(1);
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-double').click();
+        await expect(page.getByTestId('bond-context-menu')).toHaveCount(0);
+        rd = await snapshot(page);
+        expect(rd.bonds[0].o).toBe(2);
+        // Undo restores to single.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].o).toBe(1);
+    });
+
+    test('bond context menu: Up sets the wedge dir; None clears it', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        let rd = await snapshot(page);
+        expect(rd.bonds[0].dir).toBeUndefined();
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-wedge-up').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].dir).toBe(1); // BEGINWEDGE
+        // Reopen the menu — "Up" should now carry the check.
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await expect(page.getByTestId('bond-ctx-wedge-up'))
+            .toContainText('✓ Up');
+        await page.getByTestId('bond-ctx-wedge-none').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].dir).toBeUndefined();
+    });
+
+    test('bond context menu: Delete removes the bond', async ({ page }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        let rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(1);
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-delete').click();
+        await expect(page.getByTestId('bond-context-menu')).toHaveCount(0);
+        rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(0);
+        // Atoms still there — Delete-bond doesn't touch atoms.
+        expect(rd.atoms).toHaveLength(2);
+    });
+
+    test('bond context menu: outside-click dismisses without mutating the bond', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        const before = await snapshot(page);
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await expect(page.getByTestId('bond-context-menu')).toBeVisible();
+        await page.getByTestId('sketcher-status').click();
+        await expect(page.getByTestId('bond-context-menu')).toHaveCount(0);
+        const after = await snapshot(page);
+        expect(after.bonds).toHaveLength(before.bonds.length);
+        expect(after.bonds[0].o).toBe(before.bonds[0].o);
+        expect(after.bonds[0].dir).toBe(before.bonds[0].dir);
+    });
+
 });

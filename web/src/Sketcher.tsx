@@ -2010,6 +2010,17 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [selContextMenu, setSelContextMenu] = useState<
         { x: number; y: number; nAtoms: number; nBonds: number } | null
     >(null);
+    // Per-bond right-click context menu — mirrors Qt's BondContextMenu
+    // (menu/bond_context_menu.cpp). Opens when right-click hits a bond and
+    // no selection is active. `bondIdx` is the index in the render
+    // description's bond array; `a`/`b` are its endpoint atom indices.
+    // `type`/`dir` are RDKit::Bond::BondType / BondDir as ints (passed
+    // through from the render description so the menu can show the
+    // current state without re-querying the model).
+    const [bondContextMenu, setBondContextMenu] = useState<
+        { x: number; y: number; bondIdx: number; a: number; b: number;
+          type: number; dir: number } | null
+    >(null);
     // Top-bar Import / Export dropdowns + their modals. Mirrors Qt's
     // ImportMenu / ExportMenu (menu/sketcher_top_bar_menus.cpp) + the
     // PasteInTextDialog / FileExportDialog popups they open.
@@ -2465,6 +2476,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const helpMenuWrapperRef = useRef<HTMLDivElement | null>(null);
     const bgContextMenuRef = useRef<HTMLDivElement | null>(null);
     const selContextMenuRef = useRef<HTMLDivElement | null>(null);
+    const bondContextMenuRef = useRef<HTMLDivElement | null>(null);
     // Bounds-clamp the right-click menus within the viewport — Qt's QMenu
     // does this automatically (flips upward / leftward at edges). The
     // background menu has 21 items and tall layouts can easily push the
@@ -2499,10 +2511,25 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             el.style.top = `${y}px`;
         }
     }, [selContextMenu]);
+    useLayoutEffect(() => {
+        if (!bondContextMenu) return;
+        const el = bondContextMenuRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        let { x, y } = bondContextMenu;
+        if (x + rect.width > vw) x = Math.max(0, vw - rect.width - 4);
+        if (y + rect.height > vh) y = Math.max(0, vh - rect.height - 4);
+        if (x !== bondContextMenu.x || y !== bondContextMenu.y) {
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+        }
+    }, [bondContextMenu]);
     useEffect(() => {
         if (!moreMenuOpen && !importMenuOpen && !exportMenuOpen
             && !configureViewOpen && !helpMenuOpen && !bgContextMenu
-            && !selContextMenu) return;
+            && !selContextMenu && !bondContextMenu) return;
         function onDocMouseDown(e: globalThis.MouseEvent): void {
             const t = e.target as Node;
             if (moreMenuOpen && moreMenuWrapperRef.current
@@ -2533,13 +2560,17 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 && !selContextMenuRef.current.contains(t)) {
                 setSelContextMenu(null);
             }
+            if (bondContextMenu && bondContextMenuRef.current
+                && !bondContextMenuRef.current.contains(t)) {
+                setBondContextMenu(null);
+            }
         }
         document.addEventListener('mousedown', onDocMouseDown);
         return () => {
             document.removeEventListener('mousedown', onDocMouseDown);
         };
     }, [moreMenuOpen, importMenuOpen, exportMenuOpen, configureViewOpen,
-        helpMenuOpen, bgContextMenu, selContextMenu]);
+        helpMenuOpen, bgContextMenu, selContextMenu, bondContextMenu]);
 
     const onCanvasClick = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
@@ -3371,28 +3402,29 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         }
     }, [dragShape, chainDrag]);
 
-    // Right-click on the canvas → route to the selection-context menu when
-    // a selection exists, otherwise the background-context menu. Mirrors
-    // Qt's SketcherView::contextMenuEvent dispatch
-    // (molviewer/sketcher_view.cpp): if hit-test lands on a selected item
-    // it opens SelectionContextMenu; otherwise it opens
-    // BackgroundContextMenu. We don't have item hit-test yet so we collapse
-    // the two cases to "any active selection → selection menu", which is
-    // sound because the only way to right-click off an item with selection
-    // present is via a deliberate background click — and in that case Qt's
-    // existing behavior is to keep the selection and act on it, same as
-    // here.
+    // Right-click on the canvas — Qt's SketcherView::contextMenuEvent
+    // (molviewer/sketcher_view.cpp) dispatches to one of:
+    //   SelectionContextMenu (if hit-test hit a selected item)
+    //   AtomContextMenu / BondContextMenu / etc. (if hit-test hit a single
+    //     unselected item)
+    //   BackgroundContextMenu (else)
+    // The React port currently implements: selection → SelectionContext;
+    // hits a bond (no selection) → BondContext; else → BackgroundContext.
+    // Atom right-click is a follow-up — selection-context still works for
+    // the "select-then-act" path.
     const onCanvasContextMenu = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
             e.preventDefault();
             const m = modelRef.current;
-            // Snapshot scene state once — used by both menu paths.
+            const canvas = canvasRef.current;
+            // Snapshot scene state once — used by all menu paths.
             let sceneEmpty = true;
             let selAtoms = 0;
             let selBonds = 0;
+            let rd: RenderDesc = BLANK_DESC;
             if (m) {
                 try {
-                    const rd = JSON.parse(m.description()) as RenderDesc;
+                    rd = JSON.parse(m.description()) as RenderDesc;
                     if (rd.atoms.length > 0) sceneEmpty = false;
                     if (rd.nonMol && rd.nonMol.length > 0) sceneEmpty = false;
                     for (const a of rd.atoms) if (a.sel) selAtoms++;
@@ -3401,6 +3433,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     // empty description → keep defaults
                 }
             }
+            // Selection menu wins over per-item menus — matches Qt's
+            // dispatch: a right-click anywhere while a selection is active
+            // operates on the selection.
             if (selAtoms > 0 || selBonds > 0) {
                 setSelContextMenu({
                     x: e.clientX,
@@ -3409,10 +3444,38 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     nBonds: selBonds,
                 });
                 setBgContextMenu(null);
-            } else {
-                setBgContextMenu({ x: e.clientX, y: e.clientY, sceneEmpty });
-                setSelContextMenu(null);
+                setBondContextMenu(null);
+                return;
             }
+            // Bond hit-test for the per-bond menu — needs canvas to compute
+            // pixel coords relative to the canvas viewport.
+            if (canvas && rd.bonds.length > 0) {
+                const rect = canvas.getBoundingClientRect();
+                const px = e.clientX - rect.left;
+                const py = e.clientY - rect.top;
+                const bondIdx = nearestBondIndex(
+                    canvas, viewRef.current, rd, px, py,
+                );
+                if (bondIdx >= 0) {
+                    const bd = rd.bonds[bondIdx];
+                    setBondContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        bondIdx,
+                        a: bd.a,
+                        b: bd.b,
+                        type: bd.o,
+                        dir: bd.dir ?? 0,
+                    });
+                    setBgContextMenu(null);
+                    setSelContextMenu(null);
+                    return;
+                }
+            }
+            // No item hit → background context menu.
+            setBgContextMenu({ x: e.clientX, y: e.clientY, sceneEmpty });
+            setSelContextMenu(null);
+            setBondContextMenu(null);
         },
         [],
     );
@@ -5037,10 +5100,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             {/* Selection context menu — mirrors Qt's SelectionContextMenu
                 (menu/selection_context_menu.cpp). Order/labels follow that
                 file; sections that need infrastructure not yet ported are
-                intentionally omitted (Cut: no separate cut handler;
-                Clean Up Region: needs is_contiguous_region; Modify Atoms /
-                Modify Bonds submenus: large dependency; Add to Selection:
-                needs bracket subgroup + variable attachment bond). Flip is
+                intentionally omitted (Clean Up Region: needs
+                is_contiguous_region; Modify Atoms / Modify Bonds submenus:
+                large dependency; Add to Selection: needs bracket subgroup +
+                variable attachment bond). Flip is
                 always rendered as the "Flip Molecule" submenu form
                 (Horizontally/Vertically) since the bond-crossing-count
                 logic that picks between "Flip" and "Flip Molecule" needs
@@ -5064,6 +5127,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             doInvertSelection();
                         }} />
                     <div style={styles.moreDivider} />
+                    <MoreItem label='Cut' testid='sel-ctx-cut'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            void doCut();
+                        }} />
                     <MoreItem label='Copy' testid='sel-ctx-copy'
                         onClick={() => {
                             setSelContextMenu(null);
@@ -5148,6 +5216,113 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         onClick={() => {
                             setSelContextMenu(null);
                             doDeleteSelected();
+                        }} />
+                </div>
+            )}
+            {/* Bond context menu — mirrors Qt's BondContextMenu
+                (menu/bond_context_menu.cpp). Order/labels follow that file.
+                Sections that need infrastructure not yet ported are
+                intentionally omitted (Flip Substituent: needs adjacency +
+                non-ring detection; Other Type / Query / Topology submenus:
+                need query bond support in the lean MolModel). Active
+                bond-type / bond-dir items show a leading checkmark so the
+                user can see the current state — Qt uses checkable QAction
+                groups for the same purpose. */}
+            {bondContextMenu && (
+                <div
+                    ref={bondContextMenuRef}
+                    style={{
+                        ...styles.bgContextMenu,
+                        left: bondContextMenu.x,
+                        top: bondContextMenu.y,
+                    }}
+                    data-testid='bond-context-menu'
+                    onContextMenu={(e) => e.preventDefault()}
+                >
+                    <MoreItem
+                        label={(bondContextMenu.type === 1 ? '✓ ' : '   ')
+                            + 'Single'}
+                        testid='bond-ctx-single'
+                        onClick={() => {
+                            const bm = bondContextMenu;
+                            setBondContextMenu(null);
+                            modelRef.current?.setBondTypeUndoable(
+                                bm.a, bm.b, 1,
+                            );
+                        }} />
+                    <MoreItem
+                        label={(bondContextMenu.type === 2 ? '✓ ' : '   ')
+                            + 'Double'}
+                        testid='bond-ctx-double'
+                        onClick={() => {
+                            const bm = bondContextMenu;
+                            setBondContextMenu(null);
+                            modelRef.current?.setBondTypeUndoable(
+                                bm.a, bm.b, 2,
+                            );
+                        }} />
+                    <MoreItem
+                        label={(bondContextMenu.type === 3 ? '✓ ' : '   ')
+                            + 'Triple'}
+                        testid='bond-ctx-triple'
+                        onClick={() => {
+                            const bm = bondContextMenu;
+                            setBondContextMenu(null);
+                            modelRef.current?.setBondTypeUndoable(
+                                bm.a, bm.b, 3,
+                            );
+                        }} />
+                    <MoreItem
+                        label={(bondContextMenu.type === 12 ? '✓ ' : '   ')
+                            + 'Aromatic'}
+                        testid='bond-ctx-aromatic'
+                        onClick={() => {
+                            const bm = bondContextMenu;
+                            setBondContextMenu(null);
+                            modelRef.current?.setBondTypeUndoable(
+                                bm.a, bm.b, 12,
+                            );
+                        }} />
+                    <div style={styles.moreDivider} />
+                    <MoreItem
+                        label={(bondContextMenu.dir === 1 ? '✓ ' : '   ')
+                            + 'Up'}
+                        testid='bond-ctx-wedge-up'
+                        onClick={() => {
+                            const bm = bondContextMenu;
+                            setBondContextMenu(null);
+                            modelRef.current?.setBondDirUndoable(
+                                bm.a, bm.b, 1,
+                            );
+                        }} />
+                    <MoreItem
+                        label={(bondContextMenu.dir === 2 ? '✓ ' : '   ')
+                            + 'Down'}
+                        testid='bond-ctx-wedge-down'
+                        onClick={() => {
+                            const bm = bondContextMenu;
+                            setBondContextMenu(null);
+                            modelRef.current?.setBondDirUndoable(
+                                bm.a, bm.b, 2,
+                            );
+                        }} />
+                    <MoreItem
+                        label={(bondContextMenu.dir === 0 ? '✓ ' : '   ')
+                            + 'None'}
+                        testid='bond-ctx-wedge-none'
+                        onClick={() => {
+                            const bm = bondContextMenu;
+                            setBondContextMenu(null);
+                            modelRef.current?.setBondDirUndoable(
+                                bm.a, bm.b, 0,
+                            );
+                        }} />
+                    <div style={styles.moreDivider} />
+                    <MoreItem label='Delete' testid='bond-ctx-delete'
+                        onClick={() => {
+                            const bm = bondContextMenu;
+                            setBondContextMenu(null);
+                            modelRef.current?.removeBond(bm.a, bm.b);
                         }} />
                 </div>
             )}
