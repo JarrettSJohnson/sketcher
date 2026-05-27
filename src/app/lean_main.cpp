@@ -629,6 +629,10 @@ class MolModelJS
     {
         m_model.setAtomElement(idx, atomic_num);
     }
+    void setElementForSelectedAtoms(unsigned int atomic_num)
+    {
+        m_model.setElementForSelectedAtoms(atomic_num);
+    }
     void loadFromSmiles(const std::string& smiles)
     {
         m_model.loadFromSmiles(smiles);
@@ -865,6 +869,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("setSelectedAtomsToHydrogenIsotope",
                   &MolModelJS::setSelectedAtomsToHydrogenIsotope)
         .function("setAtomElement", &MolModelJS::setAtomElement)
+        .function("setElementForSelectedAtoms",
+                  &MolModelJS::setElementForSelectedAtoms)
         .function("loadFromSmiles", &MolModelJS::loadFromSmiles)
         .function("loadFromText", &MolModelJS::loadFromText)
         .function("addMolFromText", &MolModelJS::addMolFromText)

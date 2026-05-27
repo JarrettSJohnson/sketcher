@@ -3979,6 +3979,8 @@ test.describe('React Sketcher', () => {
             'sel-ctx-copy-as-pdb', 'sel-ctx-copy-as-xyz',
             'sel-ctx-copy-as-mrv',
             'sel-ctx-flip-horizontal', 'sel-ctx-flip-vertical',
+            'sel-ctx-set-C', 'sel-ctx-set-N', 'sel-ctx-set-O',
+            'sel-ctx-charge-plus', 'sel-ctx-charge-minus',
             'sel-ctx-delete',
         ]) {
             await expect(page.getByTestId(id)).toBeVisible();
@@ -4590,6 +4592,95 @@ test.describe('React Sketcher', () => {
         expect(after.atoms).toHaveLength(1);
         expect(after.bonds).toHaveLength(0);
         expect(after.atoms[0].ap).toBeUndefined();
+    });
+
+    // -------- Batch 41: Modify Atoms section in selection menu --------
+    // Qt's SelectionContextMenu wires a ModifyAtomsMenu submenu (Set Element
+    // grid + ± Charge + …). The React port flattens this into an inline
+    // section to match how the other context menus are already structured.
+    // Backed by MolModel.setElementForSelectedAtoms (new selection-wide
+    // primitive) and the existing adjustChargeOnSelectedAtoms.
+    test('selection context menu: Set Element strip exposes all 8 fixed elements', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        for (const el of ['C', 'H', 'N', 'O', 'P', 'S', 'F', 'Cl']) {
+            await expect(page.getByTestId(`sel-ctx-set-${el}`)).toBeVisible();
+        }
+    });
+
+    test('selection context menu: Set Element swaps every selected atom in one undo step', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-set-N').click();
+        await expect(page.getByTestId('sel-context-menu')).toHaveCount(0);
+        let rd = await snapshot(page);
+        // CCO → all three atoms become N (selection covered every atom).
+        expect(rd.atoms.map((a) => a.el)).toEqual(['N', 'N', 'N']);
+        // Selection survives — element edits don't reindex.
+        expect(rd.atoms.every((a) => a.sel)).toBe(true);
+        // Single undo restores the original CCO mix.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms.map((a) => a.el)).toEqual(['C', 'C', 'O']);
+    });
+
+    test('selection context menu: + Charge applies +1 to every selected atom', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-charge-plus').click();
+        await expect(page.getByTestId('sel-context-menu')).toHaveCount(0);
+        const rd = await snapshot(page);
+        expect(rd.atoms.map((a) => a.q ?? 0)).toEqual([1, 1, 1]);
+    });
+
+    test('selection context menu: − Charge applies −1 to every selected atom', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-charge-minus').click();
+        const rd = await snapshot(page);
+        expect(rd.atoms.map((a) => a.q ?? 0)).toEqual([-1, -1, -1]);
+    });
+
+    test('selection context menu: Set Element resets formal charge on each atom', async ({
+        page,
+    }) => {
+        // Mirrors the atom-context-menu charge-reset test but for the
+        // selection-wide primitive. Charge the whole selection +1, then
+        // swap element → charges must drop to 0 (Qt mutates by constructing
+        // a fresh RDKit::Atom(element)).
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-charge-plus').click();
+        let rd = await snapshot(page);
+        expect(rd.atoms.every((a) => a.q === 1)).toBe(true);
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-set-N').click();
+        rd = await snapshot(page);
+        expect(rd.atoms.every((a) => a.el === 'N')).toBe(true);
+        expect(rd.atoms.every((a) => a.q === undefined || a.q === 0)).toBe(true);
+        // Undo brings back the prior C/O mix AND the +1 charges.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms.map((a) => a.el)).toEqual(['C', 'C', 'O']);
+        expect(rd.atoms.every((a) => a.q === 1)).toBe(true);
     });
 
 });

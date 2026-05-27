@@ -5353,6 +5353,42 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             doFlip(false, 'flipped vertical');
                         }} />
                     <div style={styles.moreDivider} />
+                    {/* Modify Atoms (Qt: ModifyAtomsMenu) — flattened into an
+                        inline section instead of a hover-out submenu since the
+                        React port already nests context-menu content directly.
+                        Set Element grid mirrors the per-atom strip; ± Charge
+                        items reuse the existing selection-wide primitive
+                        (adjustChargeOnSelectedAtoms). Element picks call the
+                        new selection-wide setElementForSelectedAtoms primitive
+                        so a Ctrl+Z undoes the whole batch. */}
+                    <div style={styles.moreSectionLabel}>Modify Atoms</div>
+                    <div style={styles.atomCtxElementGrid}>
+                        {FIXED_ELEMENTS.map((el) => (
+                            <LetterButton
+                                key={el}
+                                label={el}
+                                color={ELEMENT_COLORS[el]}
+                                testid={`sel-ctx-set-${el}`}
+                                title={`Set element: ${el}`}
+                                onClick={() => {
+                                    setSelContextMenu(null);
+                                    modelRef.current?.setElementForSelectedAtoms(
+                                        FIXED_ELEMENT_ATOMIC_NUMS[el]);
+                                    setStatus(`Set element: ${el}`);
+                                }} />
+                        ))}
+                    </div>
+                    <MoreItem label='+ Charge' testid='sel-ctx-charge-plus'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            adjustCharge(+1);
+                        }} />
+                    <MoreItem label='− Charge' testid='sel-ctx-charge-minus'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            adjustCharge(-1);
+                        }} />
+                    <div style={styles.moreDivider} />
                     <MoreItem label='Delete' testid='sel-ctx-delete'
                         onClick={() => {
                             setSelContextMenu(null);

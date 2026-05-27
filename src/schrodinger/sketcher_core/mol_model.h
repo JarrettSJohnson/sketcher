@@ -218,6 +218,18 @@ class MolModel : public UndoableModel
     void setAtomElement(unsigned int idx, unsigned int atomic_num);
 
     /**
+     * Selection-wide equivalent of setAtomElement — replaces the element of
+     * every selected atom with `atomic_num` in a single undo step. Mirrors
+     * Qt's ModifyAtomsMenu::requestElementChange routed through
+     * mutateAtoms(atoms, Element). Resets formal charge + explicit-H count
+     * on each mutated atom to the new element's defaults (matches the fresh
+     * RDKit::Atom(element) construction Qt does). Preserves the selection.
+     * No-op when nothing is selected. Atoms past `numAtoms()` (defensive
+     * against stale selection sets) are skipped.
+     */
+    void setElementForSelectedAtoms(unsigned int atomic_num);
+
+    /**
      * Replace every selected atom with a hydrogen of the given mass-number
      * isotope (Deuterium = 2, Tritium = 3, ordinary H = 1, "no specific
      * isotope" = 0). Mirrors Qt's D/T keyboard shortcuts

@@ -859,6 +859,53 @@ BOOST_AUTO_TEST_CASE(testSetAtomElementThrowsOnOutOfRange)
     BOOST_CHECK_THROW(m.setAtomElement(99, 7), std::out_of_range);
 }
 
+BOOST_AUTO_TEST_CASE(testSetElementForSelectedAtomsSwapsAllSelectedAndIsUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    m.addAtom("C", 2, 0);
+    // Charge a couple atoms so we can verify the reset to new-element defaults.
+    m.setAtomSelected(0, true);
+    m.setAtomSelected(1, true);
+    m.adjustChargeOnSelectedAtoms(+1);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getFormalCharge(), 1);
+
+    // Swap to nitrogen — selection still { 0, 1 }.
+    m.setElementForSelectedAtoms(7);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomicNum(), 7);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getAtomicNum(), 7);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(2)->getAtomicNum(), 6);
+    // Charges reset to defaults (matches setAtomElement semantics).
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getFormalCharge(), 0);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getFormalCharge(), 0);
+    // Selection survives (element edits don't reindex).
+    BOOST_CHECK(m.isAtomSelected(0));
+    BOOST_CHECK(m.isAtomSelected(1));
+
+    // Undo restores element AND original charge on each atom.
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomicNum(), 6);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getAtomicNum(), 6);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getFormalCharge(), 1);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getFormalCharge(), 1);
+    stack.redo();
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomicNum(), 7);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getAtomicNum(), 7);
+}
+
+BOOST_AUTO_TEST_CASE(testSetElementForSelectedAtomsNoOpOnEmptySelection)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    const auto count_before = stack.count();
+    m.setElementForSelectedAtoms(7);
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomicNum(), 6);
+}
+
 BOOST_AUTO_TEST_CASE(testLoadFromSmilesReplacesMolWithCoords)
 {
     UndoStack stack;

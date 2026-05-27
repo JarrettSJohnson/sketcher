@@ -119,6 +119,15 @@ export interface MolModelInstance {
      * is out of range; no-op if the atom already has that atomic number.
      */
     setAtomElement(idx: number, atomicNum: number): void;
+    /**
+     * Selection-wide equivalent of setAtomElement. Replaces the element of
+     * every selected atom with `atomicNum` in a single undo step. Mirrors
+     * Qt's ModifyAtomsMenu "Set Element" submenu when invoked from the
+     * selection context menu. Resets formal charge + explicit-H count to the
+     * new element's defaults on each atom. Preserves the selection. No-op
+     * when nothing is selected.
+     */
+    setElementForSelectedAtoms(atomicNum: number): void;
     /** Replace mol with parsed SMILES. Throws if SMILES is malformed. */
     loadFromSmiles(smiles: string): void;
     /** Replace mol with parsed text (auto-detects SMILES, MOL, etc.). Throws on failure. */
