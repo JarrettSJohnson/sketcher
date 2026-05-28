@@ -1293,6 +1293,76 @@ BOOST_AUTO_TEST_CASE(testRemoveHydrogensIsNoOpOnEmptyMol)
     BOOST_CHECK_EQUAL(stack.count(), 0u);
 }
 
+BOOST_AUTO_TEST_CASE(testAddExplicitHsToAtomsOnlyTouchesSelectedAtoms)
+{
+    // Ethanol: indices 0=C, 1=C, 2=O; 6 implicit Hs. Adding to atom 2 only
+    // promotes the 1 implicit H on the oxygen — leaves the carbons alone.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    BOOST_CHECK_EQUAL(m.numAtoms(), 3u);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(2)->getSymbol(), "O");
+
+    const auto before = stack.count();
+    m.addExplicitHsToAtoms({2u});
+    BOOST_CHECK_EQUAL(stack.count(), before + 1u);
+    BOOST_CHECK_EQUAL(m.numAtoms(), 4u); // 3 heavies + 1 H on O
+
+    // The new atom (idx 3 after the heavies) is H, bonded to the O.
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(3)->getSymbol(), "H");
+    BOOST_REQUIRE(m.mol().getBondBetweenAtoms(2u, 3u) != nullptr);
+
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 3u);
+}
+
+BOOST_AUTO_TEST_CASE(testRemoveExplicitHsFromAtomsOnlyTouchesNamedHs)
+{
+    // Start from fully-explicit ethanol (9 atoms), then strip Hs only on
+    // atom 2 (the oxygen). 9 → 8 atoms (one OH-bound H removed). The carbons
+    // keep their explicit Hs because they weren't named.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    m.addHydrogens();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 9u);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(2)->getSymbol(), "O");
+
+    const auto before = stack.count();
+    m.removeExplicitHsFromAtoms({2u});
+    BOOST_CHECK_EQUAL(stack.count(), before + 1u);
+    BOOST_CHECK_EQUAL(m.numAtoms(), 8u);
+
+    // The two carbons (atoms 0 and 1) still carry their explicit Hs.
+    unsigned int h_count = 0;
+    for (unsigned int i = 0; i < m.numAtoms(); ++i) {
+        if (m.mol().getAtomWithIdx(i)->getSymbol() == "H") {
+            ++h_count;
+        }
+    }
+    BOOST_CHECK_EQUAL(h_count, 5u);
+
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.numAtoms(), 9u);
+}
+
+BOOST_AUTO_TEST_CASE(testAddRemoveExplicitHsAreNoOpsWhenEmptyOrEmptyMol)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+
+    // No-op on empty mol — no atoms means nothing to promote/strip.
+    m.addExplicitHsToAtoms({0u});
+    m.removeExplicitHsFromAtoms({0u});
+    BOOST_CHECK_EQUAL(stack.count(), 0u);
+
+    // remove-with-empty-list is a no-op (unlike whole-mol removeHydrogens).
+    m.loadFromSmiles("CO");
+    const auto before = stack.count();
+    m.removeExplicitHsFromAtoms({});
+    BOOST_CHECK_EQUAL(stack.count(), before);
+}
+
 BOOST_AUTO_TEST_CASE(testKekulizeBenzeneReplacesAromaticWithExplicitDoubles)
 {
     UndoStack stack;

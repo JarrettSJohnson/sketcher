@@ -171,6 +171,19 @@ export interface MolModelInstance {
     addHydrogens(): void;
     /** Strip explicit hydrogens back to implicit. Single undo step. */
     removeHydrogens(): void;
+    /**
+     * Promote implicit Hs to explicit on the given atom indices only.
+     * Empty array means "all atoms" (matches rdkit_extensions::addHs). Used by
+     * the per-atom + selection "Add Explicit Hydrogens" context-menu actions.
+     * Single undo step. No-op on empty mol.
+     */
+    addExplicitHsToAtoms(atomIndices: number[]): void;
+    /**
+     * Counterpart to addExplicitHsToAtoms — strip explicit Hs attached to (or
+     * directly named by) the given atom indices. Empty input is a no-op
+     * (unlike the whole-mol removeHydrogens). Single undo step.
+     */
+    removeExplicitHsFromAtoms(atomIndices: number[]): void;
     /** Perceive aromaticity — sets arom flag on atoms/bonds. Single undo step. */
     aromatize(): void;
     /** Kekulize aromatic bonds back to explicit SINGLE/DOUBLE alternation. Single undo step. */

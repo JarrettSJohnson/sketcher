@@ -917,6 +917,36 @@ void MolModel::removeHydrogens()
                "Remove hydrogens");
 }
 
+void MolModel::addExplicitHsToAtoms(
+    const std::vector<unsigned int>& atom_indices)
+{
+    if (m_mol.getNumAtoms() == 0) {
+        return;
+    }
+    // Copy into the doMutation closure: rdkit_extensions::addHs takes the
+    // vector by value (it may augment it internally with attached-H ids).
+    const auto indices = atom_indices;
+    doMutation(
+        [this, indices] {
+            rdkit_extensions::addHs(m_mol, indices);
+        },
+        "Add explicit Hs");
+}
+
+void MolModel::removeExplicitHsFromAtoms(
+    const std::vector<unsigned int>& atom_indices)
+{
+    if (m_mol.getNumAtoms() == 0 || atom_indices.empty()) {
+        return;
+    }
+    const auto indices = atom_indices;
+    doMutation(
+        [this, indices] {
+            rdkit_extensions::removeHs(m_mol, indices);
+        },
+        "Remove explicit Hs");
+}
+
 void MolModel::aromatize()
 {
     if (m_mol.getNumAtoms() == 0) {

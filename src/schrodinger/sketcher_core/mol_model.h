@@ -340,6 +340,28 @@ class MolModel : public UndoableModel
     void removeHydrogens();
 
     /**
+     * Promote implicit hydrogens to explicit on the given atoms only.
+     * `atom_indices` empty means "all atoms" (matches
+     * rdkit_extensions::addHs). Single undo step. No-op when the mol is
+     * empty. Mirrors Qt's MolModel::addExplicitHs(atoms) in
+     * model/mol_model.cpp.
+     */
+    void
+    addExplicitHsToAtoms(const std::vector<unsigned int>& atom_indices);
+
+    /**
+     * Counterpart to addExplicitHsToAtoms: strip explicit hydrogens that are
+     * attached to (or whose own index is in) `atom_indices`. Empty input is
+     * a no-op (unlike rdkit_extensions::removeHs's "no args = all" overload —
+     * the per-atom action would never be invoked with an empty list, so we
+     * treat empty as "nothing to do" to keep the API unambiguous). Single
+     * undo step. Hs carrying isotopes / charges / unusual valence are
+     * preserved.
+     */
+    void removeExplicitHsFromAtoms(
+        const std::vector<unsigned int>& atom_indices);
+
+    /**
      * Perceive aromaticity on the current mol — sets the aromatic flag on
      * atoms and bonds wherever RDKit's default aromaticity model fires
      * (Daylight-ish). Single undo step. No-op when the mol is empty. Swallow

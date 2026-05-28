@@ -4781,4 +4781,134 @@ test.describe('React Sketcher', () => {
         expect(rd.bonds.every((b) => b.dir === 2)).toBe(true);
     });
 
+    // ---- Batch 43: Add/Remove Explicit Hydrogens ---------------------------
+
+    test('atom context menu: Add Explicit Hydrogens promotes implicit Hs on just the clicked atom', async ({
+        page,
+    }) => {
+        // CCO: C(0), C(1), O(2). Right-click O and add explicit Hs — only
+        // the OH proton becomes graph-explicit (3 → 4 atoms).
+        await loadText(page, 'CCO');
+        const rd0 = await snapshot(page);
+        expect(rd0.atoms.length).toBe(3);
+        const o = rd0.atoms.find((a) => a.el === 'O');
+        const oPx = await page.evaluate(({ x, y }) => {
+            const view = window.SketcherView.current;
+            const canvas = document.querySelector(
+                '[data-testid="sketcher-canvas"]');
+            const w = canvas.width, h = canvas.height;
+            return { px: w / 2 + (x - 0) * view.scale + view.offsetX,
+                py: h / 2 - (y - 0) * view.scale + view.offsetY };
+        }, { x: o.x, y: o.y });
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: oPx.px, y: oPx.py }, button: 'right' });
+        await expect(page.getByTestId('atom-ctx-explicit-h'))
+            .toHaveText('Add Explicit Hydrogens');
+        await page.getByTestId('atom-ctx-explicit-h').click();
+        const rd1 = await snapshot(page);
+        expect(rd1.atoms.length).toBe(4);
+        // The other two atoms (C, C) keep their implicit Hs.
+        const carbons1 = rd1.atoms.filter((a) => a.el === 'C');
+        expect(carbons1.every((a) => (a.nh ?? 0) > 0)).toBe(true);
+        // Single undo restores.
+        await page.getByTestId('undo').click();
+        const rd2 = await snapshot(page);
+        expect(rd2.atoms.length).toBe(3);
+    });
+
+    test('atom context menu: action label flips to Remove Explicit Hydrogens when atom has no implicit Hs left', async ({
+        page,
+    }) => {
+        // Fully-expand methane first, then right-click the carbon — its nh
+        // is now 0, so the label should read "Remove Explicit Hydrogens".
+        await loadText(page, 'C');
+        await page.evaluate(() => window.SketcherModel.addHydrogens());
+        const rd = await snapshot(page);
+        expect(rd.atoms.length).toBe(5);
+        const c = rd.atoms.find((a) => a.el === 'C');
+        const cPx = await page.evaluate(({ x, y }) => {
+            const view = window.SketcherView.current;
+            const canvas = document.querySelector(
+                '[data-testid="sketcher-canvas"]');
+            const w = canvas.width, h = canvas.height;
+            return { px: w / 2 + (x - 0) * view.scale + view.offsetX,
+                py: h / 2 - (y - 0) * view.scale + view.offsetY };
+        }, { x: c.x, y: c.y });
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: cPx.px, y: cPx.py }, button: 'right' });
+        await expect(page.getByTestId('atom-ctx-explicit-h'))
+            .toHaveText('Remove Explicit Hydrogens');
+        await page.getByTestId('atom-ctx-explicit-h').click();
+        const rd2 = await snapshot(page);
+        // All 4 Hs collapse back; the carbon is alone.
+        expect(rd2.atoms.length).toBe(1);
+    });
+
+    test('atom context menu: Add Explicit Hydrogens disabled on R-groups', async ({
+        page,
+    }) => {
+        // R1 dummy via SMILES extension; the lean MolModel uses the
+        // _MolFileRLabel property which loadFromText recognizes from MOL.
+        // Easier path: place an R1 via the model API at a known position.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        await page.evaluate(() =>
+            window.SketcherModel.addRGroup(1, 1.5, 0, 0));
+        const rd = await snapshot(page);
+        // The R-group dummy is the second atom.
+        const r = rd.atoms.find((a) => typeof a.rlabel === 'number');
+        expect(r).toBeDefined();
+        const rPx = await page.evaluate(({ x, y }) => {
+            const view = window.SketcherView.current;
+            const canvas = document.querySelector(
+                '[data-testid="sketcher-canvas"]');
+            const w = canvas.width, h = canvas.height;
+            return { px: w / 2 + (x - 0) * view.scale + view.offsetX,
+                py: h / 2 - (y - 0) * view.scale + view.offsetY };
+        }, { x: r.x, y: r.y });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: rPx.px, y: rPx.py }, button: 'right' });
+        await expect(page.getByTestId('atom-ctx-explicit-h'))
+            .toBeDisabled();
+    });
+
+    test('selection context menu: Add Explicit Hydrogens expands every selected atom in one undo step', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await expect(page.getByTestId('sel-ctx-explicit-h'))
+            .toHaveText('Add Explicit Hydrogens');
+        await page.getByTestId('sel-ctx-explicit-h').click();
+        const rd = await snapshot(page);
+        // CCO: 2 + 2 + 1 implicit Hs over the carbons + 1 OH = 6 explicit Hs.
+        expect(rd.atoms.length).toBe(3 + 6);
+        // Single undo collapses back.
+        await page.getByTestId('undo').click();
+        const rd2 = await snapshot(page);
+        expect(rd2.atoms.length).toBe(3);
+    });
+
+    test('selection context menu: action flips to Remove Explicit Hydrogens once every selected atom is fully expanded', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        // Expand whole-mol via the model API so every atom is now nh=0
+        // (the sidebar Add Explicit Hydrogens lives in the More menu —
+        // calling the model directly is shorter and equivalent).
+        await page.evaluate(() => window.SketcherModel.addHydrogens());
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await expect(page.getByTestId('sel-ctx-explicit-h'))
+            .toHaveText('Remove Explicit Hydrogens');
+        await page.getByTestId('sel-ctx-explicit-h').click();
+        const rd = await snapshot(page);
+        expect(rd.atoms.length).toBe(3);
+    });
+
 });

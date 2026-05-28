@@ -2014,7 +2014,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // needs adjacency data we don't have client-side yet, so we always show
     // the Flip Molecule submenu form which is the more general case).
     const [selContextMenu, setSelContextMenu] = useState<
-        { x: number; y: number; nAtoms: number; nBonds: number } | null
+        { x: number; y: number; nAtoms: number; nBonds: number;
+          selAtomIndices: number[]; selHasImplicitH: boolean } | null
     >(null);
     // Per-bond right-click context menu — mirrors Qt's BondContextMenu
     // (menu/bond_context_menu.cpp). Opens when right-click hits a bond and
@@ -2037,7 +2038,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // can show the current state and gate actions without re-querying.
     const [atomContextMenu, setAtomContextMenu] = useState<
         { x: number; y: number; atomIdx: number; el: string;
-          q: number; isRGroupOrAp: boolean } | null
+          q: number; nh: number; isRGroupOrAp: boolean } | null
     >(null);
     // Attachment-point right-click menu — mirrors Qt's tiny
     // AttachmentPointContextMenu (menu/attachment_point_context_menu.cpp:11),
@@ -3505,11 +3506,26 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             // dispatch: a right-click anywhere while a selection is active
             // operates on the selection.
             if (selAtoms > 0 || selBonds > 0) {
+                // Snapshot the selected atom indices + whether any of them
+                // still carry implicit Hs (mirrors Qt's
+                // has_any_implicit_Hs(element_atoms) check in
+                // ModifyAtomsMenu::updateActions). The Add/Remove Explicit
+                // Hydrogens label flips based on this snapshot.
+                const selAtomIndices: number[] = [];
+                let selHasImplicitH = false;
+                for (const a of rd.atoms) {
+                    if (a.sel) {
+                        selAtomIndices.push(a.i);
+                        if ((a.nh ?? 0) > 0) selHasImplicitH = true;
+                    }
+                }
                 setSelContextMenu({
                     x: e.clientX,
                     y: e.clientY,
                     nAtoms: selAtoms,
                     nBonds: selBonds,
+                    selAtomIndices,
+                    selHasImplicitH,
                 });
                 setBgContextMenu(null);
                 setBondContextMenu(null);
@@ -3553,6 +3569,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             atomIdx,
                             el: ad.el,
                             q: ad.q ?? 0,
+                            nh: ad.nh ?? 0,
                             isRGroupOrAp:
                                 typeof ad.rlabel === 'number'
                                 || typeof ad.ap === 'number',
@@ -5388,6 +5405,38 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             setSelContextMenu(null);
                             adjustCharge(-1);
                         }} />
+                    {/* Add/Remove Explicit Hydrogens — selection-wide
+                        counterpart to the per-atom action. Label flips based
+                        on whether any selected atom still has implicit Hs
+                        (Qt: ModifyAtomsMenu::updateActions uses
+                        has_any_implicit_Hs across the whole atom set).
+                        Hidden when the selection contains no atoms (only
+                        bonds) — Qt disables in that case; we just hide for
+                        a cleaner menu since the action wouldn't do anything
+                        useful and the selection-wide primitive would be a
+                        no-op anyway. */}
+                    {selContextMenu.selAtomIndices.length > 0 && (
+                        <MoreItem
+                            label={selContextMenu.selHasImplicitH
+                                ? 'Add Explicit Hydrogens'
+                                : 'Remove Explicit Hydrogens'}
+                            testid='sel-ctx-explicit-h'
+                            onClick={() => {
+                                const sm = selContextMenu;
+                                setSelContextMenu(null);
+                                if (sm.selHasImplicitH) {
+                                    modelRef.current?.addExplicitHsToAtoms(
+                                        sm.selAtomIndices);
+                                    setStatus('added explicit Hs to selection');
+                                } else {
+                                    modelRef.current
+                                        ?.removeExplicitHsFromAtoms(
+                                            sm.selAtomIndices);
+                                    setStatus(
+                                        'removed explicit Hs from selection');
+                                }
+                            }} />
+                    )}
                     <div style={styles.moreDivider} />
                     {/* Modify Bonds (Qt: ModifyBondsMenu) — flattened from
                         the submenu form. Flip Substituent is hidden in the
@@ -5626,6 +5675,31 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         })}
                     </div>
                     <div style={styles.moreDivider} />
+                    {/* Add/Remove Explicit Hydrogens (Qt:
+                        ModifyAtomsMenu::m_add_remove_explicit_h_act,
+                        atom_context_menu.cpp:57). Single action that toggles
+                        label based on whether the clicked atom still has
+                        implicit Hs (Qt: has_any_implicit_Hs). Disabled for
+                        R-groups / attachment-points (queries, in Qt). */}
+                    <MoreItem
+                        label={atomContextMenu.nh > 0
+                            ? 'Add Explicit Hydrogens'
+                            : 'Remove Explicit Hydrogens'}
+                        testid='atom-ctx-explicit-h'
+                        disabled={atomContextMenu.isRGroupOrAp}
+                        onClick={() => {
+                            const am = atomContextMenu;
+                            setAtomContextMenu(null);
+                            if (am.nh > 0) {
+                                modelRef.current?.addExplicitHsToAtoms(
+                                    [am.atomIdx]);
+                                setStatus('added explicit Hs to atom');
+                            } else {
+                                modelRef.current?.removeExplicitHsFromAtoms(
+                                    [am.atomIdx]);
+                                setStatus('removed explicit Hs from atom');
+                            }
+                        }} />
                     <MoreItem
                         label='+ Charge'
                         testid='atom-ctx-charge-plus'

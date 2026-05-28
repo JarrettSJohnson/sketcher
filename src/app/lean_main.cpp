@@ -675,6 +675,24 @@ class MolModelJS
     {
         m_model.removeHydrogens();
     }
+    void addExplicitHsToAtoms(emscripten::val atom_indices)
+    {
+        const auto n = atom_indices["length"].as<unsigned int>();
+        std::vector<unsigned int> idx(n);
+        for (unsigned int i = 0; i < n; ++i) {
+            idx[i] = atom_indices[i].as<unsigned int>();
+        }
+        m_model.addExplicitHsToAtoms(idx);
+    }
+    void removeExplicitHsFromAtoms(emscripten::val atom_indices)
+    {
+        const auto n = atom_indices["length"].as<unsigned int>();
+        std::vector<unsigned int> idx(n);
+        for (unsigned int i = 0; i < n; ++i) {
+            idx[i] = atom_indices[i].as<unsigned int>();
+        }
+        m_model.removeExplicitHsFromAtoms(idx);
+    }
     void aromatize()
     {
         m_model.aromatize();
@@ -888,6 +906,9 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("toFormatString", &MolModelJS::toFormatString)
         .function("addHydrogens", &MolModelJS::addHydrogens)
         .function("removeHydrogens", &MolModelJS::removeHydrogens)
+        .function("addExplicitHsToAtoms", &MolModelJS::addExplicitHsToAtoms)
+        .function("removeExplicitHsFromAtoms",
+                  &MolModelJS::removeExplicitHsFromAtoms)
         .function("aromatize", &MolModelJS::aromatize)
         .function("kekulize", &MolModelJS::kekulize)
         .function("cleanUp", &MolModelJS::cleanUp)
