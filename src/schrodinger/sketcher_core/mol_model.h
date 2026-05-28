@@ -217,6 +217,19 @@ class MolModel : public UndoableModel
     void adjustChargeOnSelectedAtoms(int delta);
 
     /**
+     * Add `delta` to the unpaired-electron (radical) count of every atom in
+     * `atom_indices` in a single undoable command. Mirrors Qt's
+     * `MolModel::adjustRadicalElectronsOnAtoms` (model/mol_model.cpp:2414).
+     * Per-atom result is clamped to [MIN_UNPAIRED_E=0, MAX_UNPAIRED_E=4] to
+     * match Qt's `MIN_UNPAIRED_E`/`MAX_UNPAIRED_E` clamping
+     * (molviewer/constants.h:41-42). Atoms whose post-clamp count equals the
+     * current value are still recorded so undo replays cleanly. Preserves the
+     * selection. Empty `atom_indices`, `delta == 0`, or empty mol → no-op.
+     */
+    void adjustRadicalElectronsOnAtoms(
+        const std::vector<unsigned int>& atom_indices, int delta);
+
+    /**
      * Replace the element of a single atom (by index) with the element whose
      * RDKit atomic number is `atomic_num`. Used by the atom context menu's
      * "Set Element" submenu (Qt: ModifyAtomsMenu::createElementMenu →

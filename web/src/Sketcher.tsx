@@ -126,6 +126,11 @@ interface AtomDesc {
     // bond from this atom to its single neighbor. Qt: atom_item.cpp:302-304
     // (label_is_visible=false, squiggle_path=getWavyLine()).
     ap?: number;
+    // Unpaired-electron (radical) count [1..4]; omitted when 0. Rendered as
+    // "•" (or "n•", or "(n•)" when also carrying a charge) to the upper-right
+    // of the atom label. Qt: AtomItem::updateChargeAndRadicalLabel
+    // (molviewer/atom_item.cpp:539-575).
+    nrad?: number;
 }
 interface BondDesc {
     a: number;
@@ -1187,11 +1192,13 @@ function drawSketch(
             ctx.fill();
         }
         const hasCharge = typeof a.q === 'number' && a.q !== 0;
-        // Carbons get only a dot unless they carry a charge OR the user
-        // turned on Preferences → Label Carbons (none/terminal/all,
+        const hasRadical = typeof a.nrad === 'number' && a.nrad > 0;
+        // Carbons get only a dot unless they carry a charge / radical OR
+        // the user turned on Preferences → Label Carbons (none/terminal/all,
         // mirrors Qt's CarbonLabels enum + AtomItem::determineLabelIsVisible).
         const dotOnly =
-            a.el === 'C' && !hasCharge && !isPending && !isHover && !a.sel
+            a.el === 'C' && !hasCharge && !hasRadical
+            && !isPending && !isHover && !a.sel
             && !shouldLabelCarbon(i, a);
         if (dotOnly) {
             ctx.fillStyle = palette.bond;
@@ -1213,7 +1220,7 @@ function drawSketch(
         // for unknown symbols.
         ctx.fillStyle = elementColor(palette, a.el);
         if (a.el === 'C' && a.sel && !isPending && !isHover && !hasCharge
-            && !shouldLabelCarbon(i, a)) {
+            && !hasRadical && !shouldLabelCarbon(i, a)) {
             ctx.beginPath();
             ctx.arc(px, py, 2.5, 0, 2 * Math.PI);
             ctx.fill();
@@ -1243,13 +1250,32 @@ function drawSketch(
                     ctx.textAlign = 'center';
                     ctx.font = ATOM_FONT;
                 }
-                // Charge: superscript to the upper-right. "+" / "−" alone for ±1,
-                // otherwise "n+" / "n−". Unicode minus sign reads better than "-".
+                // Combined radical + charge label (Qt:
+                // AtomItem::updateChargeAndRadicalLabel, atom_item.cpp:539-575):
+                //   - radical alone: "•" (or "n•" for n>1)
+                //   - charge alone: "+" / "−" (or "n+" / "n−" for |n|>1)
+                //   - both: "n•" wraps in parens when n>1, joined by a space:
+                //       "•+", "(3•) 2+", etc.
+                // Unicode minus sign reads better than ASCII "-".
+                let chargeAndRadicalText = '';
+                if (hasRadical) {
+                    const n = a.nrad as number;
+                    const parens = n > 1 && hasCharge;
+                    chargeAndRadicalText =
+                        (parens ? '(' : '') +
+                        (n > 1 ? String(n) : '') +
+                        '•' +
+                        (parens ? ')' : '');
+                }
                 if (hasCharge) {
                     const q = a.q as number;
                     const sign = q > 0 ? '+' : '−';
                     const chargeText =
                         Math.abs(q) === 1 ? sign : `${Math.abs(q)}${sign}`;
+                    chargeAndRadicalText +=
+                        (chargeAndRadicalText ? ' ' : '') + chargeText;
+                }
+                if (chargeAndRadicalText) {
                     ctx.font = SUB_FONT;
                     ctx.textAlign = 'left';
                     const labelWidth = ctx.measureText(a.el).width;
@@ -1264,7 +1290,7 @@ function drawSketch(
                         }
                         ctx.font = SUB_FONT;
                     }
-                    ctx.fillText(chargeText, chargeX, py - CHARGE_DY);
+                    ctx.fillText(chargeAndRadicalText, chargeX, py - CHARGE_DY);
                     ctx.textAlign = 'center';
                     ctx.font = ATOM_FONT;
                 }
@@ -1708,8 +1734,9 @@ function buildSketchSvg(
             );
         }
         const hasCharge = typeof a.q === 'number' && a.q !== 0;
-        const dotOnly = a.el === 'C' && !hasCharge && !a.sel
-            && !shouldLabelCarbon(i, a);
+        const hasRadical = typeof a.nrad === 'number' && a.nrad > 0;
+        const dotOnly = a.el === 'C' && !hasCharge && !hasRadical
+            && !a.sel && !shouldLabelCarbon(i, a);
         if (dotOnly) {
             parts.push(
                 `<circle cx='${f(ax)}' cy='${f(ay)}' r='2.5' ` +
@@ -1724,7 +1751,8 @@ function buildSketchSvg(
             );
         }
         const labelColor = elementColor(palette, a.el);
-        if (a.el === 'C' && a.sel && !hasCharge && !shouldLabelCarbon(i, a)) {
+        if (a.el === 'C' && a.sel && !hasCharge && !hasRadical
+            && !shouldLabelCarbon(i, a)) {
             parts.push(
                 `<circle cx='${f(ax)}' cy='${f(ay)}' r='2.5' ` +
                 `fill='${labelColor}'/>`,
@@ -1772,12 +1800,26 @@ function buildSketchSvg(
                     );
                 }
             }
-            if (hasCharge && ctx) {
+            let chargeAndRadicalText = '';
+            if (hasRadical) {
+                const n = a.nrad as number;
+                const parens = n > 1 && hasCharge;
+                chargeAndRadicalText =
+                    (parens ? '(' : '') +
+                    (n > 1 ? String(n) : '') +
+                    '•' +
+                    (parens ? ')' : '');
+            }
+            if (hasCharge) {
                 const q = a.q as number;
                 const sign = q > 0 ? '+' : '−';
                 const chargeText = Math.abs(q) === 1
                     ? sign
                     : `${Math.abs(q)}${sign}`;
+                chargeAndRadicalText +=
+                    (chargeAndRadicalText ? ' ' : '') + chargeText;
+            }
+            if (chargeAndRadicalText && ctx) {
                 ctx.font = `${ATOM_FONT_PX}px sans-serif`;
                 const labelWidth = ctx.measureText(a.el).width;
                 let chargeX = ax + labelWidth / 2 + 1;
@@ -1793,7 +1835,7 @@ function buildSketchSvg(
                     `fill='${labelColor}' font-family='sans-serif' ` +
                     `font-size='${SUB_FONT_PX}' text-anchor='start' ` +
                     `dominant-baseline='central'>` +
-                    `${esc(chargeText)}</text>`,
+                    `${esc(chargeAndRadicalText)}</text>`,
                 );
             }
         }
@@ -2015,7 +2057,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // the Flip Molecule submenu form which is the more general case).
     const [selContextMenu, setSelContextMenu] = useState<
         { x: number; y: number; nAtoms: number; nBonds: number;
-          selAtomIndices: number[]; selHasImplicitH: boolean } | null
+          selAtomIndices: number[]; selHasImplicitH: boolean;
+          // Per-atom radical totals captured at menu-open time so the
+          // "± Unpaired Electrons" entries can clamp to [0, 4] (Qt
+          // MIN/MAX_UNPAIRED_E) without re-querying the model.
+          selMinRadical: number; selMaxRadical: number } | null
     >(null);
     // Per-bond right-click context menu — mirrors Qt's BondContextMenu
     // (menu/bond_context_menu.cpp). Opens when right-click hits a bond and
@@ -2038,7 +2084,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // can show the current state and gate actions without re-querying.
     const [atomContextMenu, setAtomContextMenu] = useState<
         { x: number; y: number; atomIdx: number; el: string;
-          q: number; nh: number; isRGroupOrAp: boolean } | null
+          q: number; nh: number; nrad: number;
+          isRGroupOrAp: boolean } | null
     >(null);
     // Attachment-point right-click menu — mirrors Qt's tiny
     // AttachmentPointContextMenu (menu/attachment_point_context_menu.cpp:11),
@@ -3513,11 +3560,23 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 // Hydrogens label flips based on this snapshot.
                 const selAtomIndices: number[] = [];
                 let selHasImplicitH = false;
+                // Radical clamps for the selection ± Unpaired Electrons
+                // entries — gated to [0, 4] (Qt MIN/MAX_UNPAIRED_E,
+                // molviewer/constants.h:41-42). When the selection is
+                // empty, both default to 0 so the entry hides.
+                let selMinRadical = Number.POSITIVE_INFINITY;
+                let selMaxRadical = 0;
                 for (const a of rd.atoms) {
                     if (a.sel) {
                         selAtomIndices.push(a.i);
                         if ((a.nh ?? 0) > 0) selHasImplicitH = true;
+                        const n = a.nrad ?? 0;
+                        if (n < selMinRadical) selMinRadical = n;
+                        if (n > selMaxRadical) selMaxRadical = n;
                     }
+                }
+                if (selAtomIndices.length === 0) {
+                    selMinRadical = 0;
                 }
                 setSelContextMenu({
                     x: e.clientX,
@@ -3526,6 +3585,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     nBonds: selBonds,
                     selAtomIndices,
                     selHasImplicitH,
+                    selMinRadical,
+                    selMaxRadical,
                 });
                 setBgContextMenu(null);
                 setBondContextMenu(null);
@@ -3570,6 +3631,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             el: ad.el,
                             q: ad.q ?? 0,
                             nh: ad.nh ?? 0,
+                            nrad: ad.nrad ?? 0,
                             isRGroupOrAp:
                                 typeof ad.rlabel === 'number'
                                 || typeof ad.ap === 'number',
@@ -5437,6 +5499,51 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 }
                             }} />
                     )}
+                    {/* ± Unpaired Electrons (Qt:
+                        ModifyAtomsMenu::m_add_remove_unpaired_e_acts wired
+                        into the selection menu via SelectionContextMenu).
+                        Disabled when every selected atom is at the clamp
+                        boundary so the underlying adjust is a no-op. Hidden
+                        when the selection contains no atoms. */}
+                    {selContextMenu.selAtomIndices.length > 0 && (
+                        <>
+                            <MoreItem
+                                label='+ Unpaired Electron'
+                                testid='sel-ctx-radical-plus'
+                                // Disabled only when EVERY selected atom is
+                                // already at MAX_UNPAIRED_E=4. A mixed
+                                // selection (some at max, some below) keeps
+                                // the action enabled — the per-atom clamp
+                                // inside adjustRadicalElectronsOnAtoms swallows
+                                // the saturated atoms while still incrementing
+                                // the ones with room.
+                                disabled={selContextMenu.selMinRadical >= 4}
+                                onClick={() => {
+                                    const sm = selContextMenu;
+                                    setSelContextMenu(null);
+                                    modelRef.current
+                                        ?.adjustRadicalElectronsOnAtoms(
+                                            sm.selAtomIndices, +1);
+                                    setStatus(
+                                        'added unpaired electron to selection');
+                                }} />
+                            <MoreItem
+                                label='− Unpaired Electron'
+                                testid='sel-ctx-radical-minus'
+                                // Symmetric: disabled only when EVERY selected
+                                // atom is already at MIN_UNPAIRED_E=0.
+                                disabled={selContextMenu.selMaxRadical <= 0}
+                                onClick={() => {
+                                    const sm = selContextMenu;
+                                    setSelContextMenu(null);
+                                    modelRef.current
+                                        ?.adjustRadicalElectronsOnAtoms(
+                                            sm.selAtomIndices, -1);
+                                    setStatus(
+                                        'removed unpaired electron from selection');
+                                }} />
+                        </>
+                    )}
                     <div style={styles.moreDivider} />
                     {/* Modify Bonds (Qt: ModifyBondsMenu) — flattened from
                         the submenu form. Flip Substituent is hidden in the
@@ -5719,6 +5826,35 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             const am = atomContextMenu;
                             setAtomContextMenu(null);
                             adjustChargeOnAtom(am.atomIdx, -1);
+                        }} />
+                    {/* ± Unpaired Electrons (Qt:
+                        ModifyAtomsMenu::m_add_remove_unpaired_e_acts,
+                        atom_context_menu.cpp:62-72). Disabled on R-groups /
+                        attachment points; gated to [MIN_UNPAIRED_E=0,
+                        MAX_UNPAIRED_E=4] (molviewer/constants.h:41-42). */}
+                    <MoreItem
+                        label='+ Unpaired Electron'
+                        testid='atom-ctx-radical-plus'
+                        disabled={atomContextMenu.isRGroupOrAp
+                            || atomContextMenu.nrad >= 4}
+                        onClick={() => {
+                            const am = atomContextMenu;
+                            setAtomContextMenu(null);
+                            modelRef.current?.adjustRadicalElectronsOnAtoms(
+                                [am.atomIdx], +1);
+                            setStatus('added unpaired electron');
+                        }} />
+                    <MoreItem
+                        label='− Unpaired Electron'
+                        testid='atom-ctx-radical-minus'
+                        disabled={atomContextMenu.isRGroupOrAp
+                            || atomContextMenu.nrad <= 0}
+                        onClick={() => {
+                            const am = atomContextMenu;
+                            setAtomContextMenu(null);
+                            modelRef.current?.adjustRadicalElectronsOnAtoms(
+                                [am.atomIdx], -1);
+                            setStatus('removed unpaired electron');
                         }} />
                     <div style={styles.moreDivider} />
                     <MoreItem label='Delete' testid='atom-ctx-delete'

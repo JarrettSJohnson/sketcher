@@ -1363,6 +1363,77 @@ BOOST_AUTO_TEST_CASE(testAddRemoveExplicitHsAreNoOpsWhenEmptyOrEmptyMol)
     BOOST_CHECK_EQUAL(stack.count(), before);
 }
 
+BOOST_AUTO_TEST_CASE(testAdjustRadicalElectronsAddsPerAtomClampedToFour)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO"); // C-C-O, no radicals up front.
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getNumRadicalElectrons(), 0u);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(2)->getNumRadicalElectrons(), 0u);
+
+    // +1 to atoms 0 and 2 → both pick up a single radical electron.
+    m.adjustRadicalElectronsOnAtoms({0u, 2u}, +1);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getNumRadicalElectrons(), 1u);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getNumRadicalElectrons(), 0u);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(2)->getNumRadicalElectrons(), 1u);
+
+    // +10 to atom 0 — clamps at MAX_UNPAIRED_E=4 instead of overflowing.
+    m.adjustRadicalElectronsOnAtoms({0u}, +10);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getNumRadicalElectrons(), 4u);
+
+    // -10 from atom 0 — clamps at MIN_UNPAIRED_E=0.
+    m.adjustRadicalElectronsOnAtoms({0u}, -10);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getNumRadicalElectrons(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(testAdjustRadicalElectronsUndoRestoresExactCount)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+
+    m.adjustRadicalElectronsOnAtoms({0u, 1u}, +2);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getNumRadicalElectrons(), 2u);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getNumRadicalElectrons(), 2u);
+
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getNumRadicalElectrons(), 0u);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getNumRadicalElectrons(), 0u);
+
+    stack.redo();
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getNumRadicalElectrons(), 2u);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getNumRadicalElectrons(), 2u);
+}
+
+BOOST_AUTO_TEST_CASE(testAdjustRadicalElectronsNoOpCases)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+
+    // Empty mol — no-op, no undo entry.
+    m.adjustRadicalElectronsOnAtoms({0u}, +1);
+    BOOST_CHECK_EQUAL(stack.count(), 0u);
+
+    m.loadFromSmiles("CCO");
+    const auto base = stack.count();
+
+    // Empty index list — no-op.
+    m.adjustRadicalElectronsOnAtoms({}, +1);
+    BOOST_CHECK_EQUAL(stack.count(), base);
+
+    // delta=0 — no-op.
+    m.adjustRadicalElectronsOnAtoms({0u}, 0);
+    BOOST_CHECK_EQUAL(stack.count(), base);
+
+    // Bring atom 0 to max, then try +1 again — every per-atom adjust is a
+    // no-op (all atoms already at clamp), so no undo entry should be added.
+    m.adjustRadicalElectronsOnAtoms({0u}, +4);
+    const auto afterMax = stack.count();
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getNumRadicalElectrons(), 4u);
+    m.adjustRadicalElectronsOnAtoms({0u}, +1);
+    BOOST_CHECK_EQUAL(stack.count(), afterMax);
+}
+
 BOOST_AUTO_TEST_CASE(testKekulizeBenzeneReplacesAromaticWithExplicitDoubles)
 {
     UndoStack stack;

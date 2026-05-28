@@ -184,6 +184,14 @@ export interface MolModelInstance {
      * (unlike the whole-mol removeHydrogens). Single undo step.
      */
     removeExplicitHsFromAtoms(atomIndices: number[]): void;
+    /**
+     * Add `delta` to the unpaired-electron (radical) count on each atom in
+     * `atomIndices` (single undo step). Per-atom count is clamped to [0, 4]
+     * to match Qt's MIN_UNPAIRED_E/MAX_UNPAIRED_E
+     * (molviewer/constants.h:41-42). Atoms already at the clamp boundary
+     * are skipped silently. No-op on empty input, delta=0, or empty mol.
+     */
+    adjustRadicalElectronsOnAtoms(atomIndices: number[], delta: number): void;
     /** Perceive aromaticity — sets arom flag on atoms/bonds. Single undo step. */
     aromatize(): void;
     /** Kekulize aromatic bonds back to explicit SINGLE/DOUBLE alternation. Single undo step. */

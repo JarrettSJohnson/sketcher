@@ -4911,4 +4911,183 @@ test.describe('React Sketcher', () => {
         expect(rd.atoms.length).toBe(3);
     });
 
+    // ---- Batch 44: ± Unpaired Electrons ------------------------------------
+
+    test('atom context menu: + Unpaired Electron increments nrad on the clicked atom and renders the bullet', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        const rd0 = await snapshot(page);
+        const o = rd0.atoms.find((a) => a.el === 'O');
+        expect(o.nrad ?? 0).toBe(0);
+        const oPx = await page.evaluate(({ x, y }) => {
+            const view = window.SketcherView.current;
+            const canvas = document.querySelector(
+                '[data-testid="sketcher-canvas"]');
+            const w = canvas.width, h = canvas.height;
+            return { px: w / 2 + (x - 0) * view.scale + view.offsetX,
+                py: h / 2 - (y - 0) * view.scale + view.offsetY };
+        }, { x: o.x, y: o.y });
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: oPx.px, y: oPx.py }, button: 'right' });
+        await page.getByTestId('atom-ctx-radical-plus').click();
+        const rd1 = await snapshot(page);
+        const o1 = rd1.atoms.find((a) => a.el === 'O');
+        expect(o1.nrad).toBe(1);
+        // Carbons are untouched.
+        expect(rd1.atoms.filter((a) => a.el === 'C')
+            .every((a) => (a.nrad ?? 0) === 0)).toBe(true);
+        // Single undo restores.
+        await page.getByTestId('undo').click();
+        const rd2 = await snapshot(page);
+        expect(rd2.atoms.find((a) => a.el === 'O').nrad ?? 0).toBe(0);
+    });
+
+    test('atom context menu: + Unpaired Electron disabled once atom is at MAX_UNPAIRED_E=4', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        // Bring the O up to the clamp via the model API, then reopen the menu.
+        const rd0 = await snapshot(page);
+        const oIdx = rd0.atoms.find((a) => a.el === 'O').i;
+        await page.evaluate((idx) =>
+            window.SketcherModel.adjustRadicalElectronsOnAtoms([idx], 4),
+            oIdx);
+        const rd1 = await snapshot(page);
+        const o = rd1.atoms.find((a) => a.el === 'O');
+        expect(o.nrad).toBe(4);
+        const oPx = await page.evaluate(({ x, y }) => {
+            const view = window.SketcherView.current;
+            const canvas = document.querySelector(
+                '[data-testid="sketcher-canvas"]');
+            const w = canvas.width, h = canvas.height;
+            return { px: w / 2 + (x - 0) * view.scale + view.offsetX,
+                py: h / 2 - (y - 0) * view.scale + view.offsetY };
+        }, { x: o.x, y: o.y });
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: oPx.px, y: oPx.py }, button: 'right' });
+        await expect(page.getByTestId('atom-ctx-radical-plus')).toBeDisabled();
+        // The decrement entry is still enabled (current=4 > MIN_UNPAIRED_E=0).
+        await expect(page.getByTestId('atom-ctx-radical-minus'))
+            .toBeEnabled();
+    });
+
+    test('atom context menu: − Unpaired Electron disabled when atom is at MIN_UNPAIRED_E=0', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        const rd0 = await snapshot(page);
+        const o = rd0.atoms.find((a) => a.el === 'O');
+        expect(o.nrad ?? 0).toBe(0);
+        const oPx = await page.evaluate(({ x, y }) => {
+            const view = window.SketcherView.current;
+            const canvas = document.querySelector(
+                '[data-testid="sketcher-canvas"]');
+            const w = canvas.width, h = canvas.height;
+            return { px: w / 2 + (x - 0) * view.scale + view.offsetX,
+                py: h / 2 - (y - 0) * view.scale + view.offsetY };
+        }, { x: o.x, y: o.y });
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: oPx.px, y: oPx.py }, button: 'right' });
+        await expect(page.getByTestId('atom-ctx-radical-minus'))
+            .toBeDisabled();
+        await expect(page.getByTestId('atom-ctx-radical-plus')).toBeEnabled();
+    });
+
+    test('atom context menu: ± Unpaired Electron disabled on R-groups', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        await page.evaluate(() =>
+            window.SketcherModel.addRGroup(1, 1.5, 0, 0));
+        const rd = await snapshot(page);
+        const r = rd.atoms.find((a) => typeof a.rlabel === 'number');
+        const rPx = await page.evaluate(({ x, y }) => {
+            const view = window.SketcherView.current;
+            const canvas = document.querySelector(
+                '[data-testid="sketcher-canvas"]');
+            const w = canvas.width, h = canvas.height;
+            return { px: w / 2 + (x - 0) * view.scale + view.offsetX,
+                py: h / 2 - (y - 0) * view.scale + view.offsetY };
+        }, { x: r.x, y: r.y });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: rPx.px, y: rPx.py }, button: 'right' });
+        await expect(page.getByTestId('atom-ctx-radical-plus'))
+            .toBeDisabled();
+        await expect(page.getByTestId('atom-ctx-radical-minus'))
+            .toBeDisabled();
+    });
+
+    test('selection context menu: + Unpaired Electron increments every selected atom in one undo step', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-radical-plus').click();
+        const rd = await snapshot(page);
+        expect(rd.atoms.every((a) => a.nrad === 1)).toBe(true);
+        // Single undo collapses every atom back to 0.
+        await page.getByTestId('undo').click();
+        const rd2 = await snapshot(page);
+        expect(rd2.atoms.every((a) => (a.nrad ?? 0) === 0)).toBe(true);
+    });
+
+    test('selection context menu: ± Unpaired Electron stay enabled with a mixed selection (one at MAX, others at MIN)', async ({
+        page,
+    }) => {
+        // Disable logic is "every atom at the clamp" — a mixed selection
+        // keeps both actions enabled (per-atom clamp swallows no-ops while
+        // changing the atoms with room).
+        await loadText(page, 'CCO');
+        const rd0 = await snapshot(page);
+        const oIdx = rd0.atoms.find((a) => a.el === 'O').i;
+        await page.evaluate((idx) =>
+            window.SketcherModel.adjustRadicalElectronsOnAtoms([idx], 4),
+            oIdx);
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await expect(page.getByTestId('sel-ctx-radical-plus')).toBeEnabled();
+        await expect(page.getByTestId('sel-ctx-radical-minus'))
+            .toBeEnabled();
+    });
+
+    test('selection context menu: + Unpaired Electron disabled when EVERY selected atom is at MAX_UNPAIRED_E=4', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        // Bring every atom up to the clamp so + must disable.
+        await page.evaluate(() => {
+            const m = window.SketcherModel;
+            const all = [];
+            for (let i = 0; i < m.numAtoms(); ++i) all.push(i);
+            m.adjustRadicalElectronsOnAtoms(all, 4);
+        });
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await expect(page.getByTestId('sel-ctx-radical-plus')).toBeDisabled();
+        await expect(page.getByTestId('sel-ctx-radical-minus'))
+            .toBeEnabled();
+    });
+
+    test('selection context menu: − Unpaired Electron disabled when EVERY selected atom is at MIN_UNPAIRED_E=0', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        // No radicals anywhere — every selected atom is at 0, so − disables.
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await expect(page.getByTestId('sel-ctx-radical-minus'))
+            .toBeDisabled();
+        await expect(page.getByTestId('sel-ctx-radical-plus')).toBeEnabled();
+    });
+
 });

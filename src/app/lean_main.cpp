@@ -285,6 +285,14 @@ std::string mol_to_render_description(
         if (atom->getIsAromatic()) {
             os << ",\"arom\":true";
         }
+        // Unpaired-electron count (Qt: AtomItem::updateChargeAndRadicalLabel
+        // atom_item.cpp:539-575). Renders as a "•" bullet to the upper-right
+        // of the atom label, combined with the charge label when both are
+        // non-zero. Emitted only when non-zero to keep the common JSON small.
+        const unsigned int n_rad = atom->getNumRadicalElectrons();
+        if (n_rad != 0) {
+            os << ",\"nrad\":" << n_rad;
+        }
         // Valence violation (Qt: AtomItem::determineValenceErrorIsVisible).
         // Cheap call once the property cache is current (every caller
         // refreshes via updatePropertyCache before reaching this serializer).
@@ -693,6 +701,15 @@ class MolModelJS
         }
         m_model.removeExplicitHsFromAtoms(idx);
     }
+    void adjustRadicalElectronsOnAtoms(emscripten::val atom_indices, int delta)
+    {
+        const auto n = atom_indices["length"].as<unsigned int>();
+        std::vector<unsigned int> idx(n);
+        for (unsigned int i = 0; i < n; ++i) {
+            idx[i] = atom_indices[i].as<unsigned int>();
+        }
+        m_model.adjustRadicalElectronsOnAtoms(idx, delta);
+    }
     void aromatize()
     {
         m_model.aromatize();
@@ -909,6 +926,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("addExplicitHsToAtoms", &MolModelJS::addExplicitHsToAtoms)
         .function("removeExplicitHsFromAtoms",
                   &MolModelJS::removeExplicitHsFromAtoms)
+        .function("adjustRadicalElectronsOnAtoms",
+                  &MolModelJS::adjustRadicalElectronsOnAtoms)
         .function("aromatize", &MolModelJS::aromatize)
         .function("kekulize", &MolModelJS::kekulize)
         .function("cleanUp", &MolModelJS::cleanUp)

@@ -581,6 +581,65 @@ void MolModel::adjustChargeOnSelectedAtoms(int delta)
               delta > 0 ? "Increase charge" : "Decrease charge");
 }
 
+void MolModel::adjustRadicalElectronsOnAtoms(
+    const std::vector<unsigned int>& atom_indices, int delta)
+{
+    if (atom_indices.empty() || delta == 0 || m_mol.getNumAtoms() == 0) {
+        return;
+    }
+    // Qt's molviewer/constants.h:41-42: MIN_UNPAIRED_E=0, MAX_UNPAIRED_E=4.
+    constexpr int MIN_RADICAL = 0;
+    constexpr int MAX_RADICAL = 4;
+    // Capture (idx, old_count, new_count) up front so redo replays the same
+    // post-clamp target (not "current + delta", which would compound across
+    // re-redos) and undo restores the pre-edit value exactly. Same pattern as
+    // adjustChargeOnSelectedAtoms above.
+    std::vector<std::tuple<unsigned int, unsigned int, unsigned int>> previous;
+    previous.reserve(atom_indices.size());
+    for (auto idx : atom_indices) {
+        if (idx >= m_mol.getNumAtoms()) {
+            continue;
+        }
+        const int old_count =
+            static_cast<int>(m_mol.getAtomWithIdx(idx)
+                                 ->getNumRadicalElectrons());
+        int new_count = old_count + delta;
+        if (new_count < MIN_RADICAL) new_count = MIN_RADICAL;
+        if (new_count > MAX_RADICAL) new_count = MAX_RADICAL;
+        if (new_count == old_count) {
+            continue;
+        }
+        previous.emplace_back(idx, static_cast<unsigned int>(old_count),
+                              static_cast<unsigned int>(new_count));
+    }
+    if (previous.empty()) {
+        return;
+    }
+    auto refresh_cache = [this] {
+        try {
+            m_mol.updatePropertyCache(/*strict=*/false);
+        } catch (...) {
+        }
+    };
+    auto redo = [this, previous, refresh_cache] {
+        for (const auto& [idx, _old, new_count] : previous) {
+            m_mol.getAtomWithIdx(idx)->setNumRadicalElectrons(new_count);
+        }
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    auto undo = [this, previous, refresh_cache] {
+        for (const auto& [idx, old_count, _new] : previous) {
+            m_mol.getAtomWithIdx(idx)->setNumRadicalElectrons(old_count);
+        }
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    doCommand(std::move(redo), std::move(undo),
+              delta > 0 ? "Add unpaired electrons"
+                        : "Remove unpaired electrons");
+}
+
 void MolModel::setAtomElement(unsigned int idx, unsigned int atomic_num)
 {
     if (idx >= m_mol.getNumAtoms()) {
