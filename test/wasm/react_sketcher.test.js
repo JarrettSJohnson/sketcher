@@ -3981,6 +3981,9 @@ test.describe('React Sketcher', () => {
             'sel-ctx-flip-horizontal', 'sel-ctx-flip-vertical',
             'sel-ctx-set-C', 'sel-ctx-set-N', 'sel-ctx-set-O',
             'sel-ctx-charge-plus', 'sel-ctx-charge-minus',
+            'sel-ctx-bond-single', 'sel-ctx-bond-double',
+            'sel-ctx-bond-triple', 'sel-ctx-bond-aromatic',
+            'sel-ctx-bond-up', 'sel-ctx-bond-down',
             'sel-ctx-delete',
         ]) {
             await expect(page.getByTestId(id)).toBeVisible();
@@ -4681,6 +4684,101 @@ test.describe('React Sketcher', () => {
         rd = await snapshot(page);
         expect(rd.atoms.map((a) => a.el)).toEqual(['C', 'C', 'O']);
         expect(rd.atoms.every((a) => a.q === 1)).toBe(true);
+    });
+
+    // -------- Batch 42: Modify Bonds section in selection menu --------
+    // Qt's SelectionContextMenu wires a ModifyBondsMenu (with setFlipVisible
+    // false) — bond-type rows + Up/Down stereo. The React port flattens to
+    // an inline section. Backed by setBondTypeForSelectedBonds (new) +
+    // setBondDirForSelectedBonds (existing).
+    test('selection context menu: Modify Bonds exposes Single/Double/Triple/Aromatic + Up/Down', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        for (const id of [
+            'sel-ctx-bond-single', 'sel-ctx-bond-double',
+            'sel-ctx-bond-triple', 'sel-ctx-bond-aromatic',
+            'sel-ctx-bond-up', 'sel-ctx-bond-down',
+        ]) {
+            await expect(page.getByTestId(id)).toBeVisible();
+        }
+    });
+
+    test('selection context menu: Double promotes every selected bond and is one undo step', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-bond-double').click();
+        await expect(page.getByTestId('sel-context-menu')).toHaveCount(0);
+        let rd = await snapshot(page);
+        // CCO ships two single bonds — both should now be double.
+        expect(rd.bonds.map((b) => b.o)).toEqual([2, 2]);
+        expect(rd.bonds.every((b) => b.sel)).toBe(true);
+        // Single undo restores both as single (one macro).
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.bonds.map((b) => b.o)).toEqual([1, 1]);
+    });
+
+    test('selection context menu: Triple then Single round-trips through the bond order', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-bond-triple').click();
+        let rd = await snapshot(page);
+        expect(rd.bonds.map((b) => b.o)).toEqual([3, 3]);
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-bond-single').click();
+        rd = await snapshot(page);
+        expect(rd.bonds.map((b) => b.o)).toEqual([1, 1]);
+    });
+
+    test('selection context menu: Aromatic flags every selected bond as arom', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-bond-aromatic').click();
+        const rd = await snapshot(page);
+        // Aromatic bonds carry the arom flag in the render description.
+        expect(rd.bonds.every((b) => b.arom === true)).toBe(true);
+    });
+
+    test('selection context menu: Up applies wedge stereo to every selected bond', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-bond-up').click();
+        const rd = await snapshot(page);
+        // BondDir 1 = BEGINWEDGE.
+        expect(rd.bonds.every((b) => b.dir === 1)).toBe(true);
+    });
+
+    test('selection context menu: Down applies dash stereo to every selected bond', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-bond-down').click();
+        const rd = await snapshot(page);
+        // BondDir 2 = BEGINDASH.
+        expect(rd.bonds.every((b) => b.dir === 2)).toBe(true);
     });
 
 });

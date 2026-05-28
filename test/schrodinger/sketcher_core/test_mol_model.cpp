@@ -516,6 +516,49 @@ BOOST_AUTO_TEST_CASE(testSetBondTypeUndoableRoundTripsAndPreservesSelection)
                       RDKit::Bond::TRIPLE);
 }
 
+BOOST_AUTO_TEST_CASE(testSetBondTypeForSelectedBondsAppliesAsSingleUndoStep)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    m.addAtom("C", 2, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    m.addBond(1, 2, RDKit::Bond::SINGLE);
+    m.setBondSelected(0, true);
+    m.setBondSelected(1, true);
+
+    m.setBondTypeForSelectedBonds(RDKit::Bond::DOUBLE);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondType(),
+                      RDKit::Bond::DOUBLE);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(1)->getBondType(),
+                      RDKit::Bond::DOUBLE);
+    // Selection survives bond-type edits (no reindexing).
+    BOOST_CHECK(m.isBondSelected(0));
+    BOOST_CHECK(m.isBondSelected(1));
+
+    // Single undo step rolls back both bonds together (one macro).
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondType(),
+                      RDKit::Bond::SINGLE);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(1)->getBondType(),
+                      RDKit::Bond::SINGLE);
+}
+
+BOOST_AUTO_TEST_CASE(testSetBondTypeForSelectedBondsNoOpOnEmptySelection)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    const auto count_before = stack.count();
+    m.setBondTypeForSelectedBonds(RDKit::Bond::DOUBLE);
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondType(),
+                      RDKit::Bond::SINGLE);
+}
+
 BOOST_AUTO_TEST_CASE(testSetBondTypeNoOpsWhenBondMissingOrUnchanged)
 {
     UndoStack stack;

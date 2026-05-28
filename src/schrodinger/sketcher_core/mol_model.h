@@ -177,6 +177,17 @@ class MolModel : public UndoableModel
                              RDKit::Bond::BondType type);
 
     /**
+     * Selection-wide equivalent of setBondTypeUndoable — change every
+     * selected bond's order to `type` inside a single undo macro. Mirrors
+     * Qt's ModifyBondsMenu (menu/bond_context_menu.cpp:17) when invoked from
+     * the SelectionContextMenu. `type` accepts any RDKit::Bond::BondType
+     * (1=SINGLE, 2=DOUBLE, 3=TRIPLE, 12=AROMATIC). Bonds whose current type
+     * already matches are skipped (matches setBondTypeUndoable's no-op).
+     * Preserves the selection. No-op when no bonds are selected.
+     */
+    void setBondTypeForSelectedBonds(RDKit::Bond::BondType type);
+
+    /**
      * Insert a planar regular polygon of `size` carbon atoms centered at
      * (cx, cy). When `aromatic` is true (and `size` is even), bonds alternate
      * SINGLE / DOUBLE in Kekulé form so benzene renders the classic three-

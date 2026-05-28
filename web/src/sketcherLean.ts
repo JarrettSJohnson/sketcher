@@ -81,6 +81,15 @@ export interface MolModelInstance {
      * bond doesn't exist or the type already matches.
      */
     setBondTypeUndoable(begin: number, end: number, type: number): void;
+    /**
+     * Selection-wide equivalent of setBondTypeUndoable. Changes the bond
+     * order of every selected bond to `type` in a single undo step. Mirrors
+     * Qt's ModifyBondsMenu (bond_context_menu.cpp:17) when invoked from the
+     * SelectionContextMenu. `type` is RDKit::Bond::BondType (1=SINGLE,
+     * 2=DOUBLE, 3=TRIPLE, 12=AROMATIC). Bonds whose type already matches
+     * are skipped. Preserves the selection. No-op when no bonds are selected.
+     */
+    setBondTypeForSelectedBonds(type: number): void;
     addRing(size: number, cx: number, cy: number, aromatic: boolean): void;
     /**
      * Add a single-bonded carbon chain at the given 2D positions. Pass

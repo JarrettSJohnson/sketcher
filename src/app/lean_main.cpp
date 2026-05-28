@@ -593,6 +593,11 @@ class MolModelJS
         m_model.setBondTypeUndoable(
             begin, end, static_cast<RDKit::Bond::BondType>(type));
     }
+    void setBondTypeForSelectedBonds(int type)
+    {
+        m_model.setBondTypeForSelectedBonds(
+            static_cast<RDKit::Bond::BondType>(type));
+    }
     void addRing(unsigned int size, double cx, double cy, bool aromatic)
     {
         m_model.addRing(size, cx, cy, aromatic);
@@ -860,6 +865,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("setBondDirForSelectedBonds",
                   &MolModelJS::setBondDirForSelectedBonds)
         .function("setBondTypeUndoable", &MolModelJS::setBondTypeUndoable)
+        .function("setBondTypeForSelectedBonds",
+                  &MolModelJS::setBondTypeForSelectedBonds)
         .function("addRing", &MolModelJS::addRing)
         .function("addAtomChain", &MolModelJS::addAtomChain)
         .function("rotateSelectedAtoms", &MolModelJS::rotateSelectedAtoms)

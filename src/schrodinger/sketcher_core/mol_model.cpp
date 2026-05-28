@@ -389,9 +389,15 @@ void MolModel::setBondTypeUndoable(unsigned int begin_idx,
         return;
     }
     const auto old_type = bond->getBondType();
-    if (old_type == type) {
+    const bool old_arom = bond->getIsAromatic();
+    const bool new_arom = (type == RDKit::Bond::AROMATIC);
+    if (old_type == type && old_arom == new_arom) {
         return;
     }
+    const unsigned int begin_atom_idx = bond->getBeginAtomIdx();
+    const unsigned int end_atom_idx = bond->getEndAtomIdx();
+    const bool old_begin_arom = m_mol.getAtomWithIdx(begin_atom_idx)->getIsAromatic();
+    const bool old_end_arom = m_mol.getAtomWithIdx(end_atom_idx)->getIsAromatic();
     const unsigned int bond_idx = bond->getIdx();
     auto refresh_cache = [this] {
         try {
@@ -399,17 +405,49 @@ void MolModel::setBondTypeUndoable(unsigned int begin_idx,
         } catch (...) {
         }
     };
-    auto redo = [this, bond_idx, type, refresh_cache] {
-        m_mol.getBondWithIdx(bond_idx)->setBondType(type);
+    auto redo = [this, bond_idx, type, new_arom, begin_atom_idx, end_atom_idx,
+                 refresh_cache] {
+        auto* b = m_mol.getBondWithIdx(bond_idx);
+        b->setBondType(type);
+        b->setIsAromatic(new_arom);
+        if (new_arom) {
+            m_mol.getAtomWithIdx(begin_atom_idx)->setIsAromatic(true);
+            m_mol.getAtomWithIdx(end_atom_idx)->setIsAromatic(true);
+        }
         refresh_cache();
         emitSignal(modelChanged);
     };
-    auto undo = [this, bond_idx, old_type, refresh_cache] {
-        m_mol.getBondWithIdx(bond_idx)->setBondType(old_type);
+    auto undo = [this, bond_idx, old_type, old_arom, begin_atom_idx,
+                 end_atom_idx, old_begin_arom, old_end_arom, refresh_cache] {
+        auto* b = m_mol.getBondWithIdx(bond_idx);
+        b->setBondType(old_type);
+        b->setIsAromatic(old_arom);
+        m_mol.getAtomWithIdx(begin_atom_idx)->setIsAromatic(old_begin_arom);
+        m_mol.getAtomWithIdx(end_atom_idx)->setIsAromatic(old_end_arom);
         refresh_cache();
         emitSignal(modelChanged);
     };
     doCommand(std::move(redo), std::move(undo), "Change bond order");
+}
+
+void MolModel::setBondTypeForSelectedBonds(RDKit::Bond::BondType type)
+{
+    if (m_selected_bonds.empty()) {
+        return;
+    }
+    // Snapshot indices up front (defensive — closures shouldn't mutate the
+    // set, but a single macro keeps the undo step atomic). Same pattern as
+    // setBondDirForSelectedBonds.
+    const std::vector<unsigned int> bonds(m_selected_bonds.begin(),
+                                          m_selected_bonds.end());
+    auto macro = createUndoMacro("Change bond order on selection");
+    for (auto idx : bonds) {
+        if (idx >= m_mol.getNumBonds()) {
+            continue;
+        }
+        const auto* b = m_mol.getBondWithIdx(idx);
+        setBondTypeUndoable(b->getBeginAtomIdx(), b->getEndAtomIdx(), type);
+    }
 }
 
 void MolModel::addRing(unsigned int size, double cx, double cy, bool aromatic)

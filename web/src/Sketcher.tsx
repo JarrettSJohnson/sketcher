@@ -5389,6 +5389,54 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             adjustCharge(-1);
                         }} />
                     <div style={styles.moreDivider} />
+                    {/* Modify Bonds (Qt: ModifyBondsMenu) — flattened from
+                        the submenu form. Flip Substituent is hidden in the
+                        selection branch (Qt setFlipVisible(false), so we
+                        skip it too). Other Type / Query / Topology submenus
+                        need wavy/crossed renderer support + query bonds and
+                        stay deferred. Each item is a no-op when no bonds are
+                        in the selection — the selection-wide primitives
+                        already early-return on empty bond sets. */}
+                    <div style={styles.moreSectionLabel}>Modify Bonds</div>
+                    <MoreItem label='Single' testid='sel-ctx-bond-single'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            modelRef.current?.setBondTypeForSelectedBonds(1);
+                            setStatus('selected bonds → single');
+                        }} />
+                    <MoreItem label='Double' testid='sel-ctx-bond-double'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            modelRef.current?.setBondTypeForSelectedBonds(2);
+                            setStatus('selected bonds → double');
+                        }} />
+                    <MoreItem label='Triple' testid='sel-ctx-bond-triple'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            modelRef.current?.setBondTypeForSelectedBonds(3);
+                            setStatus('selected bonds → triple');
+                        }} />
+                    <MoreItem label='Aromatic' testid='sel-ctx-bond-aromatic'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            modelRef.current?.setBondTypeForSelectedBonds(12);
+                            setStatus('selected bonds → aromatic');
+                        }} />
+                    <MoreItem label='Up' testid='sel-ctx-bond-up'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            modelRef.current?.setBondDirForSelectedBonds(
+                                BOND_DIR_WEDGE);
+                            setStatus('selected bonds → up wedge');
+                        }} />
+                    <MoreItem label='Down' testid='sel-ctx-bond-down'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            modelRef.current?.setBondDirForSelectedBonds(
+                                BOND_DIR_DASH);
+                            setStatus('selected bonds → down dash');
+                        }} />
+                    <div style={styles.moreDivider} />
                     <MoreItem label='Delete' testid='sel-ctx-delete'
                         onClick={() => {
                             setSelContextMenu(null);
