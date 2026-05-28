@@ -5090,4 +5090,126 @@ test.describe('React Sketcher', () => {
         await expect(page.getByTestId('sel-ctx-radical-plus')).toBeEnabled();
     });
 
+    // -------- Batch 45: Periodic-table popup for Set Element --------
+    // Qt's SetAtomMenuWidget (set_atom_widget.cpp:158) embeds the
+    // PeriodicTableWidget popup alongside the 8-element strip so the menu
+    // can mutate existing atoms to any of the 118 elements (not just the
+    // sidebar's quick-pick set). React port mounts the same
+    // PeriodicTableButton popup behind a "Periodic Table..." menu item in
+    // both the atom and selection context menus.
+    test('atom context menu: Periodic Table launcher opens the popup grid', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await expect(page.getByTestId('atom-ctx-periodic-table'))
+            .toBeVisible();
+        await page.getByTestId('atom-ctx-periodic-table').click();
+        await expect(page.getByTestId('atom-ctx-periodic-table-popup'))
+            .toBeVisible();
+        // Spot-check a few cells across the periodic table classes.
+        for (const sym of ['H', 'Fe', 'Au', 'U']) {
+            await expect(page.getByTestId(`pt-${sym}`)).toBeVisible();
+        }
+    });
+
+    test('atom context menu: picking Fe from the periodic-table popup converts the right-clicked atom', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        const before = await snapshot(page);
+        expect(before.atoms[0].el).toBe('C');
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await page.getByTestId('atom-ctx-periodic-table').click();
+        await page.getByTestId('pt-Fe').click();
+        // Picking closes both the PT popup AND the atom context menu.
+        await expect(page.getByTestId('atom-ctx-periodic-table-popup'))
+            .toHaveCount(0);
+        await expect(page.getByTestId('atom-context-menu')).toHaveCount(0);
+        const after = await snapshot(page);
+        expect(after.atoms[0].el).toBe('Fe');
+        // Single undo restores carbon.
+        await page.getByTestId('undo').click();
+        const undone = await snapshot(page);
+        expect(undone.atoms[0].el).toBe('C');
+    });
+
+    test('atom context menu: Periodic Table is disabled for R-groups', async ({
+        page,
+    }) => {
+        // Same fidelity rule as the 8-element strip: R-group atoms carry
+        // the _MolFileRLabel dummy that replaceAtom would discard.
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('rgroup').click();
+        await canvas.click({ position: { x: 200, y: 200 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 200, y: 200 }, button: 'right' });
+        await expect(page.getByTestId('atom-ctx-periodic-table'))
+            .toBeDisabled();
+    });
+
+    test('selection context menu: Periodic Table launcher opens the popup grid', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await expect(page.getByTestId('sel-ctx-periodic-table'))
+            .toBeVisible();
+        await page.getByTestId('sel-ctx-periodic-table').click();
+        await expect(page.getByTestId('sel-ctx-periodic-table-popup'))
+            .toBeVisible();
+        for (const sym of ['H', 'Fe', 'Au', 'U']) {
+            await expect(page.getByTestId(`pt-${sym}`)).toBeVisible();
+        }
+    });
+
+    test('selection context menu: picking Fe from the periodic-table popup converts every selected atom in one undo step', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-periodic-table').click();
+        await page.getByTestId('pt-Fe').click();
+        await expect(page.getByTestId('sel-ctx-periodic-table-popup'))
+            .toHaveCount(0);
+        await expect(page.getByTestId('sel-context-menu')).toHaveCount(0);
+        let rd = await snapshot(page);
+        expect(rd.atoms.map((a) => a.el)).toEqual(['Fe', 'Fe', 'Fe']);
+        // Selection survives — setElementForSelectedAtoms uses doCommand,
+        // not doMutation, so the selection isn't torn down.
+        expect(rd.atoms.every((a) => a.sel)).toBe(true);
+        // One undo restores the original mix.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms.map((a) => a.el)).toEqual(['C', 'C', 'O']);
+    });
+
+    test('atom context menu: outside-click on the PT popup closes the popup without committing', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await page.getByTestId('atom-ctx-periodic-table').click();
+        await expect(page.getByTestId('atom-ctx-periodic-table-popup'))
+            .toBeVisible();
+        // Click far away to dismiss. Use a viewport-corner click that
+        // lands on neither the popup nor the context menu nor the canvas.
+        await page.mouse.click(2, 2);
+        await expect(page.getByTestId('atom-ctx-periodic-table-popup'))
+            .toHaveCount(0);
+        // Atom didn't change — outside-click is a pure cancel.
+        const rd = await snapshot(page);
+        expect(rd.atoms[0].el).toBe('C');
+    });
+
 });

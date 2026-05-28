@@ -5457,6 +5457,22 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 }} />
                         ))}
                     </div>
+                    {/* Periodic-table popup launcher (Qt:
+                        SetAtomMenuWidget's ui->periodic_table_btn —
+                        set_atom_widget.cpp:34-38). Mirrors the toolbar
+                        PT button but in the menu's MoreItem row form.
+                        Hidden when the selection contains no atoms —
+                        setElementForSelectedAtoms would be a no-op. */}
+                    {selContextMenu.selAtomIndices.length > 0 && (
+                        <PeriodicTableMenuItem
+                            testid='sel-ctx-periodic-table'
+                            onPick={(sym, atomicNum) => {
+                                setSelContextMenu(null);
+                                modelRef.current
+                                    ?.setElementForSelectedAtoms(atomicNum);
+                                setStatus(`Set element: ${sym}`);
+                            }} />
+                    )}
                     <MoreItem label='+ Charge' testid='sel-ctx-charge-plus'
                         onClick={() => {
                             setSelContextMenu(null);
@@ -5781,6 +5797,28 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             );
                         })}
                     </div>
+                    {/* Periodic-table popup launcher (Qt:
+                        SetAtomMenuWidget's ui->periodic_table_btn —
+                        set_atom_widget.cpp:34-38). Same component the
+                        toolbar uses; in the atom menu it's gated to
+                        non-R-group atoms (replaceAtom would discard
+                        their dummy properties) and won't re-fire if
+                        the picked element matches what the atom already
+                        is. */}
+                    <PeriodicTableMenuItem
+                        testid='atom-ctx-periodic-table'
+                        disabled={atomContextMenu.isRGroupOrAp}
+                        onPick={(sym, atomicNum) => {
+                            const am = atomContextMenu;
+                            setAtomContextMenu(null);
+                            if (am.el === sym) {
+                                setStatus(`Already ${sym}`);
+                                return;
+                            }
+                            modelRef.current?.setAtomElement(
+                                am.atomIdx, atomicNum);
+                            setStatus(`Set element: ${sym}`);
+                        }} />
                     <div style={styles.moreDivider} />
                     {/* Add/Remove Explicit Hydrogens (Qt:
                         ModifyAtomsMenu::m_add_remove_explicit_h_act,
@@ -6864,6 +6902,30 @@ const PT_LAYOUT: readonly (readonly PTCell[])[] = [
     [null, null, ['Ac','actinides'], ['Th','actinides'], ['Pa','actinides'], ['U','actinides'], ['Np','actinides'], ['Pu','actinides'], ['Am','actinides'], ['Cm','actinides'], ['Bk','actinides'], ['Cf','actinides'], ['Es','actinides'], ['Fm','actinides'], ['Md','actinides'], ['No','actinides'], ['Lr','actinides'], null],
 ];
 
+// Symbol → atomic number for every element in PT_LAYOUT. Used by the
+// periodic-table popup when wired into the atom / selection context menus
+// so the picked element can be routed through MolModel.setAtomElement /
+// setElementForSelectedAtoms (both take atomic numbers, mirroring RDKit's
+// PeriodicTable::getAtomicNumber). Listed in atomic-number order — H=1
+// through Og=118.
+const SYMBOL_TO_ATOMIC_NUM: Record<string, number> = {
+    H: 1, He: 2, Li: 3, Be: 4, B: 5, C: 6, N: 7, O: 8, F: 9, Ne: 10,
+    Na: 11, Mg: 12, Al: 13, Si: 14, P: 15, S: 16, Cl: 17, Ar: 18,
+    K: 19, Ca: 20, Sc: 21, Ti: 22, V: 23, Cr: 24, Mn: 25, Fe: 26,
+    Co: 27, Ni: 28, Cu: 29, Zn: 30, Ga: 31, Ge: 32, As: 33, Se: 34,
+    Br: 35, Kr: 36, Rb: 37, Sr: 38, Y: 39, Zr: 40, Nb: 41, Mo: 42,
+    Tc: 43, Ru: 44, Rh: 45, Pd: 46, Ag: 47, Cd: 48, In: 49, Sn: 50,
+    Sb: 51, Te: 52, I: 53, Xe: 54, Cs: 55, Ba: 56, La: 57, Ce: 58,
+    Pr: 59, Nd: 60, Pm: 61, Sm: 62, Eu: 63, Gd: 64, Tb: 65, Dy: 66,
+    Ho: 67, Er: 68, Tm: 69, Yb: 70, Lu: 71, Hf: 72, Ta: 73, W: 74,
+    Re: 75, Os: 76, Ir: 77, Pt: 78, Au: 79, Hg: 80, Tl: 81, Pb: 82,
+    Bi: 83, Po: 84, At: 85, Rn: 86, Fr: 87, Ra: 88, Ac: 89, Th: 90,
+    Pa: 91, U: 92, Np: 93, Pu: 94, Am: 95, Cm: 96, Bk: 97, Cf: 98,
+    Es: 99, Fm: 100, Md: 101, No: 102, Lr: 103, Rf: 104, Db: 105,
+    Sg: 106, Bh: 107, Hs: 108, Mt: 109, Ds: 110, Rg: 111, Cn: 112,
+    Nh: 113, Fl: 114, Mc: 115, Lv: 116, Ts: 117, Og: 118,
+};
+
 // Element-class background colors, copied verbatim from
 // PERIODIC_TABLE_STYLE in sketcher_css_style.h.
 const PT_CLASS_BG: Record<string, string> = {
@@ -6886,7 +6948,7 @@ const PT_CLASS_BG: Record<string, string> = {
 // dropdown beneath the trigger button; outside-click closes it.
 interface PeriodicTableButtonProps {
     testid: string;
-    onPick: (element: string) => void;
+    onPick: (element: string, atomicNum: number) => void;
 }
 function PeriodicTableButton({
     testid, onPick,
@@ -6894,20 +6956,7 @@ function PeriodicTableButton({
     const [hover, setHover] = useState(false);
     const [open, setOpen] = useState(false);
     const wrapperRef = useRef<HTMLDivElement | null>(null);
-
-    useEffect(() => {
-        if (!open) return;
-        function onDocMouseDown(e: globalThis.MouseEvent): void {
-            const target = e.target as Node;
-            if (wrapperRef.current && !wrapperRef.current.contains(target)) {
-                setOpen(false);
-            }
-        }
-        document.addEventListener('mousedown', onDocMouseDown);
-        return () => {
-            document.removeEventListener('mousedown', onDocMouseDown);
-        };
-    }, [open]);
+    usePeriodicTableOutsideClick(open, setOpen, wrapperRef);
 
     return (
         <div ref={wrapperRef} style={{ position: 'relative' }}>
@@ -6930,27 +6979,120 @@ function PeriodicTableButton({
                     draggable={false} style={styles.iconImg} />
             </button>
             {open && (
-                <div style={styles.periodicTablePopup}
-                    data-testid={`${testid}-popup`}
-                    role='dialog'
-                    aria-label='Periodic table'>
-                    {PT_LAYOUT.map((row, r) =>
-                        row.map((cell, c) => {
-                            if (!cell) return null;
-                            const [sym, cls] = cell;
-                            return (
-                                <PTCellButton key={`${r}-${c}`}
-                                    sym={sym}
-                                    bg={PT_CLASS_BG[cls] ?? '#eee'}
-                                    row={r} col={c}
-                                    onPick={(s) => {
-                                        setOpen(false);
-                                        onPick(s);
-                                    }} />
-                            );
-                        }),
-                    )}
-                </div>
+                <PeriodicTablePopupGrid
+                    testid={`${testid}-popup`}
+                    onPick={(sym, num) => { setOpen(false); onPick(sym, num); }}
+                />
+            )}
+        </div>
+    );
+}
+
+// Context-menu trigger for the periodic-table popup. Renders as a
+// MoreItem-style row labeled "Periodic Table..." (matching the convention
+// for popup-launching menu items); clicking opens the same PT grid the
+// toolbar uses, anchored to the right of the menu row so it doesn't
+// overlap the surrounding context-menu items.
+interface PeriodicTableMenuItemProps {
+    testid: string;
+    onPick: (element: string, atomicNum: number) => void;
+    disabled?: boolean;
+}
+function PeriodicTableMenuItem({
+    testid, onPick, disabled,
+}: PeriodicTableMenuItemProps): JSX.Element {
+    const [hover, setHover] = useState(false);
+    const [open, setOpen] = useState(false);
+    const wrapperRef = useRef<HTMLDivElement | null>(null);
+    usePeriodicTableOutsideClick(open, setOpen, wrapperRef);
+
+    return (
+        <div ref={wrapperRef} style={styles.periodicTableMenuItemWrap}>
+            <button
+                type='button'
+                disabled={disabled}
+                style={{
+                    ...styles.moreItem,
+                    ...(hover && !disabled ? styles.moreItemHover : {}),
+                    ...(disabled ? styles.moreItemDisabled : {}),
+                }}
+                onClick={() => { if (!disabled) setOpen((o) => !o); }}
+                onMouseEnter={() => setHover(true)}
+                onMouseLeave={() => setHover(false)}
+                data-testid={testid}
+                aria-haspopup='dialog'
+                aria-expanded={open}
+            >
+                Periodic Table...
+            </button>
+            {open && (
+                <PeriodicTablePopupGrid
+                    testid={`${testid}-popup`}
+                    anchor='right'
+                    onPick={(sym, num) => { setOpen(false); onPick(sym, num); }}
+                />
+            )}
+        </div>
+    );
+}
+
+// Shared close-on-outside-click hook used by both PT triggers. Listens
+// for mousedown anywhere outside the wrapper while the popup is open.
+function usePeriodicTableOutsideClick(
+    open: boolean,
+    setOpen: (v: boolean) => void,
+    wrapperRef: React.RefObject<HTMLDivElement>,
+): void {
+    useEffect(() => {
+        if (!open) return;
+        function onDocMouseDown(e: globalThis.MouseEvent): void {
+            const target = e.target as Node;
+            if (wrapperRef.current && !wrapperRef.current.contains(target)) {
+                setOpen(false);
+            }
+        }
+        document.addEventListener('mousedown', onDocMouseDown);
+        return () => {
+            document.removeEventListener('mousedown', onDocMouseDown);
+        };
+    }, [open, setOpen, wrapperRef]);
+}
+
+// The popup grid itself — extracted so both the toolbar and the context-
+// menu triggers share one renderer. `anchor='right'` positions the popup
+// to the right of its trigger (used by the menu variant so the popup
+// doesn't cover the rest of the menu items).
+interface PeriodicTablePopupGridProps {
+    testid: string;
+    onPick: (sym: string, atomicNum: number) => void;
+    anchor?: 'below' | 'right';
+}
+function PeriodicTablePopupGrid({
+    testid, onPick, anchor = 'below',
+}: PeriodicTablePopupGridProps): JSX.Element {
+    const anchorStyle = anchor === 'right'
+        ? styles.periodicTablePopupRight
+        : styles.periodicTablePopup;
+    return (
+        <div style={anchorStyle}
+            data-testid={testid}
+            role='dialog'
+            aria-label='Periodic table'>
+            {PT_LAYOUT.map((row, r) =>
+                row.map((cell, c) => {
+                    if (!cell) return null;
+                    const [sym, cls] = cell;
+                    return (
+                        <PTCellButton key={`${r}-${c}`}
+                            sym={sym}
+                            bg={PT_CLASS_BG[cls] ?? '#eee'}
+                            row={r} col={c}
+                            onPick={(s) => {
+                                const num = SYMBOL_TO_ATOMIC_NUM[s];
+                                onPick(s, num);
+                            }} />
+                    );
+                }),
             )}
         </div>
     );
@@ -7269,6 +7411,32 @@ const styles: Record<string, CSSProperties> = {
         gap: 1,
         // The sidebar is 117 px; the popup is ~390 px wide so it extends
         // well past the right edge. That's fine — popups float above.
+    },
+    // Right-anchored variant used by the context-menu PT trigger: the
+    // popup sits to the right of the menu row rather than below it,
+    // so it doesn't overlap the rest of the items. zIndex bumped above
+    // the host context-menu (which uses bgContextMenu at z=15) so the PT
+    // grid lands on top.
+    periodicTablePopupRight: {
+        position: 'absolute',
+        top: 0,
+        left: '100%',
+        marginLeft: 2,
+        background: 'white',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 3,
+        boxShadow: '0 2px 6px rgba(0,0,0,0.12)',
+        zIndex: 30,
+        padding: 4,
+        display: 'grid',
+        gridTemplateColumns: 'repeat(18, 21px)',
+        gridTemplateRows: 'repeat(10, 21px)',
+        gap: 1,
+    },
+    // Wrapper for the context-menu PT trigger row. `position: relative`
+    // so the right-anchored popup positions against this element.
+    periodicTableMenuItemWrap: {
+        position: 'relative',
     },
     ptCell: {
         width: 21,
