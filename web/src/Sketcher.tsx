@@ -170,6 +170,21 @@ interface BondDesc {
     // MolModel::mutateBondToQuery. Drawn near the bond midpoint; the bond
     // itself still renders at its base order (`o`). Absent for plain bonds.
     qlabel?: string;
+    // Ring-topology constraint ("ring" / "notring") from
+    // MolModel::setBondTopologyForBond. Drawn as Qt's ⭔ / "Not ⭔" annotation
+    // alongside any query label. Absent when unconstrained.
+    topo?: string;
+}
+
+// Combined bond annotation text (query label + ring-topology symbol), drawn
+// near the bond midpoint. Mirrors Qt's get_bond_type_and_query_label output
+// where an AND(query, BondInRing) surfaces both. Empty when the bond is plain.
+function bondAnnotationText(b: BondDesc): string {
+    const parts: string[] = [];
+    if (typeof b.qlabel === 'string') parts.push(b.qlabel);
+    if (b.topo === 'ring') parts.push('⭔');
+    else if (b.topo === 'notring') parts.push('Not ⭔');
+    return parts.join(' ');
 }
 
 // Mirror RDKit::Bond::BondDir for the values we render.
@@ -1260,12 +1275,13 @@ function drawSketch(
                 ctx.stroke();
             }
         }
-        // Query-bond annotation (Any / S/D / S/A / D/A). Qt draws it as a
-        // small label near the bond midpoint (bond_item.cpp:135-171). We place
-        // it just off the midpoint, offset perpendicular so it clears the
-        // line. Kept horizontal for legibility (Qt rotates it along the bond;
-        // a minor, documented divergence like the wavy-bond approximation).
-        if (typeof b.qlabel === 'string') {
+        // Query-bond + ring-topology annotation (Any / S/D / … and ⭔ / Not ⭔).
+        // Qt draws it as a small label near the bond midpoint (bond_item.cpp:
+        // 135-171). We place it just off the midpoint, offset perpendicular so
+        // it clears the line. Kept horizontal for legibility (Qt rotates it
+        // along the bond; a minor, documented divergence like the wavy bond).
+        const annotation = bondAnnotationText(b);
+        if (annotation) {
             const mx = (p1.px + p2.px) / 2;
             const my = (p1.py + p2.py) / 2;
             const dx = p2.px - p1.px;
@@ -1278,7 +1294,7 @@ function drawSketch(
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillStyle = palette.bond;
-            ctx.fillText(b.qlabel, mx + nx * off, my + ny * off);
+            ctx.fillText(annotation, mx + nx * off, my + ny * off);
         }
     }
 
@@ -1890,8 +1906,9 @@ function buildSketchSvg(
                 );
             }
         }
-        // Query-bond annotation, mirroring the canvas branch.
-        if (typeof b.qlabel === 'string') {
+        // Query-bond + topology annotation, mirroring the canvas branch.
+        const annotation = bondAnnotationText(b);
+        if (annotation) {
             const mx = (p1.px + p2.px) / 2;
             const my = (p1.py + p2.py) / 2;
             const dx = p2.px - p1.px;
@@ -1905,7 +1922,7 @@ function buildSketchSvg(
                 `<text x='${f(lx)}' y='${f(ly)}' fill='${palette.bond}' ` +
                 `font-family='sans-serif' font-size='${qpx}' ` +
                 `text-anchor='middle' dominant-baseline='central'>` +
-                `${esc(b.qlabel)}</text>`,
+                `${esc(annotation)}</text>`,
             );
         }
     }
@@ -2292,7 +2309,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [bondContextMenu, setBondContextMenu] = useState<
         { x: number; y: number; bondIdx: number; a: number; b: number;
           type: number; dir: number; bt?: number; inRing: boolean;
-          qlabel?: string } | null
+          qlabel?: string; topo?: string } | null
     >(null);
     // Per-atom right-click context menu — mirrors Qt's AtomContextMenu
     // (menu/atom_context_menu.cpp). Opens when right-click hits an atom and
@@ -3941,6 +3958,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         bt: bd.bt,
                         inRing: bondIsInRing(rd.bonds, bd.a, bd.b),
                         qlabel: bd.qlabel,
+                        topo: bd.topo,
                     });
                     setBgContextMenu(null);
                     setSelContextMenu(null);
@@ -5860,10 +5878,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     {/* Modify Bonds (Qt: ModifyBondsMenu) — flattened from
                         the submenu form. Flip Substituent is hidden in the
                         selection branch (Qt setFlipVisible(false), so we
-                        skip it too). Topology submenu still needs RDKit
-                        ring-membership query support and stays deferred;
-                        Query (Any/S-D/D-A/S-A) ships below. Each
-                        item is a no-op when no bonds are in the selection —
+                        skip it too). Query (Any/S-D/D-A/S-A) + Topology
+                        (In Ring / Not In a Ring / Either) both ship below.
+                        Each item is a no-op when no bonds are in the selection —
                         the selection-wide primitives already early-return
                         on empty bond sets. Other Type items (Coordinate /
                         Zero / wavy / crossed) use the combined
@@ -5965,6 +5982,23 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 setStatus(`selected bonds → query ${code}`);
                             }} />
                     ))}
+                    {/* Topology — applied to every selected bond. */}
+                    {([
+                        ['ring', 'Topology: In Ring'],
+                        ['notring', 'Topology: Not In a Ring'],
+                        ['either', 'Topology: Either'],
+                    ] as [string, string][]).map(([code, label]) => (
+                        <MoreItem
+                            key={`sel-bond-topo-${code}`}
+                            label={label}
+                            testid={`sel-ctx-bond-topo-${code}`}
+                            onClick={() => {
+                                setSelContextMenu(null);
+                                modelRef.current
+                                    ?.setSelectedBondsTopology(code);
+                                setStatus(`selected bonds → topology ${code}`);
+                            }} />
+                    ))}
                     <div style={styles.moreDivider} />
                     <MoreItem label='Delete' testid='sel-ctx-delete'
                         onClick={() => {
@@ -5975,12 +6009,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             )}
             {/* Bond context menu — mirrors Qt's BondContextMenu
                 (menu/bond_context_menu.cpp). Order/labels follow that file.
-                The Topology submenu (In Ring / Not In Ring / Either) still
-                needs RDKit ring-membership query support and stays deferred;
-                Query (Any/S-D/D-A/S-A) ships below. Active bond-type /
-                bond-dir / query items show a leading checkmark so the user
-                can see the current state — Qt uses checkable QAction groups
-                for the same purpose. */}
+                Query (Any/S-D/D-A/S-A) and Topology (In Ring / Not In a Ring
+                / Either) both ship below. Active bond-type / bond-dir / query
+                / topology items show a leading checkmark so the user can see
+                the current state — Qt uses checkable QAction groups for the
+                same purpose. */}
             {bondContextMenu && (
                 <div
                     ref={bondContextMenuRef}
@@ -6170,6 +6203,32 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 modelRef.current?.mutateBondToQuery(
                                     bm.a, bm.b, code);
                                 setStatus(`bond query: ${code}`);
+                            }} />
+                    ))}
+                    {/* Topology — Qt's ModifyBondsMenu::createTopologyMenu
+                        (bond_context_menu.cpp:92). In Ring / Not In a Ring /
+                        Either (clear). Routes through setBondTopologyForBond;
+                        the active constraint carries a check. */}
+                    <div style={styles.moreDivider} />
+                    <div style={styles.moreSectionLabel}>Topology</div>
+                    {([
+                        ['ring', 'In Ring'],
+                        ['notring', 'Not In a Ring'],
+                        ['either', 'Either'],
+                    ] as [string, string][]).map(([code, label]) => (
+                        <MoreItem
+                            key={`bond-topo-${code}`}
+                            label={((code === 'either'
+                                ? !bondContextMenu.topo
+                                : bondContextMenu.topo === code)
+                                ? '✓ ' : '   ') + label}
+                            testid={`bond-ctx-topo-${code}`}
+                            onClick={() => {
+                                const bm = bondContextMenu;
+                                setBondContextMenu(null);
+                                modelRef.current?.setBondTopologyForBond(
+                                    bm.a, bm.b, code);
+                                setStatus(`bond topology: ${label}`);
                             }} />
                     ))}
                     <div style={styles.moreDivider} />

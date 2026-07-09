@@ -129,6 +129,16 @@ export interface MolModelInstance {
      * two-atom gesture. `label` is "aromatic" or "Any"/"S/D"/"S/A"/"D/A".
      */
     addQueryBondBetweenAtoms(begin: number, end: number, label: string): void;
+    /**
+     * Set a bond's ring-topology constraint: "ring" / "notring" / "either"
+     * (clear). Rebuilds the bond from its base type + query label then adds or
+     * drops a BondInRing query. Backs the ModifyBondsMenu Topology submenu.
+     * Single undo step. No-op on missing bond / bad topology.
+     */
+    setBondTopologyForBond(begin: number, end: number,
+                           topology: string): void;
+    /** Selection-wide equivalent of setBondTopologyForBond (one undo step). */
+    setSelectedBondsTopology(topology: string): void;
     addRing(size: number, cx: number, cy: number, aromatic: boolean): void;
     /**
      * Add a single-bonded carbon chain at the given 2D positions. Pass

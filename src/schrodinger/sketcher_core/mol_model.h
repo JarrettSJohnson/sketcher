@@ -43,6 +43,13 @@ inline constexpr const char* WILDCARD_LABEL_PROP = "_sketcherWildcard";
 // (rdkit/atoms_and_bonds.cpp:222).
 inline constexpr const char* BOND_QUERY_LABEL_PROP = "_sketcherBondQuery";
 
+// Private RDKit bond property holding a bond's ring-topology constraint:
+// "ring" (in a ring) or "notring" (not in a ring). Absent = no constraint
+// (BondTopology::EITHER). Set by MolModel::setBondTopologyForBond; the render
+// description surfaces it so the UI can draw Qt's ⭔ / "Not ⭔" annotation
+// (rdkit/atoms_and_bonds.cpp:204).
+inline constexpr const char* BOND_TOPOLOGY_PROP = "_sketcherBondTopology";
+
 class UndoStack;
 
 class MolModel : public UndoableModel
@@ -251,6 +258,26 @@ class MolModel : public UndoableModel
      */
     void addQueryBondBetweenAtoms(unsigned int begin_idx, unsigned int end_idx,
                                   const std::string& label);
+
+    /**
+     * Set the ring-topology constraint on the bond between `begin_idx` and
+     * `end_idx`. `topology` is "ring" (in a ring), "notring" (not in a ring),
+     * or "either" (clear the constraint). Mirrors Qt's ModifyBondsMenu
+     * Topology submenu → MolModel::setBondTopology (model/mol_model.cpp:2356).
+     * The bond is rebuilt from its base type + any query label, then a
+     * BondInRing query is added (negated for "notring") or dropped ("either").
+     * Single undo step. No-op when the bond is missing or `topology` is
+     * unrecognized.
+     */
+    void setBondTopologyForBond(unsigned int begin_idx, unsigned int end_idx,
+                                const std::string& topology);
+
+    /**
+     * Selection-wide equivalent of `setBondTopologyForBond` — every selected
+     * bond gets the topology constraint inside one undo macro. No-op when no
+     * bonds are selected or `topology` is unrecognized.
+     */
+    void setSelectedBondsTopology(const std::string& topology);
 
     /**
      * Insert a planar regular polygon of `size` carbon atoms centered at

@@ -24,6 +24,7 @@ using schrodinger::sketcher_core::MolModel;
 using schrodinger::sketcher_core::UndoStack;
 using schrodinger::sketcher_core::WILDCARD_LABEL_PROP;
 using schrodinger::sketcher_core::BOND_QUERY_LABEL_PROP;
+using schrodinger::sketcher_core::BOND_TOPOLOGY_PROP;
 
 BOOST_AUTO_TEST_CASE(testNewModelIsEmpty)
 {
@@ -764,6 +765,104 @@ BOOST_AUTO_TEST_CASE(testAddQueryBondBetweenAtomsNoOpsOnBadInput)
     m.addQueryBondBetweenAtoms(0, 1, "ZZ");   // bad label
     BOOST_CHECK_EQUAL(stack.count(), count_before);
     BOOST_CHECK(m.mol().getBondBetweenAtoms(0, 1) == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(testSetBondTopologyInRingAddsRingQueryAndLabel)
+{
+    // Plain single bond → In Ring. Becomes a query bond carrying the topology
+    // prop; undo restores the plain bond.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    m.setBondTopologyForBond(0, 1, "ring");
+    const auto* b = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_CHECK(b->hasQuery());
+    std::string topo;
+    BOOST_CHECK(b->getPropIfPresent(BOND_TOPOLOGY_PROP, topo));
+    BOOST_CHECK_EQUAL(topo, "ring");
+    BOOST_CHECK_EQUAL(b->getBondType(), RDKit::Bond::SINGLE); // base kept
+    stack.undo();
+    const auto* plain = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_CHECK(!plain->hasQuery());
+    BOOST_CHECK(!plain->hasProp(BOND_TOPOLOGY_PROP));
+}
+
+BOOST_AUTO_TEST_CASE(testSetBondTopologyEitherClearsConstraint)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    m.setBondTopologyForBond(0, 1, "notring");
+    BOOST_CHECK(m.mol().getBondBetweenAtoms(0, 1)->hasProp(BOND_TOPOLOGY_PROP));
+    // Clearing to "either" drops the constraint and reverts to a plain bond.
+    m.setBondTopologyForBond(0, 1, "either");
+    const auto* b = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_CHECK(!b->hasProp(BOND_TOPOLOGY_PROP));
+    BOOST_CHECK(!b->hasQuery());
+    BOOST_CHECK_EQUAL(b->getBondType(), RDKit::Bond::SINGLE);
+}
+
+BOOST_AUTO_TEST_CASE(testSetBondTopologyKeepsExistingQueryLabel)
+{
+    // A bond that already carries a query type (S/D) keeps it when topology is
+    // added — both the query label and the topology prop survive.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    m.mutateBondToQuery(0, 1, "S/D");
+    m.setBondTopologyForBond(0, 1, "ring");
+    const auto* b = m.mol().getBondBetweenAtoms(0, 1);
+    std::string qlabel, topo;
+    BOOST_CHECK(b->getPropIfPresent(BOND_QUERY_LABEL_PROP, qlabel));
+    BOOST_CHECK_EQUAL(qlabel, "S/D");
+    BOOST_CHECK(b->getPropIfPresent(BOND_TOPOLOGY_PROP, topo));
+    BOOST_CHECK_EQUAL(topo, "ring");
+    // Clearing topology keeps the query label.
+    m.setBondTopologyForBond(0, 1, "either");
+    const auto* b2 = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_CHECK(b2->getPropIfPresent(BOND_QUERY_LABEL_PROP, qlabel));
+    BOOST_CHECK_EQUAL(qlabel, "S/D");
+    BOOST_CHECK(!b2->hasProp(BOND_TOPOLOGY_PROP));
+}
+
+BOOST_AUTO_TEST_CASE(testSetBondTopologyNoOpsOnBadInput)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    const auto count_before = stack.count();
+    m.setBondTopologyForBond(0, 1, "sideways"); // bad topology
+    m.setBondTopologyForBond(0, 9, "ring");     // missing bond
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+}
+
+BOOST_AUTO_TEST_CASE(testSetSelectedBondsTopologyAppliesAsOneUndoStep)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addAtom("C", 3.0, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    m.addBond(1, 2, RDKit::Bond::SINGLE);
+    m.setBondSelected(0, true);
+    m.setBondSelected(1, true);
+    const auto count_before = stack.count();
+    m.setSelectedBondsTopology("ring");
+    BOOST_CHECK(m.mol().getBondWithIdx(0)->hasProp(BOND_TOPOLOGY_PROP));
+    BOOST_CHECK(m.mol().getBondWithIdx(1)->hasProp(BOND_TOPOLOGY_PROP));
+    BOOST_CHECK_EQUAL(stack.count(), count_before + 1);
+    stack.undo();
+    BOOST_CHECK(!m.mol().getBondWithIdx(0)->hasProp(BOND_TOPOLOGY_PROP));
+    BOOST_CHECK(!m.mol().getBondWithIdx(1)->hasProp(BOND_TOPOLOGY_PROP));
 }
 
 BOOST_AUTO_TEST_CASE(testMutateSelectedBondsToQueryAppliesAsOneUndoStep)

@@ -391,6 +391,13 @@ std::string mol_to_render_description(
                 bond_qlabel)) {
             os << ",\"qlabel\":\"" << bond_qlabel << "\"";
         }
+        // Ring-topology constraint ("ring" / "notring"). The renderer draws
+        // Qt's ⭔ / "Not ⭔" annotation next to any query label.
+        std::string bond_topo;
+        if (b->getPropIfPresent(
+                schrodinger::sketcher_core::BOND_TOPOLOGY_PROP, bond_topo)) {
+            os << ",\"topo\":\"" << bond_topo << "\"";
+        }
         if (model != nullptr && model->isBondSelected(i)) {
             os << ",\"sel\":true";
         }
@@ -666,6 +673,15 @@ class MolModelJS
                                   const std::string& label)
     {
         m_model.addQueryBondBetweenAtoms(begin, end, label);
+    }
+    void setBondTopologyForBond(unsigned int begin, unsigned int end,
+                                const std::string& topology)
+    {
+        m_model.setBondTopologyForBond(begin, end, topology);
+    }
+    void setSelectedBondsTopology(const std::string& topology)
+    {
+        m_model.setSelectedBondsTopology(topology);
     }
     void addRing(unsigned int size, double cx, double cy, bool aromatic)
     {
@@ -988,6 +1004,10 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
                   &MolModelJS::mutateSelectedBondsToQuery)
         .function("addQueryBondBetweenAtoms",
                   &MolModelJS::addQueryBondBetweenAtoms)
+        .function("setBondTopologyForBond",
+                  &MolModelJS::setBondTopologyForBond)
+        .function("setSelectedBondsTopology",
+                  &MolModelJS::setSelectedBondsTopology)
         .function("addRing", &MolModelJS::addRing)
         .function("addAtomChain", &MolModelJS::addAtomChain)
         .function("rotateSelectedAtoms", &MolModelJS::rotateSelectedAtoms)

@@ -5878,4 +5878,74 @@ M  END`;
         expect(rd.bonds[0].qlabel).toBe('Any');
     });
 
+    // -------- Batch 53: Topology bond submenu --------
+    // Qt's ModifyBondsMenu::createTopologyMenu (bond_context_menu.cpp:92):
+    // In Ring / Not In a Ring / Either. Backed by setBondTopologyForBond /
+    // setSelectedBondsTopology; surfaces as the bond's `topo` field.
+    test('bond context menu: Topology items are listed with Either active by default', async ({
+        page,
+    }) => {
+        await drawSingleBond(page);
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        for (const id of ['ring', 'notring', 'either']) {
+            await expect(page.getByTestId(`bond-ctx-topo-${id}`))
+                .toBeVisible();
+        }
+        // No constraint yet → Either carries the check.
+        await expect(page.getByTestId('bond-ctx-topo-either'))
+            .toContainText('✓');
+    });
+
+    test('bond context menu: In Ring sets the topology and Either clears it (undoable)', async ({
+        page,
+    }) => {
+        await drawSingleBond(page);
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-topo-ring').click();
+        let rd = await snapshot(page);
+        expect(rd.bonds[0].topo).toBe('ring');
+        // Reopen: In Ring is checked now.
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await expect(page.getByTestId('bond-ctx-topo-ring')).toContainText('✓');
+        // Clear via Either.
+        await page.getByTestId('bond-ctx-topo-either').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].topo).toBeUndefined();
+        // Undo restores the ring constraint.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].topo).toBe('ring');
+    });
+
+    test('bond context menu: topology coexists with a query label', async ({
+        page,
+    }) => {
+        await drawSingleBond(page);
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-query-SD').click();
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-topo-notring').click();
+        const rd = await snapshot(page);
+        expect(rd.bonds[0].qlabel).toBe('S/D');
+        expect(rd.bonds[0].topo).toBe('notring');
+    });
+
+    test('selection context menu: Topology applies to every selected bond in one undo step', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCC');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-bond-topo-ring').click();
+        let rd = await snapshot(page);
+        expect(rd.bonds.every((b) => b.topo === 'ring')).toBe(true);
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.bonds.every((b) => b.topo === undefined)).toBe(true);
+    });
+
 });

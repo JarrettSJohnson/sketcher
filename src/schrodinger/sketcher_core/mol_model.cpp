@@ -617,6 +617,102 @@ void MolModel::mutateSelectedBondsToQuery(const std::string& label)
     }
 }
 
+void MolModel::setBondTopologyForBond(unsigned int begin_idx,
+                                      unsigned int end_idx,
+                                      const std::string& topology)
+{
+    if (begin_idx >= m_mol.getNumAtoms() || end_idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    auto* bond = m_mol.getBondBetweenAtoms(begin_idx, end_idx);
+    if (bond == nullptr) {
+        return;
+    }
+    const bool in_ring = (topology == "ring");
+    const bool not_in_ring = (topology == "notring");
+    const bool either = (topology == "either");
+    if (!in_ring && !not_in_ring && !either) {
+        return; // unrecognized topology — no-op
+    }
+    const unsigned int bond_idx = bond->getIdx();
+    std::shared_ptr<RDKit::Bond> original(bond->copy());
+    auto refresh_cache = [this] {
+        try {
+            m_mol.updatePropertyCache(/*strict=*/false);
+        } catch (...) {
+        }
+    };
+    // Reconstruct the bond deterministically from our own stored metadata
+    // (base type + query-label prop) rather than doing query-tree surgery, then
+    // (re)apply the ring constraint. Avoids Qt's fragile AND-query unwrap.
+    auto redo = [this, bond_idx, in_ring, not_in_ring, either, refresh_cache] {
+        auto* b = m_mol.getBondWithIdx(bond_idx);
+        const auto base_type = b->getBondType();
+        std::string qlabel;
+        const bool has_qlabel =
+            b->getPropIfPresent(BOND_QUERY_LABEL_PROP, qlabel);
+
+        // Build the base bond (query-typed if it carried a query label).
+        std::unique_ptr<RDKit::Bond> rebuilt;
+        if (has_qlabel) {
+            auto spec = make_bond_query(qlabel);
+            auto qb = std::make_unique<RDKit::QueryBond>();
+            qb->setBondType(spec.base_type);
+            qb->setQuery(spec.query);
+            qb->setProp(BOND_QUERY_LABEL_PROP, qlabel);
+            rebuilt = std::move(qb);
+        } else if (either) {
+            rebuilt = std::make_unique<RDKit::Bond>(base_type);
+        } else {
+            auto qb = std::make_unique<RDKit::QueryBond>();
+            qb->setBondType(base_type);
+            rebuilt.reset(qb.release());
+        }
+
+        if (!either) {
+            auto* ring_q = RDKit::makeBondIsInRingQuery();
+            ring_q->setNegation(not_in_ring);
+            if (rebuilt->hasQuery()) {
+                rebuilt->expandQuery(ring_q, Queries::COMPOSITE_AND);
+            } else {
+                rebuilt->setQuery(ring_q);
+            }
+            rebuilt->setProp(BOND_TOPOLOGY_PROP,
+                             std::string(in_ring ? "ring" : "notring"));
+        }
+        m_mol.replaceBond(bond_idx, rebuilt.get());
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    auto undo = [this, bond_idx, original, refresh_cache] {
+        m_mol.replaceBond(bond_idx, original.get());
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    doCommand(std::move(redo), std::move(undo), "Set bond topology");
+}
+
+void MolModel::setSelectedBondsTopology(const std::string& topology)
+{
+    if (m_selected_bonds.empty()) {
+        return;
+    }
+    if (topology != "ring" && topology != "notring" && topology != "either") {
+        return;
+    }
+    const std::vector<unsigned int> bonds(m_selected_bonds.begin(),
+                                          m_selected_bonds.end());
+    auto macro = createUndoMacro("Set bond topology on selection");
+    for (auto idx : bonds) {
+        if (idx >= m_mol.getNumBonds()) {
+            continue;
+        }
+        const auto* b = m_mol.getBondWithIdx(idx);
+        setBondTopologyForBond(b->getBeginAtomIdx(), b->getEndAtomIdx(),
+                               topology);
+    }
+}
+
 void MolModel::addRing(unsigned int size, double cx, double cy, bool aromatic)
 {
     if (size < 3) {
