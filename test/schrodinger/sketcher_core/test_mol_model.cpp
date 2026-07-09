@@ -2543,3 +2543,59 @@ BOOST_AUTO_TEST_CASE(testAddBoundNucleotideNoOpOnBadIndex)
     BOOST_CHECK_EQUAL(stack.count(), count_before);
     BOOST_CHECK_EQUAL(m.mol().getNumAtoms(), 3u);
 }
+
+BOOST_AUTO_TEST_CASE(testMutateMonomerChangesResidueInPlaceUndoably)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addMonomer("A", 0, 2.0, 3.0);
+    // Mutate the Alanine to Glycine — the atom, chain, residue number, and
+    // position are unchanged; only the residue symbol/label flips.
+    m.mutateMonomer(0, "G");
+    BOOST_REQUIRE_EQUAL(m.mol().getNumAtoms(), 1u);
+    const auto* atom = m.mol().getAtomWithIdx(0);
+    std::string label;
+    BOOST_CHECK(atom->getPropIfPresent(ATOM_LABEL, label));
+    BOOST_CHECK_EQUAL(label, "G");
+    const auto* res =
+        dynamic_cast<const RDKit::AtomPDBResidueInfo*>(atom->getMonomerInfo());
+    BOOST_REQUIRE(res != nullptr);
+    BOOST_CHECK_EQUAL(res->getResidueName(), "G");
+    BOOST_CHECK_CLOSE(m.mol().getConformer().getAtomPos(0).x, 2.0, 1e-6);
+    BOOST_CHECK_CLOSE(m.mol().getConformer().getAtomPos(0).y, 3.0, 1e-6);
+    // Undo restores the original residue.
+    stack.undo();
+    std::string restored;
+    BOOST_CHECK(
+        m.mol().getAtomWithIdx(0)->getPropIfPresent(ATOM_LABEL, restored));
+    BOOST_CHECK_EQUAL(restored, "A");
+}
+
+BOOST_AUTO_TEST_CASE(testMutateMonomerPreservesConnections)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addMonomer("A", 0, 0.0, 0.0);
+    m.addBoundMonomer("G", 0, 1.5, 0.0, /*bound_to_idx=*/0);
+    BOOST_REQUIRE_EQUAL(m.mol().getNumBonds(), 1u);
+    // Mutating a connected monomer keeps the connection intact.
+    m.mutateMonomer(1, "L");
+    BOOST_CHECK_EQUAL(m.mol().getNumAtoms(), 2u);
+    BOOST_CHECK_EQUAL(m.mol().getNumBonds(), 1u);
+    std::string label;
+    BOOST_CHECK(m.mol().getAtomWithIdx(1)->getPropIfPresent(ATOM_LABEL, label));
+    BOOST_CHECK_EQUAL(label, "L");
+}
+
+BOOST_AUTO_TEST_CASE(testMutateMonomerNoOpOnBadIndex)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addMonomer("A", 0, 0.0, 0.0);
+    const auto count_before = stack.count();
+    m.mutateMonomer(9, "G");
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    std::string label;
+    BOOST_CHECK(m.mol().getAtomWithIdx(0)->getPropIfPresent(ATOM_LABEL, label));
+    BOOST_CHECK_EQUAL(label, "A");
+}

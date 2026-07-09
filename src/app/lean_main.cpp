@@ -801,6 +801,10 @@ class MolModelJS
     {
         m_model.addBoundNucleotide(sugar, base, phos, x, y, bound_to_idx);
     }
+    void mutateMonomer(unsigned int idx, const std::string& res_name)
+    {
+        m_model.mutateMonomer(idx, res_name);
+    }
     void rotateSelectedAtoms(double angle_rad)
     {
         m_model.rotateSelectedAtoms(angle_rad);
@@ -1116,6 +1120,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("addBoundMonomer", &MolModelJS::addBoundMonomer)
         .function("addNucleotide", &MolModelJS::addNucleotide)
         .function("addBoundNucleotide", &MolModelJS::addBoundNucleotide)
+        .function("mutateMonomer", &MolModelJS::mutateMonomer)
         .function("rotateSelectedAtoms", &MolModelJS::rotateSelectedAtoms)
         .function("flipSelectedAtoms", &MolModelJS::flipSelectedAtoms)
         .function("flipSubstituentAroundBond",

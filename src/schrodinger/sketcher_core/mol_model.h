@@ -356,6 +356,16 @@ class MolModel : public UndoableModel
                             unsigned int bound_to_idx);
 
     /**
+     * Mutate the monomer at `idx` in place to residue `res_name`, keeping its
+     * position, chain, residue number, and connections (only the residue
+     * symbol/label change). Backs the monomer draw tool clicking directly on an
+     * existing monomer of the same kind but a different residue (Qt's
+     * MolModel::mutateMonomers → rdkit_extensions::mutateMonomer). Single undo
+     * step. No-op when `idx` is out of range or not a monomer.
+     */
+    void mutateMonomer(unsigned int idx, const std::string& res_name);
+
+    /**
      * Add `delta` to the formal charge of every selected atom in a single
      * undoable command. Preserves the selection (charge edits don't reindex).
      * Refreshes the implicit-H cache so render description picks up the new

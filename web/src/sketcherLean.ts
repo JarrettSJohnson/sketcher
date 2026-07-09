@@ -179,6 +179,13 @@ export interface MolModelInstance {
     addBoundNucleotide(sugar: string, base: string, phos: string, x: number,
                        y: number, boundToIdx: number): void;
     /**
+     * Mutate the monomer at `idx` in place to residue `resName`, preserving its
+     * position, chain, and connections. Backs clicking directly on an existing
+     * monomer of the same kind but a different residue. Single undo step. No-op
+     * when `idx` is out of range or not a monomer.
+     */
+    mutateMonomer(idx: number, resName: string): void;
+    /**
      * Rotate selected atoms (or all atoms when nothing is selected) by
      * angle_rad counterclockwise around their centroid. Single undo step.
      */

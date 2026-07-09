@@ -6032,14 +6032,15 @@ M  END`;
         await page.getByTestId('monomer-aa-ala').click();
         const canvas = page.getByTestId('sketcher-canvas');
         await canvas.click({ position: { x: 160, y: 180 } });
-        // Arm Glycine, then click the existing Alanine bead to chain it.
-        await page.getByTestId('monomer-aa-gly').click();
+        // Click the existing Alanine bead with Alanine still armed → chain a
+        // second bead off it. (Clicking with a DIFFERENT residue armed would
+        // mutate instead — see the batch-57 mutate tests.)
         await canvas.click({ position: { x: 160, y: 180 } });
         const rd = await snapshot(page);
         expect(rd.atoms).toHaveLength(2);
         expect(rd.bonds).toHaveLength(1);
         expect(rd.bonds[0].mon).toBe(true);
-        expect(rd.atoms.map((a) => a.lbl).sort()).toEqual(['A', 'G']);
+        expect(rd.atoms.map((a) => a.lbl).sort()).toEqual(['A', 'A']);
     });
 
     test('monomer tool: undo removes a placed monomer', async ({ page }) => {
@@ -6059,7 +6060,7 @@ M  END`;
         await page.getByTestId('monomer-aa-ala').click();
         const canvas = page.getByTestId('sketcher-canvas');
         await canvas.click({ position: { x: 160, y: 180 } });
-        await page.getByTestId('monomer-aa-gly').click();
+        // Chain a second Alanine off the first (same residue armed).
         await canvas.click({ position: { x: 160, y: 180 } });
         expect((await snapshot(page)).atoms).toHaveLength(2);
         await page.getByTestId('undo').click();
@@ -6148,6 +6149,62 @@ M  END`;
         expect(placed.atoms.map((a) => a.lbl).sort()).toEqual(['P', 'T', 'dR']);
         await page.getByTestId('undo').click();
         expect((await snapshot(page)).atoms).toHaveLength(0);
+    });
+
+    // -------- Batch 57: mutate monomer on click --------
+    // Qt's DrawMonomerSceneTool clickShouldMutate: clicking directly on an
+    // existing monomer of the SAME kind but a DIFFERENT residue mutates it in
+    // place (no new bead, no connection). A same-residue click still chains.
+    test('monomer tool: clicking a bead with a different residue mutates it in place', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 160, y: 180 } });
+        expect((await snapshot(page)).atoms).toHaveLength(1);
+        // Arm Glycine, click the Alanine bead → mutate (still one bead, now G).
+        await page.getByTestId('monomer-aa-gly').click();
+        await canvas.click({ position: { x: 160, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.bonds).toHaveLength(0);
+        expect(rd.atoms[0].lbl).toBe('G');
+        expect(rd.atoms[0].mon).toBe('pep');
+    });
+
+    test('monomer tool: mutate is a single undo step back to the original residue', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 160, y: 180 } });
+        await page.getByTestId('monomer-aa-gly').click();
+        await canvas.click({ position: { x: 160, y: 180 } });
+        expect((await snapshot(page)).atoms[0].lbl).toBe('G');
+        await page.getByTestId('undo').click();
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].lbl).toBe('A');
+    });
+
+    test('nucleic tool: clicking a base bead with a different base mutates it', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-nucleic').click();
+        await page.getByTestId('monomer-na-a').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        expect((await snapshot(page)).atoms[0].lbl).toBe('A');
+        // Arm Cytosine, click the adenine base → mutate the base in place.
+        await page.getByTestId('monomer-na-c').click();
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].lbl).toBe('C');
+        expect(rd.atoms[0].mon).toBe('base');
     });
 
 });

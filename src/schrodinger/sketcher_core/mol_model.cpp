@@ -1054,6 +1054,23 @@ void MolModel::addBoundNucleotide(const std::string& sugar,
         "Add bound nucleotide");
 }
 
+void MolModel::mutateMonomer(unsigned int idx, const std::string& res_name)
+{
+    if (idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    // Only monomer atoms (carrying residue info) can be mutated — guard against
+    // an accidental call on an atomistic mol.
+    if (m_mol.getAtomWithIdx(idx)->getMonomerInfo() == nullptr) {
+        return;
+    }
+    doMutation(
+        [this, idx, res_name] {
+            rdkit_extensions::mutateMonomer(m_mol, idx, res_name);
+        },
+        "Mutate monomer");
+}
+
 void MolModel::adjustChargeOnSelectedAtoms(int delta)
 {
     if (m_selected_atoms.empty() || delta == 0) {

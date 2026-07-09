@@ -306,6 +306,17 @@ function monomerBorderFor(mon: string | undefined, lbl: string | undefined): str
     }
     return monomerBorder(lbl); // peptide / chem
 }
+// Subtype of a single armed monomer (peptide vs NA sugar/phos/base) — the same
+// classification the render bridge applies (chain prefix + symbol's last char).
+// Used to decide whether clicking a bead mutates it (Qt clickShouldMutate: same
+// kind, different residue) rather than chaining a new monomer.
+function armedMonomerSubtype(chainType: number, resName: string): string {
+    if (chainType === 0) return 'pep';
+    const c = resName.slice(-1).toLowerCase();
+    if (c === 'p') return 'phos';
+    if (c === 'r') return 'sugar';
+    return 'base';
+}
 
 // Mirror RDKit::Bond::BondDir for the values we render.
 const BOND_DIR_NONE = 0;
@@ -3390,6 +3401,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     return;
                 }
                 if (beadHit) {
+                    // Clicking a monomer of the SAME kind but a DIFFERENT
+                    // residue mutates it in place (Qt clickShouldMutate);
+                    // otherwise chain a new monomer off it.
+                    const armed =
+                        armedMonomerSubtype(monomerChainType, monomerResName);
+                    if (beadHit.mon === armed && beadHit.lbl !== monomerResName) {
+                        model.mutateMonomer(hit, monomerResName);
+                        setStatus(`mutated monomer #${hit} to ${monomerResName}`);
+                        return;
+                    }
                     model.addBoundMonomer(monomerResName, monomerChainType,
                         beadHit.x + MONOMER_BOND_LENGTH, beadHit.y, hit);
                     setStatus(`chained ${monomerResName} to monomer #${hit}`);
