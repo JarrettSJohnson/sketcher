@@ -6280,4 +6280,44 @@ M  END`;
             ['base', 'base', 'phos', 'phos', 'sugar', 'sugar']);
     });
 
+    // -------- Batch 60: RNA/DNA base-picker popups --------
+    // Qt NucleotidePopup: press & hold the RNA/DNA selector to pick A/C/G/U-or-T/N.
+    // In the port, clicking an already-armed selector reopens the popup; picking
+    // a base arms the nucleotide tool with sugar(base)phosphate.
+    test('nucleic tool: RNA base picker places the chosen base', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-nucleic').click();
+        await page.getByTestId('monomer-na-rna').click(); // arm (default U)
+        await page.getByTestId('monomer-na-rna').click(); // reopen popup
+        await expect(page.getByTestId('monomer-na-rna-popup')).toBeVisible();
+        await page.getByTestId('na-rna-base-g').click();  // pick Guanine
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(3);
+        expect(rd.atoms.find((a) => a.mon === 'base').lbl).toBe('G');
+        // RNA uses the ribose sugar.
+        expect(rd.atoms.find((a) => a.mon === 'sugar').lbl).toBe('R');
+    });
+
+    test('nucleic tool: DNA base picker places dR sugar with the chosen base', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-nucleic').click();
+        await page.getByTestId('monomer-na-dna').click();
+        await page.getByTestId('monomer-na-dna').click();
+        await expect(page.getByTestId('monomer-na-dna-popup')).toBeVisible();
+        await page.getByTestId('na-dna-base-a').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(3);
+        expect(rd.atoms.find((a) => a.mon === 'base').lbl).toBe('A');
+        // DNA uses the deoxyribose sugar.
+        expect(rd.atoms.find((a) => a.mon === 'sugar').lbl).toBe('dR');
+    });
+
 });

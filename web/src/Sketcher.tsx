@@ -2865,6 +2865,35 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         plus: 'Reaction Plus',
     };
 
+    // Base picker for the RNA / DNA nucleotide selectors — Qt's NucleotidePopup
+    // (widget/nucleotide_popup.cpp) offers A / C / G / U-or-T / N. Choosing a
+    // base arms the nucleotide tool with sugar(base)phosphate (R for RNA, dR for
+    // DNA). Values are the base symbols passed straight to addNucleotide.
+    const RNA_BASE_CHOICES: PopupChoice<string>[] = [
+        { value: 'A', label: 'A', title: 'Adenine (RNA)',  testid: 'na-rna-base-a' },
+        { value: 'C', label: 'C', title: 'Cytosine (RNA)', testid: 'na-rna-base-c' },
+        { value: 'G', label: 'G', title: 'Guanine (RNA)',  testid: 'na-rna-base-g' },
+        { value: 'U', label: 'U', title: 'Uracil (RNA)',   testid: 'na-rna-base-u' },
+        { value: 'N', label: 'N', title: 'Unknown (RNA)',  testid: 'na-rna-base-n' },
+    ];
+    const DNA_BASE_CHOICES: PopupChoice<string>[] = [
+        { value: 'A', label: 'A', title: 'Adenine (DNA)',  testid: 'na-dna-base-a' },
+        { value: 'C', label: 'C', title: 'Cytosine (DNA)', testid: 'na-dna-base-c' },
+        { value: 'G', label: 'G', title: 'Guanine (DNA)',  testid: 'na-dna-base-g' },
+        { value: 'T', label: 'T', title: 'Thymine (DNA)',  testid: 'na-dna-base-t' },
+        { value: 'N', label: 'N', title: 'Unknown (DNA)',  testid: 'na-dna-base-n' },
+    ];
+    // Arm the nucleotide draw tool with the given base for RNA (R sugar) or DNA
+    // (dR sugar). Shared by the RNA/DNA tile click (default base) and popup pick.
+    const armNucleotide = (id: 'rna' | 'dna', base: string): void => {
+        const sugar = id === 'dna' ? 'dR' : 'R';
+        setNucleotideSpec({ id, sugar, base, phos: 'P' });
+        setTool('monomer');
+        setPendingBondAtom(null);
+        setStatus(`nucleotide: ${id.toUpperCase()} ${sugar}(${base})P `
+            + '— click canvas to place');
+    };
+
     // Amino-acid roster + display order ported from Qt's
     // src/schrodinger/sketcher/model/sketcher_model.h (AminoAcidTool +
     // AMINO_ACID_TOOL_TO_RES_NAME + AMINO_ACID_TOOL_TO_FULL_NAME) and the
@@ -5776,48 +5805,36 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         {monomerSubMode === 'nucleic' && (
                         <div style={styles.nucleicGrid}
                             data-testid='nucleic-acid-grid'>
-                            <button type='button'
-                                style={{
-                                    ...styles.nucleicWideBtn,
-                                    ...(tool === 'monomer'
-                                        && nucleotideSpec?.id === 'rna'
-                                        ? styles.monomerTabBtnActive : {}),
-                                }}
-                                data-testid='monomer-na-rna'
-                                aria-pressed={tool === 'monomer'
+                            {/* RNA / DNA nucleotide selectors — Qt
+                                NucleotidePopup: click places the last base
+                                (default U/T); press & hold picks A/C/G/U-or-T/N.
+                                */}
+                            <IconButtonWithPopup<string>
+                                label='RNA'
+                                testid='monomer-na-rna'
+                                title='Add an RNA nucleotide — press & hold to pick a base'
+                                buttonStyle={styles.nucleicWideBtn}
+                                active={tool === 'monomer'
                                     && nucleotideSpec?.id === 'rna'}
-                                title='Add an RNA nucleotide (ribose + uracil + phosphate)'
-                                onClick={() => {
-                                    setNucleotideSpec({ id: 'rna', sugar: 'R',
-                                        base: 'U', phos: 'P' });
-                                    setTool('monomer');
-                                    setPendingBondAtom(null);
-                                    setStatus('nucleotide: RNA R(U)P '
-                                        + '— click canvas to place');
-                                }}>
-                                RNA
-                            </button>
-                            <button type='button'
-                                style={{
-                                    ...styles.nucleicWideBtn,
-                                    ...(tool === 'monomer'
-                                        && nucleotideSpec?.id === 'dna'
-                                        ? styles.monomerTabBtnActive : {}),
-                                }}
-                                data-testid='monomer-na-dna'
-                                aria-pressed={tool === 'monomer'
+                                choices={RNA_BASE_CHOICES}
+                                onClick={() => armNucleotide('rna',
+                                    nucleotideSpec?.id === 'rna'
+                                        ? nucleotideSpec.base : 'U')}
+                                onPick={(b) => armNucleotide('rna', b)}
+                            />
+                            <IconButtonWithPopup<string>
+                                label='DNA'
+                                testid='monomer-na-dna'
+                                title='Add a DNA nucleotide — press & hold to pick a base'
+                                buttonStyle={styles.nucleicWideBtn}
+                                active={tool === 'monomer'
                                     && nucleotideSpec?.id === 'dna'}
-                                title='Add a DNA nucleotide (deoxyribose + thymine + phosphate)'
-                                onClick={() => {
-                                    setNucleotideSpec({ id: 'dna', sugar: 'dR',
-                                        base: 'T', phos: 'P' });
-                                    setTool('monomer');
-                                    setPendingBondAtom(null);
-                                    setStatus('nucleotide: DNA dR(T)P '
-                                        + '— click canvas to place');
-                                }}>
-                                DNA
-                            </button>
+                                choices={DNA_BASE_CHOICES}
+                                onClick={() => armNucleotide('dna',
+                                    nucleotideSpec?.id === 'dna'
+                                        ? nucleotideSpec.base : 'T')}
+                                onPick={(b) => armNucleotide('dna', b)}
+                            />
                             <button type='button'
                                 style={styles.nucleicWideBtn}
                                 data-testid='monomer-na-custom'
@@ -7689,12 +7706,15 @@ interface IconButtonWithPopupProps<T extends string> {
     active?: boolean;
     choices: PopupChoice<T>[];
     onPick: (value: T) => void;
+    // Optional override for the trigger button's style (e.g. the wide RNA/DNA
+    // nucleotide selectors). Defaults to the letter/icon button look.
+    buttonStyle?: React.CSSProperties;
 }
 
 const POPUP_DELAY_MS = 250; // Qt ToolButtonWithPopup::m_popup_delay default
 
 function IconButtonWithPopup<T extends string>({
-    icon, label, onClick, testid, title, active, choices, onPick,
+    icon, label, onClick, testid, title, active, choices, onPick, buttonStyle,
 }: IconButtonWithPopupProps<T>): JSX.Element {
     const [hover, setHover] = useState(false);
     const [popupOpen, setPopupOpen] = useState(false);
@@ -7759,7 +7779,9 @@ function IconButtonWithPopup<T extends string>({
             <button
                 type='button'
                 style={{
-                    ...(label !== undefined ? styles.letterBtn : styles.iconBtn),
+                    ...(buttonStyle
+                        ?? (label !== undefined ? styles.letterBtn
+                            : styles.iconBtn)),
                     ...(hover && !active ? styles.iconBtnHover : {}),
                     ...(active ? styles.iconBtnActive : {}),
                     position: 'relative',
