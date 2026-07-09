@@ -1060,6 +1060,50 @@ BOOST_AUTO_TEST_CASE(testSetAtomElementThrowsOnOutOfRange)
     BOOST_CHECK_THROW(m.setAtomElement(99, 7), std::out_of_range);
 }
 
+BOOST_AUTO_TEST_CASE(testMutateAtomToRGroupReplacesInPlacePreservingBonds)
+{
+    // Ethane C0-C1; replace C1 with R1. The atom becomes a dummy carrying
+    // _MolFileRLabel=1, its bond to C0 and its position survive, and undo
+    // restores the carbon exactly.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    const auto bonds_before = m.mol().getNumBonds();
+
+    m.mutateAtomToRGroup(1, 1);
+    const auto* r = m.mol().getAtomWithIdx(1);
+    BOOST_CHECK_EQUAL(r->getAtomicNum(), 0); // dummy
+    unsigned int rlabel = 0;
+    BOOST_CHECK(r->getPropIfPresent(
+        RDKit::common_properties::_MolFileRLabel, rlabel));
+    BOOST_CHECK_EQUAL(rlabel, 1u);
+    // Bond preserved.
+    BOOST_CHECK_EQUAL(m.mol().getNumBonds(), bonds_before);
+    BOOST_CHECK(m.mol().getBondBetweenAtoms(0, 1) != nullptr);
+    // Position preserved.
+    BOOST_CHECK_CLOSE(m.mol().getConformer().getAtomPos(1).x, 1.5, 1e-6);
+
+    // Undo restores the carbon (no R-label).
+    stack.undo();
+    const auto* c = m.mol().getAtomWithIdx(1);
+    BOOST_CHECK_EQUAL(c->getAtomicNum(), 6);
+    BOOST_CHECK(!c->hasProp(RDKit::common_properties::_MolFileRLabel));
+    BOOST_CHECK(m.mol().getBondBetweenAtoms(0, 1) != nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(testMutateAtomToRGroupThrowsOnZeroAndNoOpsOutOfRange)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    BOOST_CHECK_THROW(m.mutateAtomToRGroup(0, 0), std::invalid_argument);
+    const auto count_before = stack.count();
+    m.mutateAtomToRGroup(99, 1); // out of range → no-op
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+}
+
 BOOST_AUTO_TEST_CASE(testSetElementForSelectedAtomsSwapsAllSelectedAndIsUndoable)
 {
     UndoStack stack;

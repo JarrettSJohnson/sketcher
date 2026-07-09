@@ -677,6 +677,10 @@ class MolModelJS
     {
         m_model.setElementForSelectedAtoms(atomic_num);
     }
+    void mutateAtomToRGroup(unsigned int idx, unsigned int r_group_num)
+    {
+        m_model.mutateAtomToRGroup(idx, r_group_num);
+    }
     void loadFromSmiles(const std::string& smiles)
     {
         m_model.loadFromSmiles(smiles);
@@ -950,6 +954,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("setAtomElement", &MolModelJS::setAtomElement)
         .function("setElementForSelectedAtoms",
                   &MolModelJS::setElementForSelectedAtoms)
+        .function("mutateAtomToRGroup", &MolModelJS::mutateAtomToRGroup)
         .function("loadFromSmiles", &MolModelJS::loadFromSmiles)
         .function("loadFromText", &MolModelJS::loadFromText)
         .function("addMolFromText", &MolModelJS::addMolFromText)

@@ -5544,4 +5544,90 @@ M  END`;
             .toBeDisabled();
     });
 
+    // -------- Batch 48: Replace with > R-Group (atom context menu) --------
+    // Qt's ReplaceAtomsWithMenu (atom_context_menu.cpp:167) — the R-Group
+    // branch (New R-Group + Existing R-Group list). Backed by the lean
+    // mutateAtomToRGroup primitive; Wildcard (query atoms) + Allowed List
+    // (Edit Atom Properties dialog) stay deferred behind missing C++.
+    test('atom context menu: New R-Group replaces the atom in place and is undoable', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 260, y: 180 }, button: 'right' });
+        // No R-groups yet → the new-R-group item offers R1.
+        await expect(page.getByTestId('atom-ctx-replace-new-rgroup'))
+            .toContainText('R1');
+        await page.getByTestId('atom-ctx-replace-new-rgroup').click();
+        await expect(page.getByTestId('atom-context-menu')).toHaveCount(0);
+        let rd = await snapshot(page);
+        // One atom is now an R1 dummy; the C0–C1 bond is preserved.
+        expect(rd.atoms.filter((a) => a.rlabel === 1)).toHaveLength(1);
+        expect(rd.bonds).toHaveLength(1);
+        // Single undo restores the plain carbon.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms.every((a) => a.rlabel === undefined)).toBe(true);
+        expect(rd.bonds).toHaveLength(1);
+    });
+
+    test('atom context menu: existing R-groups are listed and New R-Group picks the next free number', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Three carbons in a row, bonded 0-1-2.
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        // Make atom 0 an R1.
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await page.getByTestId('atom-ctx-replace-new-rgroup').click();
+        expect((await snapshot(page)).atoms.filter((a) => a.rlabel === 1))
+            .toHaveLength(1);
+        // Now right-click atom 2: the menu lists existing R1 and offers R2.
+        await canvas.click({ position: { x: 400, y: 180 }, button: 'right' });
+        await expect(page.getByTestId('atom-ctx-replace-rgroup-1'))
+            .toBeVisible();
+        await expect(page.getByTestId('atom-ctx-replace-new-rgroup'))
+            .toContainText('R2');
+        await page.getByTestId('atom-ctx-replace-new-rgroup').click();
+        const rd = await snapshot(page);
+        expect(rd.atoms.filter((a) => a.rlabel === 1)).toHaveLength(1);
+        expect(rd.atoms.filter((a) => a.rlabel === 2)).toHaveLength(1);
+    });
+
+    test('atom context menu: replacing an atom with an existing R-group number reuses it', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await canvas.click({ position: { x: 400, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        // Atom 0 → R1.
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await page.getByTestId('atom-ctx-replace-new-rgroup').click();
+        // Atom 2 → also R1 (reuse the existing number).
+        await canvas.click({ position: { x: 400, y: 180 }, button: 'right' });
+        await page.getByTestId('atom-ctx-replace-rgroup-1').click();
+        const rd = await snapshot(page);
+        expect(rd.atoms.filter((a) => a.rlabel === 1)).toHaveLength(2);
+    });
+
 });

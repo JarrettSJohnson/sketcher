@@ -188,6 +188,28 @@ function bondIsInRing(bonds: BondDesc[], ba: number, bb: number): boolean {
     }
     return false;
 }
+
+// Sorted list of distinct R-group numbers already present in the sketch, read
+// from each atom's `rlabel` (emitted for _MolFileRLabel dummies). Mirrors Qt's
+// get_all_r_group_numbers (rdkit/rgroup.cpp) used by ExistingRGroupMenu.
+function existingRGroupNumbers(atoms: AtomDesc[]): number[] {
+    const nums = new Set<number>();
+    for (const a of atoms) {
+        if (typeof a.rlabel === 'number') {
+            nums.add(a.rlabel);
+        }
+    }
+    return [...nums].sort((x, y) => x - y);
+}
+
+// Smallest positive integer not already used as an R-group number — Qt's
+// get_next_r_group_numbers picks the first free slot, not max+1.
+function nextRGroupNumber(existing: number[]): number {
+    const used = new Set(existing);
+    let n = 1;
+    while (used.has(n)) n++;
+    return n;
+}
 // Reaction objects live outside the RWMol — sketcher_core mirrors Qt's
 // `m_arrow` (optional) + `m_pluses` (vector) shape and emits them as a
 // flat `nonMol` array in render description JSON. Each entry's `type`
@@ -2192,7 +2214,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [atomContextMenu, setAtomContextMenu] = useState<
         { x: number; y: number; atomIdx: number; el: string;
           q: number; nh: number; nrad: number;
-          isRGroupOrAp: boolean } | null
+          isRGroupOrAp: boolean;
+          // Existing R-group numbers in the mol + the next free number, both
+          // snapshotted at open time so the "Replace with > R-Group" submenu
+          // can list "R1/R2/…" and pick a fresh number for "New R-Group".
+          existingRGroups: number[]; nextRGroup: number } | null
     >(null);
     // Attachment-point right-click menu — mirrors Qt's tiny
     // AttachmentPointContextMenu (menu/attachment_point_context_menu.cpp:11),
@@ -3742,6 +3768,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             isRGroupOrAp:
                                 typeof ad.rlabel === 'number'
                                 || typeof ad.ap === 'number',
+                            existingRGroups:
+                                existingRGroupNumbers(rd.atoms),
+                            nextRGroup: nextRGroupNumber(
+                                existingRGroupNumbers(rd.atoms)),
                         });
                         setBgContextMenu(null);
                         setSelContextMenu(null);
@@ -6118,6 +6148,40 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 [am.atomIdx], -1);
                             setStatus('removed unpaired electron');
                         }} />
+                    {/* Replace with — Qt's ReplaceAtomsWithMenu
+                        (atom_context_menu.cpp:167). Wildcard (query atoms) +
+                        Allowed List (needs the Edit Atom Properties dialog)
+                        are deferred behind missing C++; the R-Group branch
+                        ships here via the lean mutateAtomToRGroup primitive.
+                        "New R-Group" picks the first free number; each
+                        existing Rn offers an in-place renumber. Disabled for
+                        R-group atoms themselves would block renumber, so we
+                        leave them enabled (Qt does too). */}
+                    <div style={styles.moreDivider} />
+                    <div style={styles.moreSectionLabel}>Replace with</div>
+                    <MoreItem
+                        label={`New R-Group (R${atomContextMenu.nextRGroup})`}
+                        testid='atom-ctx-replace-new-rgroup'
+                        onClick={() => {
+                            const am = atomContextMenu;
+                            setAtomContextMenu(null);
+                            modelRef.current?.mutateAtomToRGroup(
+                                am.atomIdx, am.nextRGroup);
+                            setStatus(`Replaced with R${am.nextRGroup}`);
+                        }} />
+                    {atomContextMenu.existingRGroups.map((n) => (
+                        <MoreItem
+                            key={`rgroup-${n}`}
+                            label={`R${n}`}
+                            testid={`atom-ctx-replace-rgroup-${n}`}
+                            onClick={() => {
+                                const am = atomContextMenu;
+                                setAtomContextMenu(null);
+                                modelRef.current?.mutateAtomToRGroup(
+                                    am.atomIdx, n);
+                                setStatus(`Replaced with R${n}`);
+                            }} />
+                    ))}
                     <div style={styles.moreDivider} />
                     <MoreItem label='Delete' testid='atom-ctx-delete'
                         onClick={() => {

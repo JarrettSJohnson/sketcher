@@ -723,6 +723,42 @@ void MolModel::setAtomElement(unsigned int idx, unsigned int atomic_num)
     doCommand(std::move(redo), std::move(undo), "Set element");
 }
 
+void MolModel::mutateAtomToRGroup(unsigned int idx, unsigned int r_group_num)
+{
+    // Mirrors Qt's MolModel::mutateRGroups (model/mol_model.cpp:2245) — the
+    // atom context menu's "Replace with > R-Group". Replaces the atom in place
+    // with an R-group dummy (make_new_r_group), preserving its bonds and 2D
+    // position. Undo swaps the original atom back.
+    if (r_group_num == 0) {
+        throw std::invalid_argument("R-group number must be >= 1");
+    }
+    if (idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    // Deep-copy the original atom so undo restores it exactly (element,
+    // charge, radicals, explicit Hs, props). replaceAtom copies the atom it's
+    // handed, so the raw pointers below never transfer ownership.
+    auto original = std::make_shared<RDKit::Atom>(*m_mol.getAtomWithIdx(idx));
+    auto refresh_cache = [this] {
+        try {
+            m_mol.updatePropertyCache(/*strict=*/false);
+        } catch (...) {
+        }
+    };
+    auto redo = [this, idx, r_group_num, refresh_cache] {
+        auto rg = rdkit_extensions::make_new_r_group(r_group_num);
+        m_mol.replaceAtom(idx, rg.get());
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    auto undo = [this, idx, original, refresh_cache] {
+        m_mol.replaceAtom(idx, original.get());
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    doCommand(std::move(redo), std::move(undo), "Replace with R-group");
+}
+
 void MolModel::setElementForSelectedAtoms(unsigned int atomic_num)
 {
     if (m_selected_atoms.empty()) {

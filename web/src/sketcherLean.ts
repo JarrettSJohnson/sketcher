@@ -164,6 +164,13 @@ export interface MolModelInstance {
      * when nothing is selected.
      */
     setElementForSelectedAtoms(atomicNum: number): void;
+    /**
+     * Replace the atom at `idx` in place with an R-group dummy carrying the
+     * given R-group number, preserving bonds + position. Backs the atom
+     * context menu's "Replace with > R-Group" (Qt's mutateRGroups). Single
+     * undo step. Throws when rGroupNum is 0; no-op when idx is out of range.
+     */
+    mutateAtomToRGroup(idx: number, rGroupNum: number): void;
     /** Replace mol with parsed SMILES. Throws if SMILES is malformed. */
     loadFromSmiles(smiles: string): void;
     /** Replace mol with parsed text (auto-detects SMILES, MOL, etc.). Throws on failure. */

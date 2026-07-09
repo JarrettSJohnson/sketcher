@@ -264,6 +264,16 @@ class MolModel : public UndoableModel
     void setAtomElement(unsigned int idx, unsigned int atomic_num);
 
     /**
+     * Replace a single atom (by index) in place with an R-group dummy carrying
+     * `_MolFileRLabel = r_group_num`, preserving its bonds and 2D position.
+     * Backs the atom context menu's "Replace with > R-Group" (Qt's
+     * ModifyAtomsMenu → ReplaceAtomsWithMenu → MolModel::mutateRGroups,
+     * model/mol_model.cpp:2245). Single undo step. Throws when `r_group_num`
+     * is 0; no-op when `idx` is past the atom count.
+     */
+    void mutateAtomToRGroup(unsigned int idx, unsigned int r_group_num);
+
+    /**
      * Selection-wide equivalent of setAtomElement — replaces the element of
      * every selected atom with `atomic_num` in a single undo step. Mirrors
      * Qt's ModifyAtomsMenu::requestElementChange routed through
