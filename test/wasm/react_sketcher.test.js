@@ -1136,10 +1136,9 @@ test.describe('React Sketcher', () => {
         await page.getByTestId('monomer-na-g').click();
         await expect(page.getByTestId('sketcher-status'))
             .toContainText(/Guanine/);
-        // Custom still stubs through comingSoon.
+        // Custom opens the sugar/base/phosphate triple-builder popup.
         await page.getByTestId('monomer-na-custom').click();
-        await expect(page.getByTestId('sketcher-status'))
-            .toContainText(/Custom nucleotide/);
+        await expect(page.getByTestId('monomer-na-custom-popup')).toBeVisible();
     });
 
     test('Import menu: Paste in Text modal loads SMILES and closes', async ({
@@ -6350,6 +6349,43 @@ M  END`;
         expect(rd.atoms).toHaveLength(1);
         expect(rd.atoms[0].lbl).toBe('dA');
         expect(rd.atoms[0].mon).toBe('pep');
+    });
+
+    // -------- Batch 62: Custom nucleotide triple-builder --------
+    // Qt CustomNucleotidePopup: three text fields (sugar/base/phosphate). Editing
+    // updates the armed triple; a canvas click places addNucleotide(sugar,base,phos).
+    test('nucleic tool: Custom builds a nucleotide from typed sugar/base/phosphate', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-nucleic').click();
+        await page.getByTestId('monomer-na-custom').click();
+        const popup = page.getByTestId('monomer-na-custom-popup');
+        await expect(popup).toBeVisible();
+        // Default triple is R(A)P; retype the base to G.
+        await page.getByTestId('monomer-na-custom-base').fill('G');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(3);
+        expect(rd.atoms.find((a) => a.mon === 'sugar').lbl).toBe('R');
+        expect(rd.atoms.find((a) => a.mon === 'base').lbl).toBe('G');
+        expect(rd.atoms.find((a) => a.mon === 'phos').lbl).toBe('P');
+    });
+
+    test('nucleic tool: Custom respects an edited sugar (dR)', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-nucleic').click();
+        await page.getByTestId('monomer-na-custom').click();
+        await page.getByTestId('monomer-na-custom-sugar').fill('dR');
+        await page.getByTestId('monomer-na-custom-base').fill('T');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms.find((a) => a.mon === 'sugar').lbl).toBe('dR');
+        expect(rd.atoms.find((a) => a.mon === 'base').lbl).toBe('T');
     });
 
 });

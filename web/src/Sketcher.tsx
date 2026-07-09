@@ -2539,6 +2539,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // active tile (e.g. "rna"/"dna") for the pressed-state highlight.
     const [nucleotideSpec, setNucleotideSpec] = useState<
         { id: string; sugar: string; base: string; phos: string } | null>(null);
+    // Editable sugar/base/phosphate triple for the Custom nucleotide selector
+    // (Qt CustomNucleotidePopup). Defaults to a plain RNA nucleotide.
+    const [customNucleotide, setCustomNucleotide] = useState<
+        { sugar: string; base: string; phos: string }>(
+        { sugar: 'R', base: 'A', phos: 'P' });
     // Non-natural peptide analogs grouped by natural residue (D-/N-methyl
     // variants etc.) from the monomer DB, fetched once. Drives the per-residue
     // analog popups on the amino-acid tiles (Qt MonomerToolWidget, SKETCH-2482).
@@ -2916,8 +2921,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // exactly (ALA top-left, UNK bottom-right). Each entry is
     // `[3-letter ID, 1-letter symbol, full name]`. The 1-letter is the
     // button face (matches Qt's `<string>X</string>`); the full name goes
-    // into the tooltip. Clicks stub through comingSoon — the MolModel
-    // doesn't speak monomer yet, so this batch is layout-only.
+    // into the tooltip. Clicking a tile arms the monomer draw tool with that
+    // residue; press & hold surfaces its non-natural analogs (batch 61).
     const AMINO_ACIDS: Array<readonly [string, string, string]> = [
         ['ala', 'A', 'Alanine'],
         ['phe', 'F', 'Phenylalanine'],
@@ -2952,8 +2957,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // src/schrodinger/sketcher/model/sketcher_model.h::NucleicAcidTool.
     // Base tiles place a single nucleobase (diamond) and the R/dR/P blocks a
     // single sugar (rect) / phosphate (ellipse); the RNA/DNA selectors place a
-    // full sugar+base+phosphate nucleotide. Long-press base pickers and the
-    // Custom triple-builder popup are deferred to a later batch.
+    // full sugar+base+phosphate nucleotide (press & hold to pick the base), and
+    // Custom opens a sugar/base/phosphate triple-builder popup.
     const NUCLEIC_LETTERS: Array<readonly [string, string, string]> = [
         ['a',  'A',  'Adenine'],
         ['c',  'C',  'Cytosine'],
@@ -5137,13 +5142,6 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         return () => window.removeEventListener('keydown', onKey);
     }, [setView]);
 
-    // Features whose Qt counterparts exist in the UI files but whose C++ port
-    // isn't here yet. Showing the buttons keeps the visual layout matching the
-    // Qt original (per feedback_qt_removal_fidelity); clicking surfaces the
-    // gap rather than silently doing nothing.
-    const comingSoon = (name: string): void => {
-        setStatus(`${name} — not yet implemented in the Qt-free port`);
-    };
 
     // Invert selection — Qt's SelectOptionsWidget "Invert" button. No
     // dedicated C++ entry point yet, so do it client-side: get the full atom
@@ -5752,10 +5750,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                        AMINO/NUCLEIC toggle row (AminoOrNucleicToggleButton
                        pair, amino_or_nucleic_group), then a QStackedWidget
                        (`amino_or_nucleic_stack`) with `amino_page` (3×7
-                       LetterButton grid, one button per natural amino acid)
-                       and `nucleic_page` (still placeholder — Batch 33).
-                       The amino tile clicks stub to comingSoon since the
-                       lean MolModel doesn't speak monomer yet. */
+                       tile grid, one button per natural amino acid, each with
+                       an analog popup) and `nucleic_page` (RNA/DNA/Custom
+                       nucleotide selectors + base/sugar/phosphate tiles). */
                     <div style={styles.monomericPage} data-testid='monomeric-page'>
                         <div style={styles.row2}>
                             <button type='button'
@@ -5885,14 +5882,31 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                         ? nucleotideSpec.base : 'T')}
                                 onPick={(b) => armNucleotide('dna', b)}
                             />
-                            <button type='button'
-                                style={styles.nucleicWideBtn}
-                                data-testid='monomer-na-custom'
-                                title='Build a custom sugar / base / phosphate nucleotide'
-                                onClick={() => comingSoon(
-                                    'Custom nucleotide')}>
-                                Custom
-                            </button>
+                            <CustomNucleotideButton
+                                testid='monomer-na-custom'
+                                value={customNucleotide}
+                                active={tool === 'monomer'
+                                    && nucleotideSpec?.id === 'custom'}
+                                onChange={(v) => {
+                                    setCustomNucleotide(v);
+                                    // Keep the armed triple in sync as the user
+                                    // edits the fields, so a canvas click places
+                                    // the latest sugar/base/phosphate.
+                                    setNucleotideSpec({ id: 'custom', ...v });
+                                    setTool('monomer');
+                                }}
+                                onArm={() => {
+                                    setNucleotideSpec({ id: 'custom',
+                                        ...customNucleotide });
+                                    setTool('monomer');
+                                    setPendingBondAtom(null);
+                                    setStatus('nucleotide: custom '
+                                        + `${customNucleotide.sugar}`
+                                        + `(${customNucleotide.base})`
+                                        + `${customNucleotide.phos} `
+                                        + '— click canvas to place');
+                                }}
+                            />
                             <div style={styles.elementGrid}>
                                 {NUCLEIC_LETTERS.map(
                                     ([id, sym, full]) => (
@@ -7908,6 +7922,89 @@ function PopupChoiceButton<T extends string>({
     );
 }
 
+// Custom-nucleotide selector — Qt CustomNucleotidePopup
+// (widget/custom_nucleotide_popup.cpp): a wide button that opens a popup with
+// three alphanumeric text fields (sugar / base / phosphate). Editing updates the
+// armed triple live; clicking the button arms the tool + opens the popup.
+interface CustomNucleotideButtonProps {
+    value: { sugar: string; base: string; phos: string };
+    onChange: (v: { sugar: string; base: string; phos: string }) => void;
+    onArm: () => void;
+    active?: boolean;
+    testid: string;
+}
+
+function CustomNucleotideButton({
+    value, onChange, onArm, active, testid,
+}: CustomNucleotideButtonProps): JSX.Element {
+    const [open, setOpen] = useState(false);
+    const [hover, setHover] = useState(false);
+    const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        if (!open) return;
+        function onDocMouseDown(e: globalThis.MouseEvent): void {
+            const t = e.target as Node;
+            if (wrapperRef.current && !wrapperRef.current.contains(t)) {
+                setOpen(false);
+            }
+        }
+        document.addEventListener('mousedown', onDocMouseDown);
+        return () => document.removeEventListener('mousedown', onDocMouseDown);
+    }, [open]);
+
+    // Alphanumeric only (Qt uses a \w+ validator on each field).
+    const sanitize = (s: string): string => s.replace(/[^\w]/g, '');
+    const field = (
+        key: 'sugar' | 'base' | 'phos', label: string,
+    ): JSX.Element => (
+        <label style={styles.customNtField}>
+            <span style={styles.customNtLabel}>{label}</span>
+            <input
+                type='text'
+                value={value[key]}
+                data-testid={`${testid}-${key}`}
+                style={styles.customNtInput}
+                onChange={(e) => {
+                    onChange({ ...value, [key]: sanitize(e.target.value) });
+                }}
+            />
+        </label>
+    );
+
+    return (
+        <div ref={wrapperRef} style={{ position: 'relative' }}>
+            <button
+                type='button'
+                style={{
+                    ...styles.nucleicWideBtn,
+                    ...(hover && !active ? styles.iconBtnHover : {}),
+                    ...(active ? styles.iconBtnActive : {}),
+                }}
+                data-testid={testid}
+                aria-pressed={active}
+                aria-haspopup='dialog'
+                aria-expanded={open}
+                title='Build a custom sugar / base / phosphate nucleotide'
+                onMouseEnter={() => setHover(true)}
+                onMouseLeave={() => setHover(false)}
+                onClick={() => { onArm(); setOpen(true); }}
+            >
+                Custom
+            </button>
+            {open && (
+                <div style={styles.customNtPopup}
+                    data-testid={`${testid}-popup`}
+                    role='dialog'>
+                    {field('sugar', 'Sugar')}
+                    {field('base', 'Base')}
+                    {field('phos', 'Phosphate')}
+                </div>
+            )}
+        </div>
+    );
+}
+
 // 32×32 letter button — atom elements + the "A▾" atom-query button.
 // Matches Qt ATOM_ELEMENT_OR_MONOMER_STYLE: 14pt Arimo bold #333333.
 interface LetterButtonProps {
@@ -8458,6 +8555,42 @@ const styles: Record<string, CSSProperties> = {
         display: 'flex',
         gap: 2,
         // Qt popups are 32 px tall × N×32 wide. flex sizes itself.
+    },
+    // Custom-nucleotide popup — three stacked labeled text fields.
+    customNtPopup: {
+        position: 'absolute',
+        top: '100%',
+        left: 0,
+        marginTop: 2,
+        background: 'white',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 3,
+        boxShadow: '0 2px 6px rgba(0,0,0,0.12)',
+        zIndex: 20,
+        padding: 6,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        minWidth: 150,
+    },
+    customNtField: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 6,
+        fontSize: 11,
+        color: '#333333',
+    },
+    customNtLabel: {
+        flex: '0 0 auto',
+    },
+    customNtInput: {
+        flex: '1 1 auto',
+        width: 70,
+        fontSize: 12,
+        padding: '2px 4px',
+        border: `1px solid ${BORDER_COLOR}`,
+        borderRadius: 2,
     },
     // Qt PeriodicTableWidget: 395×210 px, 10px font, 21×21 cells. We
     // anchor it under the trigger and let the sidebar's `overflow:hidden`
