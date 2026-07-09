@@ -5743,4 +5743,82 @@ M  END`;
         expect(rd.atoms[0].qlabel).toBeUndefined();
     });
 
+    // -------- Batch 51: Query bond submenu --------
+    // Qt's ModifyBondsMenu::createQueryMenu (bond_context_menu.cpp:74):
+    // Any / Single-Double / Double-Aromatic / Single-Aromatic. Backed by
+    // mutateBondToQuery / mutateSelectedBondsToQuery; the bond renders at its
+    // base order with a `qlabel` annotation.
+    async function drawSingleBond(page) {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+    }
+
+    test('bond context menu: Query items are listed', async ({ page }) => {
+        await drawSingleBond(page);
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        for (const id of ['Any', 'SD', 'DA', 'SA']) {
+            await expect(page.getByTestId(`bond-ctx-query-${id}`))
+                .toBeVisible();
+        }
+    });
+
+    test('bond context menu: Single/Double query annotates the bond and is undoable', async ({
+        page,
+    }) => {
+        await drawSingleBond(page);
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-query-SD').click();
+        await expect(page.getByTestId('bond-context-menu')).toHaveCount(0);
+        let rd = await snapshot(page);
+        expect(rd.bonds[0].qlabel).toBe('S/D');
+        expect(rd.bonds[0].o).toBe(1); // base type single
+        // Reopen: the active query carries a check.
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await expect(page.getByTestId('bond-ctx-query-SD'))
+            .toContainText('✓');
+        // Dismiss the reopened menu (corner click) before hitting undo.
+        await page.mouse.click(2, 2);
+        await expect(page.getByTestId('bond-context-menu')).toHaveCount(0);
+        // Undo restores a plain single bond (no qlabel).
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].qlabel).toBeUndefined();
+        expect(rd.bonds[0].o).toBe(1);
+    });
+
+    test('bond context menu: Double/Aromatic query draws at double base order', async ({
+        page,
+    }) => {
+        await drawSingleBond(page);
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-query-DA').click();
+        const rd = await snapshot(page);
+        expect(rd.bonds[0].qlabel).toBe('D/A');
+        expect(rd.bonds[0].o).toBe(2); // base type double
+    });
+
+    test('selection context menu: Query applies to every selected bond in one undo step', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCC'); // two single bonds
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-bond-query-Any').click();
+        let rd = await snapshot(page);
+        expect(rd.bonds.every((b) => b.qlabel === 'Any')).toBe(true);
+        // One undo clears every query at once.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.bonds.every((b) => b.qlabel === undefined)).toBe(true);
+    });
+
 });

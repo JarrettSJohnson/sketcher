@@ -27,6 +27,7 @@
 #include <GraphMol/Conformer.h>
 #include <GraphMol/MolOps.h>
 #include <GraphMol/QueryAtom.h>
+#include <GraphMol/QueryBond.h>
 #include <GraphMol/QueryOps.h>
 
 #include "schrodinger/rdkit_extensions/constants.h"
@@ -484,6 +485,104 @@ void MolModel::setBondTypeAndDirForSelectedBonds(RDKit::Bond::BondType type,
         const auto* b = m_mol.getBondWithIdx(idx);
         setBondTypeUndoable(b->getBeginAtomIdx(), b->getEndAtomIdx(), type);
         setBondDirUndoable(b->getBeginAtomIdx(), b->getEndAtomIdx(), dir);
+    }
+}
+
+namespace
+{
+// Maps a query-bond display label to its RDKit query maker + the base bond
+// type Qt draws it as (Qt's BOND_TOOL_QUERY_MAP + get_bond_type_and_query_
+// label). Returns query == nullptr for an unrecognized label; the caller owns
+// the returned query pointer.
+struct BondQuerySpec {
+    RDKit::Bond::QUERYBOND_QUERY* query;
+    RDKit::Bond::BondType base_type;
+};
+BondQuerySpec make_bond_query(const std::string& label)
+{
+    if (label == "Any") {
+        return {RDKit::makeBondNullQuery(), RDKit::Bond::BondType::SINGLE};
+    }
+    if (label == "S/D") {
+        return {RDKit::makeSingleOrDoubleBondQuery(),
+                RDKit::Bond::BondType::SINGLE};
+    }
+    if (label == "S/A") {
+        return {RDKit::makeSingleOrAromaticBondQuery(),
+                RDKit::Bond::BondType::SINGLE};
+    }
+    if (label == "D/A") {
+        return {RDKit::makeDoubleOrAromaticBondQuery(),
+                RDKit::Bond::BondType::DOUBLE};
+    }
+    return {nullptr, RDKit::Bond::BondType::SINGLE};
+}
+} // namespace
+
+void MolModel::mutateBondToQuery(unsigned int begin_idx, unsigned int end_idx,
+                                 const std::string& label)
+{
+    if (begin_idx >= m_mol.getNumAtoms() || end_idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    auto* bond = m_mol.getBondBetweenAtoms(begin_idx, end_idx);
+    if (bond == nullptr) {
+        return;
+    }
+    // Validate the label before opening the command (free the probe query).
+    auto probe = make_bond_query(label);
+    if (probe.query == nullptr) {
+        return;
+    }
+    delete probe.query;
+    const unsigned int bond_idx = bond->getIdx();
+    // Deep-copy the original bond so undo restores it exactly.
+    std::shared_ptr<RDKit::Bond> original(bond->copy());
+    auto refresh_cache = [this] {
+        try {
+            m_mol.updatePropertyCache(/*strict=*/false);
+        } catch (...) {
+        }
+    };
+    auto redo = [this, bond_idx, label, refresh_cache] {
+        auto spec = make_bond_query(label);
+        RDKit::QueryBond qb;
+        qb.setBondType(spec.base_type);
+        qb.setQuery(spec.query); // QueryBond takes ownership of the query
+        qb.setProp(BOND_QUERY_LABEL_PROP, label);
+        m_mol.replaceBond(bond_idx, &qb); // replaceBond copies qb
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    auto undo = [this, bond_idx, original, refresh_cache] {
+        m_mol.replaceBond(bond_idx, original.get());
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    doCommand(std::move(redo), std::move(undo), "Set bond query");
+}
+
+void MolModel::mutateSelectedBondsToQuery(const std::string& label)
+{
+    if (m_selected_bonds.empty()) {
+        return;
+    }
+    auto probe = make_bond_query(label);
+    if (probe.query == nullptr) {
+        return;
+    }
+    delete probe.query;
+    const std::vector<unsigned int> bonds(m_selected_bonds.begin(),
+                                          m_selected_bonds.end());
+    auto macro = createUndoMacro("Set bond query on selection");
+    for (auto idx : bonds) {
+        if (idx >= m_mol.getNumBonds()) {
+            continue;
+        }
+        // replaceBond keeps bond indices stable, so this stays valid across
+        // iterations.
+        const auto* b = m_mol.getBondWithIdx(idx);
+        mutateBondToQuery(b->getBeginAtomIdx(), b->getEndAtomIdx(), label);
     }
 }
 

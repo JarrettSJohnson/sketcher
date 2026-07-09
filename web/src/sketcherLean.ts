@@ -109,6 +109,20 @@ export interface MolModelInstance {
      * No-op when no bonds are selected.
      */
     setBondTypeAndDirForSelectedBonds(type: number, dir: number): void;
+    /**
+     * Replace the begin—end bond in place with a query bond. `label` is one of
+     * "Any" / "S/D" / "S/A" / "D/A" (Qt's BOND_TOOL_QUERY_MAP). Sets the base
+     * bond type Qt draws it as and stores the display label surfaced as the
+     * bond's `qlabel`. Backs the ModifyBondsMenu "Query" submenu. Single undo
+     * step. No-op when the bond is missing or the label is unrecognized.
+     */
+    mutateBondToQuery(begin: number, end: number, label: string): void;
+    /**
+     * Selection-wide equivalent of mutateBondToQuery — every selected bond
+     * becomes the given query bond in one undo step. No-op when nothing is
+     * selected or the label is unrecognized.
+     */
+    mutateSelectedBondsToQuery(label: string): void;
     addRing(size: number, cx: number, cy: number, aromatic: boolean): void;
     /**
      * Add a single-bonded carbon chain at the given 2D positions. Pass

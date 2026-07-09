@@ -148,6 +148,10 @@ interface BondDesc {
     // (17=DATIVE) and zero-order (21=ZERO) bonds — the `o` bond-order double
     // can't distinguish those from a plain single. Absent for ordinary bonds.
     bt?: number;
+    // Query-bond annotation label (Any / S/D / S/A / D/A) made by
+    // MolModel::mutateBondToQuery. Drawn near the bond midpoint; the bond
+    // itself still renders at its base order (`o`). Absent for plain bonds.
+    qlabel?: string;
 }
 
 // Mirror RDKit::Bond::BondDir for the values we render.
@@ -991,6 +995,10 @@ function drawSketch(
     const SUB_FONT_PX = Math.max(7, Math.round(ATOM_FONT_PX * 9 / 13));
     const ATOM_FONT = `${ATOM_FONT_PX}px sans-serif`;
     const SUB_FONT = `${SUB_FONT_PX}px sans-serif`;
+    // Query-bond annotation font — a touch smaller than the atom label, like
+    // Qt's query/stereo annotation text.
+    const QUERY_LABEL_FONT =
+        `${Math.max(8, Math.round(ATOM_FONT_PX * 10 / 13))}px sans-serif`;
     // Charge superscript baseline offset (the original code used py - 4 for
     // a 13px font); keep proportional so it doesn't drift up at larger sizes.
     const CHARGE_DY = Math.round(ATOM_FONT_PX * 4 / 13);
@@ -1233,6 +1241,26 @@ function drawSketch(
                 ctx.lineTo(p2.px - ox, p2.py - oy);
                 ctx.stroke();
             }
+        }
+        // Query-bond annotation (Any / S/D / S/A / D/A). Qt draws it as a
+        // small label near the bond midpoint (bond_item.cpp:135-171). We place
+        // it just off the midpoint, offset perpendicular so it clears the
+        // line. Kept horizontal for legibility (Qt rotates it along the bond;
+        // a minor, documented divergence like the wavy-bond approximation).
+        if (typeof b.qlabel === 'string') {
+            const mx = (p1.px + p2.px) / 2;
+            const my = (p1.py + p2.py) / 2;
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy) || 1;
+            const nx = -dy / len;
+            const ny = dx / len;
+            const off = 8;
+            ctx.font = QUERY_LABEL_FONT;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = palette.bond;
+            ctx.fillText(b.qlabel, mx + nx * off, my + ny * off);
         }
     }
 
@@ -1844,6 +1872,24 @@ function buildSketchSvg(
                 );
             }
         }
+        // Query-bond annotation, mirroring the canvas branch.
+        if (typeof b.qlabel === 'string') {
+            const mx = (p1.px + p2.px) / 2;
+            const my = (p1.py + p2.py) / 2;
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy) || 1;
+            const off = 8;
+            const lx = mx + (-dy / len) * off;
+            const ly = my + (dx / len) * off;
+            const qpx = Math.max(8, Math.round(ATOM_FONT_PX * 10 / 13));
+            parts.push(
+                `<text x='${f(lx)}' y='${f(ly)}' fill='${palette.bond}' ` +
+                `font-family='sans-serif' font-size='${qpx}' ` +
+                `text-anchor='middle' dominant-baseline='central'>` +
+                `${esc(b.qlabel)}</text>`,
+            );
+        }
     }
 
     // Valence-error halos render under the atom labels — mirror the canvas
@@ -2224,7 +2270,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // current state without re-querying the model).
     const [bondContextMenu, setBondContextMenu] = useState<
         { x: number; y: number; bondIdx: number; a: number; b: number;
-          type: number; dir: number; bt?: number; inRing: boolean } | null
+          type: number; dir: number; bt?: number; inRing: boolean;
+          qlabel?: string } | null
     >(null);
     // Per-atom right-click context menu — mirrors Qt's AtomContextMenu
     // (menu/atom_context_menu.cpp). Opens when right-click hits an atom and
@@ -3844,6 +3891,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         dir: bd.dir ?? 0,
                         bt: bd.bt,
                         inRing: bondIsInRing(rd.bonds, bd.a, bd.b),
+                        qlabel: bd.qlabel,
                     });
                     setBgContextMenu(null);
                     setSelContextMenu(null);
@@ -5754,8 +5802,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     {/* Modify Bonds (Qt: ModifyBondsMenu) — flattened from
                         the submenu form. Flip Substituent is hidden in the
                         selection branch (Qt setFlipVisible(false), so we
-                        skip it too). Query / Topology submenus still need
-                        RDKit query-bond support and stay deferred. Each
+                        skip it too). Topology submenu still needs RDKit
+                        ring-membership query support and stays deferred;
+                        Query (Any/S-D/D-A/S-A) ships below. Each
                         item is a no-op when no bonds are in the selection —
                         the selection-wide primitives already early-return
                         on empty bond sets. Other Type items (Coordinate /
@@ -5838,6 +5887,26 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                     BOND_DIR_EITHERDOUBLE);
                             setStatus('selected bonds → crossed double');
                         }} />
+                    {/* Query — Qt's ModifyBondsMenu::createQueryMenu applied
+                        to the selection. Each replaces every selected bond
+                        with the query bond via mutateSelectedBondsToQuery. */}
+                    {([
+                        ['Any', 'Query: Any'],
+                        ['S/D', 'Query: Single/Double'],
+                        ['D/A', 'Query: Double/Aromatic'],
+                        ['S/A', 'Query: Single/Aromatic'],
+                    ] as [string, string][]).map(([code, label]) => (
+                        <MoreItem
+                            key={`sel-bond-query-${code}`}
+                            label={label}
+                            testid={`sel-ctx-bond-query-${code.replace('/', '')}`}
+                            onClick={() => {
+                                setSelContextMenu(null);
+                                modelRef.current
+                                    ?.mutateSelectedBondsToQuery(code);
+                                setStatus(`selected bonds → query ${code}`);
+                            }} />
+                    ))}
                     <div style={styles.moreDivider} />
                     <MoreItem label='Delete' testid='sel-ctx-delete'
                         onClick={() => {
@@ -5848,11 +5917,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             )}
             {/* Bond context menu — mirrors Qt's BondContextMenu
                 (menu/bond_context_menu.cpp). Order/labels follow that file.
-                Sections that need infrastructure not yet ported are
-                intentionally omitted (Query / Topology submenus: need RDKit
-                query bond support in the lean MolModel). Active bond-type
-                / bond-dir items show a leading checkmark so the user can
-                see the current state — Qt uses checkable QAction groups
+                The Topology submenu (In Ring / Not In Ring / Either) still
+                needs RDKit ring-membership query support and stays deferred;
+                Query (Any/S-D/D-A/S-A) ships below. Active bond-type /
+                bond-dir / query items show a leading checkmark so the user
+                can see the current state — Qt uses checkable QAction groups
                 for the same purpose. */}
             {bondContextMenu && (
                 <div
@@ -6019,6 +6088,32 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 BOND_TYPE_DOUBLE, BOND_DIR_EITHERDOUBLE,
                             );
                         }} />
+                    {/* Query — Qt's ModifyBondsMenu::createQueryMenu
+                        (bond_context_menu.cpp:74). Any / Single-Double /
+                        Double-Aromatic / Single-Aromatic. Flattened from the
+                        submenu; each replaces the bond with a query bond via
+                        mutateBondToQuery. The active query carries a check. */}
+                    <div style={styles.moreDivider} />
+                    <div style={styles.moreSectionLabel}>Query</div>
+                    {([
+                        ['Any', 'Any'],
+                        ['S/D', 'Single/Double'],
+                        ['D/A', 'Double/Aromatic'],
+                        ['S/A', 'Single/Aromatic'],
+                    ] as [string, string][]).map(([code, label]) => (
+                        <MoreItem
+                            key={`bond-query-${code}`}
+                            label={(bondContextMenu.qlabel === code
+                                ? '✓ ' : '   ') + label}
+                            testid={`bond-ctx-query-${code.replace('/', '')}`}
+                            onClick={() => {
+                                const bm = bondContextMenu;
+                                setBondContextMenu(null);
+                                modelRef.current?.mutateBondToQuery(
+                                    bm.a, bm.b, code);
+                                setStatus(`bond query: ${code}`);
+                            }} />
+                    ))}
                     <div style={styles.moreDivider} />
                     <MoreItem label='Delete' testid='bond-ctx-delete'
                         onClick={() => {

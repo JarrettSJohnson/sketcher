@@ -23,6 +23,7 @@
 using schrodinger::sketcher_core::MolModel;
 using schrodinger::sketcher_core::UndoStack;
 using schrodinger::sketcher_core::WILDCARD_LABEL_PROP;
+using schrodinger::sketcher_core::BOND_QUERY_LABEL_PROP;
 
 BOOST_AUTO_TEST_CASE(testNewModelIsEmpty)
 {
@@ -644,6 +645,85 @@ BOOST_AUTO_TEST_CASE(testSetBondTypeAndDirForSelectedBondsNoOpOnEmptySelection)
     m.setBondTypeAndDirForSelectedBonds(RDKit::Bond::DOUBLE,
                                         RDKit::Bond::BondDir::EITHERDOUBLE);
     BOOST_CHECK_EQUAL(stack.count(), count_before);
+}
+
+BOOST_AUTO_TEST_CASE(testMutateBondToQueryMakesQueryBondWithBaseTypeAndLabel)
+{
+    // C-C single bond → "S/D" query. The bond becomes a query bond drawn at
+    // its base order (SINGLE), carrying the display label; undo restores the
+    // plain single bond.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+
+    m.mutateBondToQuery(0, 1, "S/D");
+    const auto* qb = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_CHECK(qb->hasQuery());
+    std::string label;
+    BOOST_CHECK(qb->getPropIfPresent(BOND_QUERY_LABEL_PROP, label));
+    BOOST_CHECK_EQUAL(label, "S/D");
+    // Base type is SINGLE so it draws as a single line.
+    BOOST_CHECK_EQUAL(qb->getBondType(), RDKit::Bond::SINGLE);
+
+    stack.undo();
+    const auto* plain = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_CHECK(!plain->hasQuery());
+    BOOST_CHECK_EQUAL(plain->getBondType(), RDKit::Bond::SINGLE);
+    BOOST_CHECK(!plain->hasProp(BOND_QUERY_LABEL_PROP));
+}
+
+BOOST_AUTO_TEST_CASE(testMutateBondToQueryDoubleAromaticUsesDoubleBaseType)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    m.mutateBondToQuery(0, 1, "D/A");
+    const auto* qb = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_CHECK_EQUAL(qb->getBondType(), RDKit::Bond::DOUBLE);
+    std::string label;
+    BOOST_CHECK(qb->getPropIfPresent(BOND_QUERY_LABEL_PROP, label));
+    BOOST_CHECK_EQUAL(label, "D/A");
+}
+
+BOOST_AUTO_TEST_CASE(testMutateBondToQueryNoOpsOnBadLabelOrMissingBond)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    const auto count_before = stack.count();
+    m.mutateBondToQuery(0, 1, "ZZ"); // bad label → no-op
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    m.mutateBondToQuery(0, 5, "Any"); // missing bond → no-op
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    BOOST_CHECK(!m.mol().getBondBetweenAtoms(0, 1)->hasQuery());
+}
+
+BOOST_AUTO_TEST_CASE(testMutateSelectedBondsToQueryAppliesAsOneUndoStep)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addAtom("C", 3.0, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    m.addBond(1, 2, RDKit::Bond::SINGLE);
+    m.setBondSelected(0, true);
+    m.setBondSelected(1, true);
+    const auto count_before = stack.count();
+    m.mutateSelectedBondsToQuery("Any");
+    BOOST_CHECK(m.mol().getBondWithIdx(0)->hasQuery());
+    BOOST_CHECK(m.mol().getBondWithIdx(1)->hasQuery());
+    // One macro step for the whole selection.
+    BOOST_CHECK_EQUAL(stack.count(), count_before + 1);
+    stack.undo();
+    BOOST_CHECK(!m.mol().getBondWithIdx(0)->hasQuery());
+    BOOST_CHECK(!m.mol().getBondWithIdx(1)->hasQuery());
 }
 
 BOOST_AUTO_TEST_CASE(testSetBondTypeNoOpsWhenBondMissingOrUnchanged)

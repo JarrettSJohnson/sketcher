@@ -380,6 +380,17 @@ std::string mol_to_render_description(
         if (b->getIsAromatic()) {
             os << ",\"arom\":true";
         }
+        // Query bond (Any / S/D / S/A / D/A). MolModel::mutateBondToQuery
+        // stashes the display label in BOND_QUERY_LABEL_PROP; surface it as
+        // "qlabel" so the renderer paints the annotation near the bond (the
+        // bond still draws at its base order via `o`). Mirrors Qt's
+        // get_bond_type_and_query_label (rdkit/atoms_and_bonds.cpp:31).
+        std::string bond_qlabel;
+        if (b->getPropIfPresent(
+                schrodinger::sketcher_core::BOND_QUERY_LABEL_PROP,
+                bond_qlabel)) {
+            os << ",\"qlabel\":\"" << bond_qlabel << "\"";
+        }
         if (model != nullptr && model->isBondSelected(i)) {
             os << ",\"sel\":true";
         }
@@ -641,6 +652,15 @@ class MolModelJS
         m_model.setBondTypeAndDirForSelectedBonds(
             static_cast<RDKit::Bond::BondType>(type),
             static_cast<RDKit::Bond::BondDir>(dir));
+    }
+    void mutateBondToQuery(unsigned int begin, unsigned int end,
+                           const std::string& label)
+    {
+        m_model.mutateBondToQuery(begin, end, label);
+    }
+    void mutateSelectedBondsToQuery(const std::string& label)
+    {
+        m_model.mutateSelectedBondsToQuery(label);
     }
     void addRing(unsigned int size, double cx, double cy, bool aromatic)
     {
@@ -958,6 +978,9 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
                   &MolModelJS::setBondTypeAndDirUndoable)
         .function("setBondTypeAndDirForSelectedBonds",
                   &MolModelJS::setBondTypeAndDirForSelectedBonds)
+        .function("mutateBondToQuery", &MolModelJS::mutateBondToQuery)
+        .function("mutateSelectedBondsToQuery",
+                  &MolModelJS::mutateSelectedBondsToQuery)
         .function("addRing", &MolModelJS::addRing)
         .function("addAtomChain", &MolModelJS::addAtomChain)
         .function("rotateSelectedAtoms", &MolModelJS::rotateSelectedAtoms)

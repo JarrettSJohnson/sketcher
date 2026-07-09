@@ -36,6 +36,13 @@ namespace sketcher_core
 // RDKit query. Underscore prefix keeps it out of molblock/SMILES output.
 inline constexpr const char* WILDCARD_LABEL_PROP = "_sketcherWildcard";
 
+// Private RDKit bond property holding a query bond's display label (Any / S/D
+// / S/A / D/A). Set by MolModel::mutateBondToQuery and read by the render
+// description — same "store the label, don't re-parse the query" approach as
+// WILDCARD_LABEL_PROP. Mirrors Qt's get_bond_type_and_query_label output
+// (rdkit/atoms_and_bonds.cpp:222).
+inline constexpr const char* BOND_QUERY_LABEL_PROP = "_sketcherBondQuery";
+
 class UndoStack;
 
 class MolModel : public UndoableModel
@@ -214,6 +221,26 @@ class MolModel : public UndoableModel
      */
     void setBondTypeAndDirForSelectedBonds(RDKit::Bond::BondType type,
                                            RDKit::Bond::BondDir dir);
+
+    /**
+     * Replace the bond between `begin_idx` and `end_idx` in place with a query
+     * bond. `label` is one of "Any" / "S/D" / "S/A" / "D/A" — mapped to the
+     * matching RDKit query maker (makeBondNullQuery / makeSingleOrDoubleBond
+     * Query / …) exactly as Qt's BOND_TOOL_QUERY_MAP (rdkit/atoms_and_bonds.h:
+     * 74). Sets the base bond type Qt draws it as (SINGLE for Any/S/D/S/A,
+     * DOUBLE for D/A) and stores the display label in BOND_QUERY_LABEL_PROP for
+     * the render description. Backs the ModifyBondsMenu "Query" submenu.
+     * Single undo step. No-op when the bond is missing or `label` unrecognized.
+     */
+    void mutateBondToQuery(unsigned int begin_idx, unsigned int end_idx,
+                           const std::string& label);
+
+    /**
+     * Selection-wide equivalent of `mutateBondToQuery` — every selected bond
+     * becomes the given query bond inside one undo macro. No-op when no bonds
+     * are selected or `label` is unrecognized.
+     */
+    void mutateSelectedBondsToQuery(const std::string& label);
 
     /**
      * Insert a planar regular polygon of `size` carbon atoms centered at
