@@ -416,6 +416,18 @@ interface NonMolDesc {
     x: number;
     y: number;
 }
+// Substance-group (bracket subgroup) render descriptor. `brackets` is a list of
+// polylines (each an array of model-space points forming a "[" / "]"); `label`
+// is the polymer/numeric text drawn by the rightmost bracket ("n", "co", or a
+// custom label); `repeat` is the repeat-pattern text ("hh"/"eu", empty for
+// head-to-tail); (lx, ly) is the label anchor in model coords.
+interface SGroupDesc {
+    brackets: { x: number; y: number }[][];
+    label: string;
+    repeat: string;
+    lx: number;
+    ly: number;
+}
 interface RenderDesc {
     atoms: AtomDesc[];
     bonds: BondDesc[];
@@ -423,6 +435,7 @@ interface RenderDesc {
     // True when the mol is coarse-grained monomeric — the whole scene renders
     // as labeled beads + connectors instead of atoms/bonds.
     monomeric?: boolean;
+    sgroups?: SGroupDesc[];
 }
 
 const CANVAS_W = 540;
@@ -1827,6 +1840,48 @@ function drawSketch(
         ctx.restore();
     }
 
+    // Substance-group brackets + labels (Qt SGroupItem). Each S-group draws two
+    // "[" / "]" bracket polylines around the grouped atoms plus a polymer/repeat
+    // label by the rightmost bracket.
+    if (rd.sgroups && rd.sgroups.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = palette.bond;
+        ctx.fillStyle = palette.annotation;
+        ctx.lineWidth = 1.5;
+        ctx.lineJoin = 'round';
+        ctx.font = ATOM_FONT;
+        for (const sg of rd.sgroups) {
+            for (const poly of sg.brackets) {
+                if (poly.length < 2) continue;
+                ctx.beginPath();
+                const p0 = pixelFromModel(canvas, view, poly[0].x, poly[0].y);
+                ctx.moveTo(p0.px, p0.py);
+                for (let k = 1; k < poly.length; ++k) {
+                    const p = pixelFromModel(canvas, view, poly[k].x, poly[k].y);
+                    ctx.lineTo(p.px, p.py);
+                }
+                ctx.stroke();
+            }
+            const lp = pixelFromModel(canvas, view, sg.lx, sg.ly);
+            ctx.textAlign = 'left';
+            if (sg.label) {
+                ctx.textBaseline = 'middle';
+                ctx.fillText(sg.label, lp.px, lp.py);
+            }
+            if (sg.repeat) {
+                // Repeat text sits above the polymer label (Qt places it at the
+                // top of the right bracket).
+                ctx.textBaseline = 'bottom';
+                ctx.font = SUB_FONT;
+                ctx.fillText(sg.repeat, lp.px, lp.py - SUB_FONT_PX);
+                ctx.font = ATOM_FONT;
+            }
+        }
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.restore();
+    }
+
     // Attachment-point squiggles. Drawn after the atom labels so the wavy
     // line lays on top of any bond endpoint stub. Qt's geometry: a wavy
     // path perpendicular to the bond, centered on the AP atom position
@@ -2504,6 +2559,39 @@ function buildSketchSvg(
             `dominant-baseline='central'>:${a.map}</text>`,
         );
     }
+    // Substance-group brackets + labels — mirrors the canvas sgroup pass.
+    if (rd.sgroups) {
+        for (const sg of rd.sgroups) {
+            for (const poly of sg.brackets) {
+                if (poly.length < 2) continue;
+                const pts = poly.map((pt) => {
+                    const p = px(pt.x, pt.y);
+                    return `${f(p.px)},${f(p.py)}`;
+                }).join(' ');
+                parts.push(
+                    `<polyline points='${pts}' fill='none' ` +
+                    `stroke='${palette.bond}' stroke-width='1.5'/>`,
+                );
+            }
+            const lp = px(sg.lx, sg.ly);
+            if (sg.label) {
+                parts.push(
+                    `<text x='${f(lp.px)}' y='${f(lp.py)}' ` +
+                    `fill='${palette.annotation}' font-family='sans-serif' ` +
+                    `font-size='${ATOM_FONT_PX}' text-anchor='start' ` +
+                    `dominant-baseline='central'>${esc(sg.label)}</text>`,
+                );
+            }
+            if (sg.repeat) {
+                parts.push(
+                    `<text x='${f(lp.px)}' y='${f(lp.py - SUB_FONT_PX)}' ` +
+                    `fill='${palette.annotation}' font-family='sans-serif' ` +
+                    `font-size='${SUB_FONT_PX}' text-anchor='start' ` +
+                    `dominant-baseline='central'>${esc(sg.repeat)}</text>`,
+                );
+            }
+        }
+    }
     // Attachment-point squiggles — quadratic-bezier path matching the canvas
     // renderer. Stroke color/width tracks the bond palette so the squiggle
     // reads as a bond cap rather than a separate annotation.
@@ -2720,6 +2808,15 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [customNucleotide, setCustomNucleotide] = useState<
         { sugar: string; base: string; phos: string }>(
         { sugar: 'R', base: 'A', phos: 'P' });
+    // Bracket-subgroup dialog (Qt BracketSubgroupDialog). Non-null holds the
+    // selected atom indices being bracketed; `type`/`pattern`/`label` are the
+    // dialog fields. SRU polymer uses a numeric label; copolymer forces "co".
+    const [bracketDialog, setBracketDialog] = useState<
+        { atomIndices: number[] } | null>(null);
+    const [bracketType, setBracketType] = useState<'SRU' | 'COP'>('SRU');
+    const [bracketPattern, setBracketPattern] =
+        useState<'HT' | 'HH' | 'EU'>('HT');
+    const [bracketLabel, setBracketLabel] = useState<string>('');
     // Non-natural peptide analogs grouped by natural residue (D-/N-methyl
     // variants etc.) from the monomer DB, fetched once. Drives the per-residue
     // analog popups on the amino-acid tiles (Qt MonomerToolWidget, SKETCH-2482).
@@ -7047,6 +7144,27 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 setStatus(`selected bonds → topology ${code}`);
                             }} />
                     ))}
+                    {/* Add Brackets — Qt's "Add Brackets…" (selection context
+                        menu → BracketSubgroupDialog). Enabled only when the
+                        selected atoms can form a valid bracket subgroup
+                        (connected, exactly two crossing bonds). */}
+                    <div style={styles.moreDivider} />
+                    <MoreItem
+                        label='Add Brackets…'
+                        testid='sel-ctx-add-brackets'
+                        disabled={!(selContextMenu.selAtomIndices.length > 0 &&
+                            (modelRef.current?.canAtomsFormSGroup(
+                                selContextMenu.selAtomIndices) ?? false))}
+                        onClick={() => {
+                            const sm = selContextMenu;
+                            setSelContextMenu(null);
+                            setBracketType('SRU');
+                            setBracketPattern('HT');
+                            setBracketLabel('');
+                            setBracketDialog({
+                                atomIndices: sm.selAtomIndices,
+                            });
+                        }} />
                     <div style={styles.moreDivider} />
                     <MoreItem label='Delete' testid='sel-ctx-delete'
                         onClick={() => {
@@ -7685,6 +7803,88 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 data-testid='paste-text-load'
                                 onClick={submitPasteModal}>
                                 Load
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* Bracket-subgroup dialog — Qt BracketSubgroupDialog
+                (dialog/bracket_subgroup_dialog.cpp). Subgroup type + repeat
+                pattern combos + a polymer/numeric label (numeric label is
+                SRU-only; copolymer forces "co" and disables the field). */}
+            {bracketDialog && (
+                <div style={styles.modalOverlay}
+                    data-testid='bracket-subgroup-modal'
+                    onClick={(e) => {
+                        if (e.target === e.currentTarget) {
+                            setBracketDialog(null);
+                        }
+                    }}>
+                    <div style={styles.modalCard}>
+                        <div style={styles.modalTitle}>Bracket Subgroup</div>
+                        <label style={styles.modalLabel}>
+                            Subgroup type:
+                            <select
+                                style={styles.modalSelect}
+                                data-testid='bracket-type-select'
+                                value={bracketType}
+                                onChange={(e) => {
+                                    const v = e.target.value as 'SRU' | 'COP';
+                                    setBracketType(v);
+                                    // Copolymer: label is forced to "co" and
+                                    // disabled (Qt subgrouptype_label_map).
+                                    setBracketLabel(v === 'COP' ? 'co' : '');
+                                }}>
+                                <option value='SRU'>SRU polymer</option>
+                                <option value='COP'>Copolymer</option>
+                            </select>
+                        </label>
+                        <label style={styles.modalLabel}>
+                            Repeat pattern:
+                            <select
+                                style={styles.modalSelect}
+                                data-testid='bracket-pattern-select'
+                                value={bracketPattern}
+                                onChange={(e) => setBracketPattern(
+                                    e.target.value as 'HT' | 'HH' | 'EU')}>
+                                <option value='HT'>Head-to-tail</option>
+                                <option value='HH'>Head-to-head</option>
+                                <option value='EU'>Either / Unknown</option>
+                            </select>
+                        </label>
+                        <label style={styles.modalLabel}>
+                            {bracketType === 'SRU'
+                                ? 'Numeric label:' : 'Polymer label:'}
+                            <input
+                                type='text'
+                                style={styles.modalSelect}
+                                data-testid='bracket-label-input'
+                                value={bracketLabel}
+                                disabled={bracketType !== 'SRU'}
+                                placeholder={bracketType === 'SRU'
+                                    ? '(n or value/range: 3, 2-4)' : ''}
+                                onChange={(e) =>
+                                    setBracketLabel(e.target.value)}
+                            />
+                        </label>
+                        <div style={styles.modalButtons}>
+                            <button type='button' style={styles.modalBtn}
+                                data-testid='bracket-cancel'
+                                onClick={() => setBracketDialog(null)}>
+                                Cancel
+                            </button>
+                            <button type='button' style={styles.modalBtnPrimary}
+                                data-testid='bracket-ok'
+                                onClick={() => {
+                                    const bd = bracketDialog;
+                                    setBracketDialog(null);
+                                    modelRef.current?.addSGroup(
+                                        bd.atomIndices, bracketType,
+                                        bracketPattern, bracketLabel);
+                                    modelRef.current?.clearSelection();
+                                    setStatus('added bracket subgroup');
+                                }}>
+                                OK
                             </button>
                         </div>
                     </div>

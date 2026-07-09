@@ -2013,6 +2013,55 @@ BOOST_AUTO_TEST_CASE(testSetAtomMappingNoOpCases)
     BOOST_CHECK_EQUAL(stack.count(), afterSet);
 }
 
+BOOST_AUTO_TEST_CASE(testCanAtomsFormSGroup)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCCC"); // linear chain, atoms 0-1-2-3.
+
+    // Middle two atoms bracket cleanly (two crossing bonds).
+    BOOST_CHECK(m.canAtomsFormSGroup({1u, 2u}));
+    // A single terminal atom has only one crossing bond — invalid.
+    BOOST_CHECK(!m.canAtomsFormSGroup({0u}));
+    // A single interior atom has two crossing bonds — valid.
+    BOOST_CHECK(m.canAtomsFormSGroup({1u}));
+    // Empty selection — invalid.
+    BOOST_CHECK(!m.canAtomsFormSGroup({}));
+    // Whole molecule — zero crossing bonds — invalid.
+    BOOST_CHECK(!m.canAtomsFormSGroup({0u, 1u, 2u, 3u}));
+}
+
+BOOST_AUTO_TEST_CASE(testAddSGroupCreatesGroupAndIsUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCCC");
+    const auto base = stack.count();
+    BOOST_CHECK_EQUAL(m.numSGroups(), 0u);
+
+    m.addSGroup({1u, 2u}, "SRU", "HT", "n");
+    BOOST_CHECK_EQUAL(stack.count(), base + 1);
+    BOOST_CHECK_EQUAL(m.numSGroups(), 1u);
+
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.numSGroups(), 0u);
+    stack.redo();
+    BOOST_CHECK_EQUAL(m.numSGroups(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(testAddSGroupNoOpOnInvalidAtoms)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCCC");
+    const auto base = stack.count();
+
+    // Whole molecule can't form an S-group — no group, no undo entry.
+    m.addSGroup({0u, 1u, 2u, 3u}, "SRU", "HT", "");
+    BOOST_CHECK_EQUAL(m.numSGroups(), 0u);
+    BOOST_CHECK_EQUAL(stack.count(), base);
+}
+
 BOOST_AUTO_TEST_CASE(testKekulizeBenzeneReplacesAromaticWithExplicitDoubles)
 {
     UndoStack stack;

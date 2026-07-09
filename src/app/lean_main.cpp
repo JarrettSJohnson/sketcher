@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <sstream>
@@ -30,6 +31,7 @@
 #include <GraphMol/MolOps.h>
 #include <GraphMol/MonomerInfo.h>
 #include <GraphMol/RWMol.h>
+#include <GraphMol/SubstanceGroup.h>
 
 #include "schrodinger/rdkit_extensions/convert.h"
 #include "schrodinger/rdkit_extensions/coord_utils.h"
@@ -501,6 +503,139 @@ std::vector<char> reaction_roles(RDKit::RWMol& mol, double arrow_x)
     return roles;
 }
 
+std::string json_escape(const std::string& s); // defined below
+
+// Substance-group (bracket subgroup) render fragment. Ports Qt's bracket
+// geometry (rdkit/sgroup.cpp update_bracket_coordinates + sgroup_item.cpp
+// getBracketPath/computeShortSideForBracket + label text). Each S-group emits
+// two brackets (4-point polylines forming "[" / "]"), a polymer/repeat label,
+// and the repeat-pattern text, all in model coords. Returns "" when the mol has
+// no bracketable S-groups.
+std::string sgroups_json(RDKit::RWMol& mol)
+{
+    const auto& sgroups = RDKit::getSubstanceGroups(mol);
+    if (sgroups.empty()) {
+        return "";
+    }
+    // BRACKETS_LONG_SIDE = RDDepict::BOND_LEN(1.5) * 0.9; SHORT = 0.2*LONG;
+    // LABEL_DISTANCE = 0.5*SHORT (Qt rdkit/sgroup.h + molviewer/constants.h).
+    constexpr double LONG = 1.5 * 0.9;
+    constexpr double SHORT = LONG * 0.2;
+    constexpr double LABEL_DIST = SHORT * 0.5;
+    const auto& conf = mol.getConformer();
+    std::ostringstream os;
+    os.precision(4);
+    os << std::fixed;
+    os << "\"sgroups\":[";
+    bool first_sg = true;
+    for (const auto& sg : sgroups) {
+        const auto bonds = sg.getBonds();
+        if (bonds.size() != 2) {
+            continue; // only two-attachment bracket S-groups render
+        }
+        const auto atom_idxs = sg.getAtoms();
+        std::unordered_set<unsigned int> atom_set(atom_idxs.begin(),
+                                                  atom_idxs.end());
+        // Build the two brackets; track the rightmost for label placement.
+        struct Bracket {
+            double x0, y0, x1, y1;   // long-side endpoints
+            double sx, sy;           // short-side (foot) vector, toward group
+        };
+        std::vector<Bracket> brs;
+        for (auto bidx : bonds) {
+            const auto* bond = mol.getBondWithIdx(bidx);
+            const unsigned int a1 = bond->getBeginAtomIdx();
+            const unsigned int a2 = bond->getEndAtomIdx();
+            const auto p1 = conf.getAtomPos(a1);
+            const auto p2 = conf.getAtomPos(a2);
+            const double mx = (p1.x + p2.x) * 0.5;
+            const double my = (p1.y + p2.y) * 0.5;
+            const double bdx = p1.x - p2.x;
+            const double bdy = p1.y - p2.y;
+            // Long side ⟂ the bond, length LONG.
+            double nx = -bdy;
+            double ny = bdx;
+            const double nlen = std::sqrt(nx * nx + ny * ny);
+            if (nlen > 1e-9) {
+                nx /= nlen;
+                ny /= nlen;
+            }
+            const double hx = nx * LONG * 0.5;
+            const double hy = ny * LONG * 0.5;
+            const double x0 = mx + hx, y0 = my + hy;
+            const double x1 = mx - hx, y1 = my - hy;
+            // Short foot ∥ the bond, pointing toward the in-group atom.
+            const auto in_pos = atom_set.count(a1) ? p1 : p2;
+            double sx = bond ? (bdx) : 0.0; // along the bond
+            double sy = bdy;
+            const double slen = std::sqrt(sx * sx + sy * sy);
+            if (slen > 1e-9) {
+                sx /= slen;
+                sy /= slen;
+            }
+            if (sx * (in_pos.x - mx) + sy * (in_pos.y - my) < 0) {
+                sx = -sx;
+                sy = -sy;
+            }
+            sx *= SHORT;
+            sy *= SHORT;
+            brs.push_back({x0, y0, x1, y1, sx, sy});
+        }
+        // Label text: "n" (empty SRU), "co" (empty copolymer), else LABEL.
+        std::string type_str, label_str, connect_str;
+        sg.getPropIfPresent(std::string("TYPE"), type_str);
+        sg.getPropIfPresent(std::string("LABEL"), label_str);
+        sg.getPropIfPresent(std::string("CONNECT"), connect_str);
+        std::string label = label_str;
+        if (label.empty() && type_str == "SRU") {
+            label = "n";
+        } else if (label.empty() && type_str == "COP") {
+            label = "co";
+        }
+        // Repeat text: lowercased CONNECT unless head-to-tail ("HT").
+        std::string repeat;
+        if (!connect_str.empty() && connect_str != "HT") {
+            for (char c : connect_str) {
+                repeat += static_cast<char>(std::tolower(c));
+            }
+        }
+        // Place the label just outside the rightmost bracket's midpoint.
+        const auto& rb = (brs[0].x0 + brs[0].x1) >= (brs[1].x0 + brs[1].x1)
+                             ? brs[0] : brs[1];
+        const double rmx = (rb.x0 + rb.x1) * 0.5;
+        const double rmy = (rb.y0 + rb.y1) * 0.5;
+        // Outward = away from group = -short direction.
+        double olen = std::sqrt(rb.sx * rb.sx + rb.sy * rb.sy);
+        double odx = olen > 1e-9 ? -rb.sx / olen : 1.0;
+        double ody = olen > 1e-9 ? -rb.sy / olen : 0.0;
+        const double lx = rmx + odx * (SHORT + LABEL_DIST);
+        const double ly = rmy + ody * (SHORT + LABEL_DIST);
+
+        if (!first_sg) {
+            os << ',';
+        }
+        first_sg = false;
+        os << "{\"brackets\":[";
+        for (size_t k = 0; k < brs.size(); ++k) {
+            if (k > 0) {
+                os << ',';
+            }
+            const auto& b = brs[k];
+            // 4-point "[" polyline: b0+short, b0, b1, b1+short.
+            os << "[{\"x\":" << (b.x0 + b.sx) << ",\"y\":" << (b.y0 + b.sy)
+               << "},{\"x\":" << b.x0 << ",\"y\":" << b.y0
+               << "},{\"x\":" << b.x1 << ",\"y\":" << b.y1
+               << "},{\"x\":" << (b.x1 + b.sx) << ",\"y\":" << (b.y1 + b.sy)
+               << "}]";
+        }
+        os << "],\"label\":\"" << json_escape(label) << "\",\"repeat\":\""
+           << json_escape(repeat) << "\",\"lx\":" << lx << ",\"ly\":" << ly
+           << "}";
+    }
+    os << "]";
+    return first_sg ? "" : os.str();
+}
+
 std::string mol_to_render_description(
     RDKit::RWMol& mol,
     const schrodinger::sketcher_core::MolModel* model = nullptr)
@@ -819,6 +954,13 @@ std::string mol_to_render_description(
     os << "]";
     if (!non_mol_fragment.empty()) {
         os << ',' << non_mol_fragment;
+    }
+    // Substance groups (bracket subgroups) render on top of the atomistic mol.
+    if (!is_monomeric) {
+        const std::string sg = sgroups_json(mol);
+        if (!sg.empty()) {
+            os << ',' << sg;
+        }
     }
     os << "}";
     return os.str();
@@ -1382,6 +1524,29 @@ class MolModelJS
         }
         m_model.setAtomMapping(idx, mapping_num);
     }
+    bool canAtomsFormSGroup(emscripten::val atom_indices)
+    {
+        const auto n = atom_indices["length"].as<unsigned int>();
+        std::vector<unsigned int> idx(n);
+        for (unsigned int i = 0; i < n; ++i) {
+            idx[i] = atom_indices[i].as<unsigned int>();
+        }
+        return m_model.canAtomsFormSGroup(idx);
+    }
+    void addSGroup(emscripten::val atom_indices, const std::string& type_str,
+                   const std::string& connect_str, const std::string& label)
+    {
+        const auto n = atom_indices["length"].as<unsigned int>();
+        std::vector<unsigned int> idx(n);
+        for (unsigned int i = 0; i < n; ++i) {
+            idx[i] = atom_indices[i].as<unsigned int>();
+        }
+        m_model.addSGroup(idx, type_str, connect_str, label);
+    }
+    unsigned int numSGroups()
+    {
+        return m_model.numSGroups();
+    }
     void aromatize()
     {
         m_model.aromatize();
@@ -1627,6 +1792,9 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("adjustRadicalElectronsOnAtoms",
                   &MolModelJS::adjustRadicalElectronsOnAtoms)
         .function("setAtomMapping", &MolModelJS::setAtomMapping)
+        .function("canAtomsFormSGroup", &MolModelJS::canAtomsFormSGroup)
+        .function("addSGroup", &MolModelJS::addSGroup)
+        .function("numSGroups", &MolModelJS::numSGroups)
         .function("aromatize", &MolModelJS::aromatize)
         .function("kekulize", &MolModelJS::kekulize)
         .function("cleanUp", &MolModelJS::cleanUp)

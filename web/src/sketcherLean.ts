@@ -326,6 +326,22 @@ export interface MolModelInstance {
      * Backs the reaction-popup Map Atoms / Remove Mapping tools.
      */
     setAtomMapping(atomIndices: number[], mappingNum: number): void;
+    /**
+     * True iff `atomIndices` can form a valid bracket subgroup (connected, with
+     * exactly two bonds crossing to the rest of the molecule). Backs the
+     * "Add Brackets" enable gate.
+     */
+    canAtomsFormSGroup(atomIndices: number[]): boolean;
+    /**
+     * Add a bracket substance group over `atomIndices`. `typeStr` is the RDKit
+     * TYPE ("SRU"/"COP"/"GEN"), `connectStr` the CONNECT repeat pattern
+     * ("HT"/"HH"/"EU", "" for none), `label` the polymer/numeric label. No-op
+     * if the atoms can't form a valid S-group. Single undo step.
+     */
+    addSGroup(atomIndices: number[], typeStr: string, connectStr: string,
+              label: string): void;
+    /** Number of substance groups on the molecule. */
+    numSGroups(): number;
     /** Perceive aromaticity — sets arom flag on atoms/bonds. Single undo step. */
     aromatize(): void;
     /** Kekulize aromatic bonds back to explicit SINGLE/DOUBLE alternation. Single undo step. */

@@ -6761,4 +6761,101 @@ M  END`;
         expect(body).toContain(':1');
     });
 
+    // -------- Batch 67: S-groups (Add Brackets) --------
+    // Qt BracketSubgroupDialog (via the selection context menu's "Add
+    // Brackets"): bracket a connected set of atoms with exactly two crossing
+    // bonds as an SRU polymer / copolymer.
+    // Select the middle two atoms of a loaded 4-carbon chain and open the
+    // selection context menu on top of them.
+    async function selectMiddleTwoAndOpenSelMenu(page) {
+        await page.evaluate(() => window.SketcherModel.loadFromSmiles('CCCC'));
+        await page.getByTestId('fit-to-screen').click();
+        const rd = await snapshot(page);
+        await page.getByTestId('tool-select').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        const p1 = await beadPixel(page, rd.atoms.find((a) => a.i === 1));
+        const p2 = await beadPixel(page, rd.atoms.find((a) => a.i === 2));
+        await canvas.click({ position: { x: p1.px, y: p1.py } });
+        await canvas.click({
+            position: { x: p2.px, y: p2.py }, modifiers: ['Shift'] });
+        await canvas.click({
+            position: { x: p2.px, y: p2.py }, button: 'right' });
+        await expect(page.getByTestId('sel-context-menu')).toBeVisible();
+        return canvas;
+    }
+
+    test('sgroup: Add Brackets on a valid selection creates a bracket subgroup', async ({
+        page,
+    }) => {
+        await selectMiddleTwoAndOpenSelMenu(page);
+        const addBtn = page.getByTestId('sel-ctx-add-brackets');
+        await expect(addBtn).toBeEnabled();
+        await addBtn.click();
+        await expect(page.getByTestId('bracket-subgroup-modal')).toBeVisible();
+        await page.getByTestId('bracket-ok').click();
+        const rd = await snapshot(page);
+        expect(rd.sgroups).toBeDefined();
+        expect(rd.sgroups).toHaveLength(1);
+        expect(rd.sgroups[0].brackets).toHaveLength(2);
+        // Empty SRU label renders as "n".
+        expect(rd.sgroups[0].label).toBe('n');
+        // Undoable in one step.
+        await page.getByTestId('undo').click();
+        const rd2 = await snapshot(page);
+        expect(rd2.sgroups ?? []).toHaveLength(0);
+    });
+
+    test('sgroup: Add Brackets is disabled for a selection that cannot bracket', async ({
+        page,
+    }) => {
+        await page.evaluate(() => window.SketcherModel.loadFromSmiles('CCCC'));
+        await page.getByTestId('fit-to-screen').click();
+        const rd = await snapshot(page);
+        await page.getByTestId('tool-select').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        // A single terminal atom has only one crossing bond → invalid.
+        const p0 = await beadPixel(page, rd.atoms.find((a) => a.i === 0));
+        await canvas.click({ position: { x: p0.px, y: p0.py } });
+        await canvas.click({ position: { x: p0.px, y: p0.py }, button: 'right' });
+        await expect(page.getByTestId('sel-context-menu')).toBeVisible();
+        await expect(page.getByTestId('sel-ctx-add-brackets')).toBeDisabled();
+    });
+
+    test('sgroup: copolymer type forces a disabled "co" label', async ({
+        page,
+    }) => {
+        await selectMiddleTwoAndOpenSelMenu(page);
+        await page.getByTestId('sel-ctx-add-brackets').click();
+        await expect(page.getByTestId('bracket-subgroup-modal')).toBeVisible();
+        await page.getByTestId('bracket-type-select').selectOption('COP');
+        const label = page.getByTestId('bracket-label-input');
+        await expect(label).toBeDisabled();
+        await expect(label).toHaveValue('co');
+        await page.getByTestId('bracket-ok').click();
+        const rd = await snapshot(page);
+        expect(rd.sgroups).toHaveLength(1);
+        expect(rd.sgroups[0].label).toBe('co');
+    });
+
+    test('sgroup: brackets + label render in the exported SVG', async ({
+        page,
+    }) => {
+        await selectMiddleTwoAndOpenSelMenu(page);
+        await page.getByTestId('sel-ctx-add-brackets').click();
+        await page.getByTestId('bracket-ok').click();
+        await page.getByTestId('export').click();
+        await page.getByTestId('export-save-image').click();
+        await page.getByTestId('save-image-format-select').selectOption('svg');
+        const downloadPromise = page.waitForEvent('download');
+        await page.getByTestId('save-image-save').click();
+        const download = await downloadPromise;
+        const path = await download.path();
+        const fs = await import('node:fs/promises');
+        const body = await fs.readFile(path, 'utf8');
+        // Two bracket polylines + the "n" polymer label.
+        expect((body.match(/<polyline /g) || []).length)
+            .toBeGreaterThanOrEqual(2);
+        expect(body).toContain('>n</text>');
+    });
+
 });

@@ -706,6 +706,34 @@ class MolModel : public UndoableModel
         return m_rxn_pluses;
     }
 
+    // -- Substance groups (bracket subgroups: SRU / copolymer) ------------
+    // S-groups live inside the RWMol as RDKit::SubstanceGroups, so they
+    // round-trip through doMutation snapshots automatically (RWMol copy
+    // preserves them). Mirrors Qt MolModel::addSGroup (model/mol_model.cpp:2439)
+    // + rdkit/sgroup.cpp helpers.
+
+    /**
+     * True iff `atom_indices` can form a valid bracket subgroup: non-empty,
+     * all atoms connected, and exactly two bonds crossing between the group and
+     * the rest of the molecule. Ported from `can_atoms_form_sgroup`
+     * (rdkit/sgroup.cpp:149). Backs the "Add Brackets" enable gate.
+     */
+    bool canAtomsFormSGroup(const std::vector<unsigned int>& atom_indices) const;
+
+    /**
+     * Add a bracket substance group over `atom_indices`. `type_str` is the
+     * RDKit TYPE ("SRU"/"COP"/"GEN"), `connect_str` the CONNECT repeat pattern
+     * ("HT"/"HH"/"EU", empty for none), `label` the polymer/numeric label.
+     * No-op if the atoms can't form a valid S-group (see canAtomsFormSGroup).
+     * Single undo step. Mirrors Qt MolModel::addSGroup.
+     */
+    void addSGroup(const std::vector<unsigned int>& atom_indices,
+                   const std::string& type_str, const std::string& connect_str,
+                   const std::string& label);
+
+    /** Number of substance groups on the molecule. */
+    unsigned int numSGroups() const;
+
     /** Fired once per applied/undone/redone mutation. */
     Signal<> modelChanged;
 

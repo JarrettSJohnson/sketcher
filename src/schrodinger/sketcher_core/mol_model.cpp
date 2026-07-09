@@ -31,6 +31,7 @@
 #include <GraphMol/QueryAtom.h>
 #include <GraphMol/QueryBond.h>
 #include <GraphMol/QueryOps.h>
+#include <GraphMol/SubstanceGroup.h>
 
 #include "schrodinger/rdkit_extensions/constants.h"
 #include "schrodinger/rdkit_extensions/convert.h"
@@ -283,6 +284,126 @@ void MolModel::addRxnPlus(double x, double y)
     doMutation(
         [this, x, y] { m_rxn_pluses.emplace_back(x, y); },
         "Add reaction plus");
+}
+
+namespace
+{
+// Ported from rdkit/sgroup.cpp helpers used by MolModel::addSGroup.
+
+// The (up to two) bonds that cross between the specified atom set and the rest
+// of the molecule. Throws when fewer than two exist (an S-group needs exactly
+// two attachment points to bracket).
+std::vector<unsigned int>
+sgroup_crossing_bonds(const std::unordered_set<unsigned int>& atoms,
+                      const RDKit::ROMol& mol)
+{
+    std::vector<unsigned int> bond_idxs;
+    for (auto idx : atoms) {
+        const auto* atom = mol.getAtomWithIdx(idx);
+        for (const auto* nbr : mol.atomNeighbors(atom)) {
+            if (!atoms.count(nbr->getIdx())) {
+                const auto* bond =
+                    mol.getBondBetweenAtoms(idx, nbr->getIdx());
+                bond_idxs.push_back(bond->getIdx());
+                if (bond_idxs.size() == 2) {
+                    return bond_idxs;
+                }
+            }
+        }
+    }
+    throw std::runtime_error("Could not find two S-group bonds");
+}
+
+// True iff the atom set is connected and has exactly two crossing bonds — the
+// requirement for a well-formed bracket subgroup (rdkit/sgroup.cpp:149).
+bool atoms_form_sgroup(const std::unordered_set<unsigned int>& atoms,
+                       const RDKit::ROMol& mol)
+{
+    if (atoms.empty()) {
+        return false;
+    }
+    std::unordered_set<unsigned int> to_visit, visited_in, visited_out;
+    to_visit.insert(*atoms.begin());
+    while (!to_visit.empty()) {
+        const unsigned int cur = *to_visit.begin();
+        to_visit.erase(cur);
+        if (atoms.count(cur)) {
+            visited_in.insert(cur);
+            for (const auto* nbr : mol.atomNeighbors(mol.getAtomWithIdx(cur))) {
+                const unsigned int n = nbr->getIdx();
+                if (!(to_visit.count(n) || visited_in.count(n) ||
+                      visited_out.count(n))) {
+                    to_visit.insert(n);
+                }
+            }
+        } else {
+            visited_out.insert(cur);
+            if (visited_out.size() > 2) {
+                return false;
+            }
+        }
+    }
+    return visited_in.size() == atoms.size() && visited_out.size() == 2;
+}
+} // namespace
+
+bool MolModel::canAtomsFormSGroup(
+    const std::vector<unsigned int>& atom_indices) const
+{
+    std::unordered_set<unsigned int> atoms;
+    for (auto idx : atom_indices) {
+        if (idx >= m_mol.getNumAtoms()) {
+            return false;
+        }
+        atoms.insert(idx);
+    }
+    return atoms_form_sgroup(atoms, m_mol);
+}
+
+void MolModel::addSGroup(const std::vector<unsigned int>& atom_indices,
+                         const std::string& type_str,
+                         const std::string& connect_str,
+                         const std::string& label)
+{
+    std::unordered_set<unsigned int> atoms;
+    for (auto idx : atom_indices) {
+        if (idx >= m_mol.getNumAtoms()) {
+            return;
+        }
+        atoms.insert(idx);
+    }
+    if (!atoms_form_sgroup(atoms, m_mol)) {
+        return;
+    }
+    std::vector<unsigned int> atom_idxs(atom_indices.begin(),
+                                        atom_indices.end());
+    std::vector<unsigned int> bond_idxs;
+    try {
+        bond_idxs = sgroup_crossing_bonds(atoms, m_mol);
+    } catch (...) {
+        return;
+    }
+    doMutation(
+        [this, atom_idxs, bond_idxs, type_str, connect_str, label] {
+            RDKit::SubstanceGroup s_group(&m_mol, type_str);
+            s_group.setAtoms(atom_idxs);
+            s_group.setBonds(bond_idxs);
+            // CONNECT (repeat pattern) + LABEL (polymer label) props. Empty
+            // strings are simply not set — matches Qt set_string_property.
+            if (!connect_str.empty()) {
+                s_group.setProp(std::string("CONNECT"), connect_str);
+            }
+            if (!label.empty()) {
+                s_group.setProp(std::string("LABEL"), label);
+            }
+            RDKit::addSubstanceGroup(m_mol, s_group);
+        },
+        "Add substance group");
+}
+
+unsigned int MolModel::numSGroups() const
+{
+    return static_cast<unsigned int>(RDKit::getSubstanceGroups(m_mol).size());
 }
 
 void MolModel::setAtomPos(unsigned int idx, double x, double y)
