@@ -694,6 +694,10 @@ class MolModelJS
     {
         m_model.mutateAtomToWildcard(idx, label);
     }
+    void addWildcardAtom(const std::string& label, double x, double y)
+    {
+        m_model.addWildcardAtom(label, x, y);
+    }
     void loadFromSmiles(const std::string& smiles)
     {
         m_model.loadFromSmiles(smiles);
@@ -969,6 +973,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
                   &MolModelJS::setElementForSelectedAtoms)
         .function("mutateAtomToRGroup", &MolModelJS::mutateAtomToRGroup)
         .function("mutateAtomToWildcard", &MolModelJS::mutateAtomToWildcard)
+        .function("addWildcardAtom", &MolModelJS::addWildcardAtom)
         .function("loadFromSmiles", &MolModelJS::loadFromSmiles)
         .function("loadFromText", &MolModelJS::loadFromText)
         .function("addMolFromText", &MolModelJS::addMolFromText)

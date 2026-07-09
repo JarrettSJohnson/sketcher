@@ -1145,6 +1145,33 @@ BOOST_AUTO_TEST_CASE(testMutateAtomToWildcardNoOpsOnBadLabelOrRange)
     BOOST_CHECK(!m.mol().getAtomWithIdx(0)->hasQuery());
 }
 
+BOOST_AUTO_TEST_CASE(testAddWildcardAtomPlacesQueryAtomAndIsUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addWildcardAtom("X", 2.0, 3.0);
+    BOOST_CHECK_EQUAL(m.mol().getNumAtoms(), 1u);
+    const auto* a = m.mol().getAtomWithIdx(0);
+    BOOST_CHECK(a->hasQuery());
+    std::string label;
+    BOOST_CHECK(a->getPropIfPresent(WILDCARD_LABEL_PROP, label));
+    BOOST_CHECK_EQUAL(label, "X");
+    BOOST_CHECK_CLOSE(m.mol().getConformer().getAtomPos(0).x, 2.0, 1e-6);
+    BOOST_CHECK_CLOSE(m.mol().getConformer().getAtomPos(0).y, 3.0, 1e-6);
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getNumAtoms(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(testAddWildcardAtomNoOpsOnBadLabel)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    const auto count_before = stack.count();
+    m.addWildcardAtom("ZZ", 0, 0);
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    BOOST_CHECK_EQUAL(m.mol().getNumAtoms(), 0u);
+}
+
 BOOST_AUTO_TEST_CASE(testSetElementForSelectedAtomsSwapsAllSelectedAndIsUndoable)
 {
     UndoStack stack;

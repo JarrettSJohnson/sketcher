@@ -781,6 +781,34 @@ RDKit::Atom::QUERYATOM_QUERY* make_wildcard_query(const std::string& label)
 }
 } // namespace
 
+void MolModel::addWildcardAtom(const std::string& label, double x, double y)
+{
+    // Free-standing / click-to-place counterpart of mutateAtomToWildcard —
+    // backs the atom-query (A▾) draw tool clicking empty canvas. Validate the
+    // label before opening the mutation so a bad label is a clean no-op.
+    auto* probe = make_wildcard_query(label);
+    if (probe == nullptr) {
+        return;
+    }
+    delete probe;
+    doMutation(
+        [this, label, x, y] {
+            auto atom = std::make_unique<RDKit::QueryAtom>(0);
+            atom->setQuery(make_wildcard_query(label));
+            atom->setProp(WILDCARD_LABEL_PROP, label);
+            const auto idx = m_mol.addAtom(atom.release(),
+                                           /*updateLabel=*/false,
+                                           /*takeOwnership=*/true);
+            auto& conf = m_mol.getConformer();
+            auto& positions = conf.getPositions();
+            if (positions.size() < m_mol.getNumAtoms()) {
+                positions.resize(m_mol.getNumAtoms(), RDGeom::Point3D(0, 0, 0));
+            }
+            conf.setAtomPos(idx, RDGeom::Point3D(x, y, 0));
+        },
+        "Add wildcard atom");
+}
+
 void MolModel::mutateAtomToWildcard(unsigned int idx, const std::string& label)
 {
     // Mirrors the Wildcard branch of Qt's ReplaceAtomsWithMenu

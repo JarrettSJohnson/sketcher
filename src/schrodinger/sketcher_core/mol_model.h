@@ -291,6 +291,14 @@ class MolModel : public UndoableModel
     void mutateAtomToWildcard(unsigned int idx, const std::string& label);
 
     /**
+     * Place a new free-standing wildcard query atom (A/Q/M/X + H variants) at
+     * (x, y). Click-to-place counterpart of mutateAtomToWildcard — backs the
+     * atom-query (A▾) draw tool on empty canvas. Single undo step. No-op when
+     * `label` is unrecognized.
+     */
+    void addWildcardAtom(const std::string& label, double x, double y);
+
+    /**
      * Selection-wide equivalent of setAtomElement — replaces the element of
      * every selected atom with `atomic_num` in a single undo step. Mirrors
      * Qt's ModifyAtomsMenu::requestElementChange routed through

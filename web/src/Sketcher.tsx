@@ -19,7 +19,8 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 // tests cover.
 
 type Tool = 'atom' | 'bond' | 'select' | 'move-rotate' | 'erase' | 'ring'
-    | 'atom-chain' | 'rgroup' | 'attachment-point' | 'reaction';
+    | 'atom-chain' | 'rgroup' | 'attachment-point' | 'reaction'
+    | 'atom-query';
 
 // Reaction sub-mode — Qt: EnumerationTool::{RXN_ARROW, RXN_PLUS} in the
 // reaction popup. The two map 1:1 to MolModel::addRxnArrow / addRxnPlus.
@@ -2158,6 +2159,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // Qt's bond_group is one radio group — picking Single clears any active
     // stereo, picking Wedge implies single+wedge. bondMode collapses both.
     const [bondMode, setBondMode] = useState<BondMode>('single');
+    // Selected wildcard for the atom-query (A▾) draw tool. Mirrors Qt's
+    // ModularToolButton remembering the last-picked atom-query variant.
+    const [atomQueryMode, setAtomQueryMode] = useState<AtomQueryChoice>('A');
     // Each stereo / bond-order slot is a Qt ModularToolButton: clicking
     // applies its currently-selected mode; picking from its popup swaps the
     // mode AND applies it. The selected mode determines both icon and
@@ -2967,6 +2971,22 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
 
+            if (tool === 'atom-query') {
+                // Atom-query (A▾) tool — Qt's DrawAtomSceneTool armed with a
+                // wildcard. Clicking an existing atom converts it in place;
+                // clicking empty canvas drops a new query atom.
+                if (hit >= 0) {
+                    model.mutateAtomToWildcard(hit, atomQueryMode);
+                    setStatus(`atom #${hit} → ${atomQueryMode}`);
+                    return;
+                }
+                const { x, y } = modelFromPixel(canvas, viewRef.current, px, py);
+                model.addWildcardAtom(atomQueryMode, x, y);
+                setStatus(`added ${atomQueryMode} at `
+                    + `(${x.toFixed(2)}, ${y.toFixed(2)})`);
+                return;
+            }
+
             if (tool === 'ring') {
                 // Click anywhere — empty canvas or atom — drops a fresh ring
                 // centered on the click. Mirrors the Qt sketcher's ring-tool
@@ -3112,7 +3132,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 setPendingBondAtom(null);
             }
         },
-        [tool, element, ring, reactionMode],
+        [tool, element, ring, reactionMode, atomQueryMode],
     );
 
     const onCanvasMove = useCallback(
@@ -5011,13 +5031,20 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     <div style={styles.atomQueryRow}>
                         <IconButtonWithPopup<AtomQueryChoice>
                             icon=''
-                            label='A▾'
+                            label={`${atomQueryMode}▾`}
                             testid='atom-query'
                             title='Atom Query – press & hold to change'
-                            active={false}
+                            active={tool === 'atom-query'}
                             choices={ATOM_QUERY_CHOICES}
-                            onClick={() => comingSoon('Atom query (needs RDKit query atom support)')}
-                            onPick={(q) => comingSoon(`Atom query "${q}" (needs RDKit query atom support)`)}
+                            onClick={() => {
+                                setTool('atom-query');
+                                setPendingBondAtom(null);
+                            }}
+                            onPick={(q) => {
+                                setAtomQueryMode(q);
+                                setTool('atom-query');
+                                setPendingBondAtom(null);
+                            }}
                         />
                         <PeriodicTableButton testid='periodic-table'
                             onPick={pickElement} />

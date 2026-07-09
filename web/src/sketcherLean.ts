@@ -179,6 +179,13 @@ export interface MolModelInstance {
      * label is unrecognized.
      */
     mutateAtomToWildcard(idx: number, label: string): void;
+    /**
+     * Place a new free-standing wildcard query atom (A/Q/M/X + H variants) at
+     * (x, y) in model coords. Click-to-place counterpart of
+     * mutateAtomToWildcard — backs the atom-query (A▾) draw tool on empty
+     * canvas. Single undo step. No-op on unrecognized label.
+     */
+    addWildcardAtom(label: string, x: number, y: number): void;
     /** Replace mol with parsed SMILES. Throws if SMILES is malformed. */
     loadFromSmiles(smiles: string): void;
     /** Replace mol with parsed text (auto-detects SMILES, MOL, etc.). Throws on failure. */

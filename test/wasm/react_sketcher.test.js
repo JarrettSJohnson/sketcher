@@ -2753,8 +2753,9 @@ test.describe('React Sketcher', () => {
         page,
     }) => {
         // Several Qt-side widgets are present for visual fidelity but the
-        // underlying action isn't wired yet (atom_query needs RDKit query
-        // atoms, bond_query needs the same).
+        // underlying action isn't wired yet. (atom-query was wired in Batch 50
+        // — clicking it now arms the query-atom draw tool, so only bond-query
+        // remains a stub here; it still needs RDKit query bonds.)
         // Import/Export open real menus (Batch 12); Save Image opens its
         // own dialog (Batch 13); Settings is the Configure View dropdown
         // (Batch 14); Help is its own dropdown (Batch 15) — all covered by
@@ -2769,7 +2770,6 @@ test.describe('React Sketcher', () => {
         const status = page.getByTestId('sketcher-status');
         // Atomistic-page stubs.
         for (const [testid, pattern] of [
-            ['atom-query', /Atom query/],
             ['bond-query', /Bond query/],
         ]) {
             await page.getByTestId(testid).click();
@@ -3583,14 +3583,12 @@ test.describe('React Sketcher', () => {
         await expect(last).toHaveAttribute('aria-pressed', 'false');
     });
 
-    test('atom-query popup: long-press opens A/AH/Q/QH/M/MH/X/XH; pick still surfaces coming-soon (query atoms need RDKit support)', async ({
+    test('atom-query popup: long-press opens A/AH/Q/QH/M/MH/X/XH; pick arms the atom-query draw tool', async ({
         page,
     }) => {
-        // Qt AtomQueryPopup renders 8 choices in a 2×4 grid. The
-        // underlying RDKit::QueryAtom plumbing isn't in the lean MolModel
-        // yet, so picks should still route through comingSoon() rather
-        // than silently no-op.
-        const status = page.getByTestId('sketcher-status');
+        // Qt AtomQueryPopup renders 8 choices in a 2×4 grid. Picking one arms
+        // the atom-query (A▾) draw tool with that wildcard (Batch 50 wired the
+        // RDKit query-atom primitive behind it).
         const aQueryBtn = page.getByTestId('atom-query');
 
         // Long-press (>250 ms) opens the popup. Use hover()+mouse.down so
@@ -3606,10 +3604,11 @@ test.describe('React Sketcher', () => {
         }
         await page.mouse.up();
 
-        // Pick "Q" — status should mention Q and coming-soon-ness.
+        // Pick "Q" — the button face updates to the picked wildcard and the
+        // tool is now armed (a subsequent canvas click would place a Q atom;
+        // exercised in the draw-tool tests below).
         await page.getByTestId('atom-query-popup-Q').click();
-        await expect(status).toContainText(/Q/);
-        await expect(status).toContainText(/query atom/i);
+        await expect(page.getByTestId('atom-query')).toContainText('Q');
         await expect(page.getByTestId('atom-query-popup')).toHaveCount(0);
     });
 
@@ -5693,6 +5692,55 @@ M  END`;
         // …but Replace with is still available, so you can re-wildcard it.
         await expect(page.getByTestId('atom-ctx-replace-wildcard-Q'))
             .toBeVisible();
+    });
+
+    // -------- Batch 50: atom-query (A▾) draw tool --------
+    // Qt's DrawAtomSceneTool armed with a wildcard. Clicking the A▾ button
+    // arms the tool; empty-canvas clicks place a query atom, clicks on an
+    // existing atom convert it. Backed by addWildcardAtom / mutateAtomToWildcard.
+    test('atom-query tool: clicking empty canvas places the armed wildcard atom', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Arm the tool via a plain click on the A▾ button (default mode A).
+        await page.getByTestId('atom-query').click();
+        await canvas.click({ position: { x: 160, y: 160 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms.filter((a) => a.qlabel === 'A')).toHaveLength(1);
+    });
+
+    test('atom-query tool: picking X from the popup then clicking places an X query atom', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await page.getByTestId('atom-query').hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await page.getByTestId('atom-query-popup-X').click();
+        await canvas.click({ position: { x: 200, y: 160 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms.filter((a) => a.qlabel === 'X')).toHaveLength(1);
+    });
+
+    test('atom-query tool: clicking an existing atom converts it to the wildcard (undoable)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Draw a plain carbon first with the atom tool.
+        await canvas.click({ position: { x: 180, y: 180 } });
+        let rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].qlabel).toBeUndefined();
+        // Arm atom-query (A) and click the existing atom → converts in place.
+        await page.getByTestId('atom-query').click();
+        await canvas.click({ position: { x: 180, y: 180 } });
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].qlabel).toBe('A');
+        // Undo restores the carbon.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms[0].qlabel).toBeUndefined();
     });
 
 });
