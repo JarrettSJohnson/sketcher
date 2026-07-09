@@ -255,6 +255,15 @@ std::string mol_to_render_description(
         if (is_rgroup) {
             os << ",\"rlabel\":" << rlabel;
         }
+        // Wildcard query atom (A/Q/M/X + H variants). MolModel::mutateAtomTo
+        // Wildcard stashes the display label in WILDCARD_LABEL_PROP; surface
+        // it as "qlabel" so the renderer paints the letter in place of the
+        // element symbol (the underlying atom is a dummy → getSymbol() = "*").
+        std::string qlabel;
+        if (atom->getPropIfPresent(
+                schrodinger::sketcher_core::WILDCARD_LABEL_PROP, qlabel)) {
+            os << ",\"qlabel\":\"" << qlabel << "\"";
+        }
         // Attachment point (Qt: atom_item.cpp:302-304 — label_is_visible=false,
         // squiggle drawn perpendicular to the bond). Detected by RDKit's
         // is_attachment_point_dummy (atomic num 0, totalDegree 1, atomLabel
@@ -681,6 +690,10 @@ class MolModelJS
     {
         m_model.mutateAtomToRGroup(idx, r_group_num);
     }
+    void mutateAtomToWildcard(unsigned int idx, const std::string& label)
+    {
+        m_model.mutateAtomToWildcard(idx, label);
+    }
     void loadFromSmiles(const std::string& smiles)
     {
         m_model.loadFromSmiles(smiles);
@@ -955,6 +968,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("setElementForSelectedAtoms",
                   &MolModelJS::setElementForSelectedAtoms)
         .function("mutateAtomToRGroup", &MolModelJS::mutateAtomToRGroup)
+        .function("mutateAtomToWildcard", &MolModelJS::mutateAtomToWildcard)
         .function("loadFromSmiles", &MolModelJS::loadFromSmiles)
         .function("loadFromText", &MolModelJS::loadFromText)
         .function("addMolFromText", &MolModelJS::addMolFromText)

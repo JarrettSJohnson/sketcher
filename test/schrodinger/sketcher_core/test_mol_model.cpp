@@ -22,6 +22,7 @@
 
 using schrodinger::sketcher_core::MolModel;
 using schrodinger::sketcher_core::UndoStack;
+using schrodinger::sketcher_core::WILDCARD_LABEL_PROP;
 
 BOOST_AUTO_TEST_CASE(testNewModelIsEmpty)
 {
@@ -1102,6 +1103,46 @@ BOOST_AUTO_TEST_CASE(testMutateAtomToRGroupThrowsOnZeroAndNoOpsOutOfRange)
     const auto count_before = stack.count();
     m.mutateAtomToRGroup(99, 1); // out of range → no-op
     BOOST_CHECK_EQUAL(stack.count(), count_before);
+}
+
+BOOST_AUTO_TEST_CASE(testMutateAtomToWildcardMakesQueryAtomPreservingBonds)
+{
+    // Ethane C0-C1; replace C1 with the "Q" (heteroatom) wildcard. The atom
+    // becomes a query atom carrying the WILDCARD_LABEL_PROP display label, its
+    // bond + position survive, and undo restores the carbon.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+
+    m.mutateAtomToWildcard(1, "Q");
+    const auto* q = m.mol().getAtomWithIdx(1);
+    BOOST_CHECK(q->hasQuery());
+    std::string label;
+    BOOST_CHECK(q->getPropIfPresent(WILDCARD_LABEL_PROP, label));
+    BOOST_CHECK_EQUAL(label, "Q");
+    BOOST_CHECK(m.mol().getBondBetweenAtoms(0, 1) != nullptr);
+    BOOST_CHECK_CLOSE(m.mol().getConformer().getAtomPos(1).x, 1.5, 1e-6);
+
+    stack.undo();
+    const auto* c = m.mol().getAtomWithIdx(1);
+    BOOST_CHECK(!c->hasQuery());
+    BOOST_CHECK_EQUAL(c->getAtomicNum(), 6);
+    BOOST_CHECK(!c->hasProp(WILDCARD_LABEL_PROP));
+}
+
+BOOST_AUTO_TEST_CASE(testMutateAtomToWildcardNoOpsOnBadLabelOrRange)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    const auto count_before = stack.count();
+    m.mutateAtomToWildcard(0, "ZZ"); // unrecognized label → no-op
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    m.mutateAtomToWildcard(99, "A"); // out of range → no-op
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    BOOST_CHECK(!m.mol().getAtomWithIdx(0)->hasQuery());
 }
 
 BOOST_AUTO_TEST_CASE(testSetElementForSelectedAtomsSwapsAllSelectedAndIsUndoable)

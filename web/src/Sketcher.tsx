@@ -120,6 +120,10 @@ interface AtomDesc {
     // isotope hints that would otherwise leak from the underlying dummy atom).
     // Set by MolModel::addRGroup (Qt: MolModel::addRGroup, model/mol_model.cpp:643-648).
     rlabel?: number;
+    // Wildcard query label — atom is a query atom (A/Q/M/X + H variants) made
+    // by MolModel::mutateAtomToWildcard. Rendered as the letter in place of
+    // the dummy "*" symbol. Suppresses H / charge like R-groups.
+    qlabel?: string;
     // Attachment-point number — atom is a dummy whose atomLabel starts with
     // "_AP" (RDKit's is_attachment_point_dummy). The atom dot/label is
     // suppressed; instead a wavy squiggle is drawn perpendicular to the
@@ -1330,6 +1334,12 @@ function drawSketch(
             if (typeof a.rlabel === 'number') {
                 ctx.fillStyle = elementColor(palette, 'C');
                 ctx.fillText(`R${a.rlabel}`, px, py);
+            } else if (typeof a.qlabel === 'string') {
+                // Wildcard query atom (A/Q/M/X + H variants): render the
+                // letter label instead of the dummy "*" symbol, with no
+                // H-count / charge superscript.
+                ctx.fillStyle = elementColor(palette, 'C');
+                ctx.fillText(a.qlabel, px, py);
             } else {
                 ctx.fillText(a.el, px, py);
                 // H count: render "H" or "Hn" to the right of non-C labels. Skip
@@ -1896,6 +1906,15 @@ function buildSketchSvg(
                 `font-family='sans-serif' font-size='${ATOM_FONT_PX}' ` +
                 `text-anchor='middle' dominant-baseline='central'>` +
                 `${esc(`R${a.rlabel}`)}</text>`,
+            );
+        } else if (typeof a.qlabel === 'string') {
+            // Wildcard query atom: render the letter label in place of "*".
+            const qColor = elementColor(palette, 'C');
+            parts.push(
+                `<text x='${f(ax)}' y='${f(ay)}' fill='${qColor}' ` +
+                `font-family='sans-serif' font-size='${ATOM_FONT_PX}' ` +
+                `text-anchor='middle' dominant-baseline='central'>` +
+                `${esc(a.qlabel)}</text>`,
             );
         } else {
             // dominant-baseline=central + text-anchor=middle reproduces the
@@ -3767,7 +3786,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             nrad: ad.nrad ?? 0,
                             isRGroupOrAp:
                                 typeof ad.rlabel === 'number'
-                                || typeof ad.ap === 'number',
+                                || typeof ad.ap === 'number'
+                                // Wildcard query atoms are non-element atoms
+                                // too — Qt's element_atoms filter excludes
+                                // hasQuery(), so element / charge / H / radical
+                                // edits are disabled on them just like R-groups.
+                                || typeof ad.qlabel === 'string',
                             existingRGroups:
                                 existingRGroupNumbers(rd.atoms),
                             nextRGroup: nextRGroupNumber(
@@ -6150,15 +6174,38 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         }} />
                     {/* Replace with — Qt's ReplaceAtomsWithMenu
                         (atom_context_menu.cpp:167). Wildcard (query atoms) +
+                        R-Group branches ship here via the lean
+                        mutateAtomToWildcard / mutateAtomToRGroup primitives.
                         Allowed List (needs the Edit Atom Properties dialog)
-                        are deferred behind missing C++; the R-Group branch
-                        ships here via the lean mutateAtomToRGroup primitive.
-                        "New R-Group" picks the first free number; each
-                        existing Rn offers an in-place renumber. Disabled for
-                        R-group atoms themselves would block renumber, so we
-                        leave them enabled (Qt does too). */}
+                        stays deferred. "New R-Group" picks the first free
+                        number; each existing Rn offers an in-place renumber.
+                        Wildcard order mirrors Qt's createWildcardMenu:
+                        A/Q/M/X, then AH/QH/MH/XH. */}
                     <div style={styles.moreDivider} />
                     <div style={styles.moreSectionLabel}>Replace with</div>
+                    {([
+                        ['A', 'A (Any heavy atom)'],
+                        ['Q', 'Q (Heteroatom)'],
+                        ['M', 'M (Metal)'],
+                        ['X', 'X (Halogen)'],
+                        ['AH', 'AH (Any or H)'],
+                        ['QH', 'QH (Hetero or H)'],
+                        ['MH', 'MH (Metal or H)'],
+                        ['XH', 'XH (Halogen or H)'],
+                    ] as [string, string][]).map(([code, label]) => (
+                        <MoreItem
+                            key={`wildcard-${code}`}
+                            label={label}
+                            testid={`atom-ctx-replace-wildcard-${code}`}
+                            onClick={() => {
+                                const am = atomContextMenu;
+                                setAtomContextMenu(null);
+                                modelRef.current?.mutateAtomToWildcard(
+                                    am.atomIdx, code);
+                                setStatus(`Replaced with ${code}`);
+                            }} />
+                    ))}
+                    <div style={styles.moreDivider} />
                     <MoreItem
                         label={`New R-Group (R${atomContextMenu.nextRGroup})`}
                         testid='atom-ctx-replace-new-rgroup'

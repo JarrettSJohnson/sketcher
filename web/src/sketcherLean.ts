@@ -171,6 +171,14 @@ export interface MolModelInstance {
      * undo step. Throws when rGroupNum is 0; no-op when idx is out of range.
      */
     mutateAtomToRGroup(idx: number, rGroupNum: number): void;
+    /**
+     * Replace the atom at `idx` in place with a wildcard query atom. `label`
+     * is one of A/Q/M/X/AH/QH/MH/XH — mapped to the matching RDKit query maker
+     * (Qt's ATOM_TOOL_QUERY_MAP). Backs the atom context menu's "Replace with
+     * > Wildcard". Single undo step. No-op when idx is out of range or the
+     * label is unrecognized.
+     */
+    mutateAtomToWildcard(idx: number, label: string): void;
     /** Replace mol with parsed SMILES. Throws if SMILES is malformed. */
     loadFromSmiles(smiles: string): void;
     /** Replace mol with parsed text (auto-detects SMILES, MOL, etc.). Throws on failure. */

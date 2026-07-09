@@ -26,6 +26,8 @@
 #include <GraphMol/Chirality.h>
 #include <GraphMol/Conformer.h>
 #include <GraphMol/MolOps.h>
+#include <GraphMol/QueryAtom.h>
+#include <GraphMol/QueryOps.h>
 
 #include "schrodinger/rdkit_extensions/constants.h"
 #include "schrodinger/rdkit_extensions/convert.h"
@@ -757,6 +759,67 @@ void MolModel::mutateAtomToRGroup(unsigned int idx, unsigned int r_group_num)
         emitSignal(modelChanged);
     };
     doCommand(std::move(redo), std::move(undo), "Replace with R-group");
+}
+
+namespace
+{
+// Maps a wildcard label (A/Q/M/X + H variants) to the RDKit query maker used
+// by Qt's ATOM_TOOL_QUERY_MAP (rdkit/atoms_and_bonds.h:61). The function
+// pointers' derived return types implicitly convert to the base query pointer
+// (same trick Qt relies on). Returns nullptr for an unrecognized label.
+RDKit::Atom::QUERYATOM_QUERY* make_wildcard_query(const std::string& label)
+{
+    if (label == "A") return RDKit::makeAAtomQuery();
+    if (label == "AH") return RDKit::makeAHAtomQuery();
+    if (label == "Q") return RDKit::makeQAtomQuery();
+    if (label == "QH") return RDKit::makeQHAtomQuery();
+    if (label == "M") return RDKit::makeMAtomQuery();
+    if (label == "MH") return RDKit::makeMHAtomQuery();
+    if (label == "X") return RDKit::makeXAtomQuery();
+    if (label == "XH") return RDKit::makeXHAtomQuery();
+    return nullptr;
+}
+} // namespace
+
+void MolModel::mutateAtomToWildcard(unsigned int idx, const std::string& label)
+{
+    // Mirrors the Wildcard branch of Qt's ReplaceAtomsWithMenu
+    // (atom_context_menu.cpp:196) — replaces the atom in place with a query
+    // atom (A/Q/M/X + H variants). The display label is stashed in a private
+    // prop so the render description can surface it without re-parsing the
+    // RDKit query (Qt's full query->label parser isn't ported). Undo swaps the
+    // original atom back.
+    if (idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    auto* query = make_wildcard_query(label);
+    if (query == nullptr) {
+        return; // unrecognized wildcard label — no-op
+    }
+    // make_wildcard_query hands us an owning pointer; wrap it now so it's freed
+    // even if we bail before handing it to the QueryAtom below.
+    std::shared_ptr<RDKit::Atom::QUERYATOM_QUERY> query_owner(query);
+    auto original = std::make_shared<RDKit::Atom>(*m_mol.getAtomWithIdx(idx));
+    auto refresh_cache = [this] {
+        try {
+            m_mol.updatePropertyCache(/*strict=*/false);
+        } catch (...) {
+        }
+    };
+    auto redo = [this, idx, label, refresh_cache] {
+        RDKit::QueryAtom qa(0); // dummy (atomic num 0) carrying the query
+        qa.setQuery(make_wildcard_query(label));
+        qa.setProp(WILDCARD_LABEL_PROP, label);
+        m_mol.replaceAtom(idx, &qa);
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    auto undo = [this, idx, original, refresh_cache] {
+        m_mol.replaceAtom(idx, original.get());
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    doCommand(std::move(redo), std::move(undo), "Replace with wildcard");
 }
 
 void MolModel::setElementForSelectedAtoms(unsigned int atomic_num)

@@ -30,6 +30,12 @@ namespace schrodinger
 namespace sketcher_core
 {
 
+// Private RDKit atom property holding a wildcard query atom's display label
+// (A/Q/M/X + H variants). Set by MolModel::mutateAtomToWildcard and read by
+// the render description so the UI can show the label without re-parsing the
+// RDKit query. Underscore prefix keeps it out of molblock/SMILES output.
+inline constexpr const char* WILDCARD_LABEL_PROP = "_sketcherWildcard";
+
 class UndoStack;
 
 class MolModel : public UndoableModel
@@ -272,6 +278,17 @@ class MolModel : public UndoableModel
      * is 0; no-op when `idx` is past the atom count.
      */
     void mutateAtomToRGroup(unsigned int idx, unsigned int r_group_num);
+
+    /**
+     * Replace a single atom (by index) in place with a wildcard query atom.
+     * `label` is one of A/Q/M/X/AH/QH/MH/XH — mapped to the matching RDKit
+     * query maker (makeAAtomQuery, etc.) exactly as Qt's ATOM_TOOL_QUERY_MAP
+     * (rdkit/atoms_and_bonds.h:61). Backs the atom context menu's "Replace
+     * with > Wildcard". The display label is stored in WILDCARD_LABEL_PROP for
+     * the render description. Bonds + position preserved. Single undo step.
+     * No-op when `idx` is out of range or `label` is unrecognized.
+     */
+    void mutateAtomToWildcard(unsigned int idx, const std::string& label);
 
     /**
      * Selection-wide equivalent of setAtomElement — replaces the element of

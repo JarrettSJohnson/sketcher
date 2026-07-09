@@ -5630,4 +5630,69 @@ M  END`;
         expect(rd.atoms.filter((a) => a.rlabel === 1)).toHaveLength(2);
     });
 
+    // -------- Batch 49: Replace with > Wildcard query atoms --------
+    // Qt's ReplaceAtomsWithMenu createWildcardMenu (atom_context_menu.cpp:196):
+    // A/Q/M/X + AH/QH/MH/XH. Backed by the lean mutateAtomToWildcard primitive
+    // (RDKit make{A,Q,M,X,…}AtomQuery); the display label rides on a private
+    // prop surfaced as `qlabel` in the render description.
+    test('atom context menu: Wildcard items are listed in Replace with', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        for (const code of ['A', 'Q', 'M', 'X', 'AH', 'QH', 'MH', 'XH']) {
+            await expect(
+                page.getByTestId(`atom-ctx-replace-wildcard-${code}`))
+                .toBeVisible();
+        }
+    });
+
+    test('atom context menu: picking Q converts the atom to a query atom and is undoable', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 260, y: 180 }, button: 'right' });
+        await page.getByTestId('atom-ctx-replace-wildcard-Q').click();
+        await expect(page.getByTestId('atom-context-menu')).toHaveCount(0);
+        let rd = await snapshot(page);
+        // One atom now carries the "Q" wildcard label; the bond is preserved.
+        expect(rd.atoms.filter((a) => a.qlabel === 'Q')).toHaveLength(1);
+        expect(rd.bonds).toHaveLength(1);
+        // Undo restores a plain carbon (no query label).
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms.every((a) => a.qlabel === undefined)).toBe(true);
+    });
+
+    test('atom context menu: element/charge/H edits are disabled on a wildcard query atom', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        // Convert the atom to an "A" wildcard.
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await page.getByTestId('atom-ctx-replace-wildcard-A').click();
+        expect((await snapshot(page)).atoms.filter((a) => a.qlabel === 'A'))
+            .toHaveLength(1);
+        // Reopen the menu on the now-query atom: element / charge / H edits
+        // are gated off (Qt's element_atoms excludes hasQuery()).
+        await canvas.click({ position: { x: 120, y: 180 }, button: 'right' });
+        await expect(page.getByTestId('atom-ctx-charge-plus')).toBeDisabled();
+        await expect(page.getByTestId('atom-ctx-set-N')).toBeDisabled();
+        await expect(page.getByTestId('atom-ctx-radical-plus'))
+            .toBeDisabled();
+        // …but Replace with is still available, so you can re-wildcard it.
+        await expect(page.getByTestId('atom-ctx-replace-wildcard-Q'))
+            .toBeVisible();
+    });
+
 });
