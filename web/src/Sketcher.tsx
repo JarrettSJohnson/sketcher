@@ -77,7 +77,8 @@ const BOND_QUERY_FACE: Record<BondQueryChoice, string> = {
 //   wavy    = single bond with BondDir::UNKNOWN  (stereo_bond_popup single_either)
 //   crossed = double bond with BondDir::EITHERDOUBLE (stereo_bond_popup double_either)
 type BondMode =
-    'single' | 'double' | 'triple' | 'wedge' | 'dash' | 'wavy' | 'crossed';
+    'single' | 'double' | 'triple' | 'wedge' | 'dash' | 'wavy' | 'crossed'
+    | 'coordinate' | 'zero';
 
 interface RingSpec {
     size: number;
@@ -2441,6 +2442,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             case 'dash':    return { order: 1, dir: BOND_DIR_DASH };
             case 'wavy':    return { order: 1, dir: BOND_DIR_UNKNOWN };
             case 'crossed': return { order: 2, dir: BOND_DIR_EITHERDOUBLE };
+            // order carries the raw RDKit::Bond::BondType int here (the JS
+            // binding casts it straight to BondType), so DATIVE=17 / ZERO=21
+            // draw as coordinate/zero bonds via the render `bt` field.
+            case 'coordinate': return { order: BOND_TYPE_DATIVE, dir: BOND_DIR_NONE };
+            case 'zero':       return { order: BOND_TYPE_ZERO, dir: BOND_DIR_NONE };
         }
     };
 
@@ -2457,6 +2463,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             case 'dash':    return 'bond_down';
             case 'wavy':    return 'bond_wiggly';
             case 'crossed': return 'bond_crossed';
+            case 'coordinate': return 'bond_coordinate';
+            case 'zero':    return 'bond_zero';
         }
     };
     const bondModeTitle = (mode: BondMode): string => {
@@ -2468,6 +2476,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             case 'dash':    return 'Single Down Bond';
             case 'wavy':    return 'Single Up or Down Bond';
             case 'crossed': return 'Double Cis or Trans Bond';
+            case 'coordinate': return 'Coordinate Bond';
+            case 'zero':    return 'Zero Order Bond';
         }
     };
 
@@ -2482,11 +2492,13 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         { value: 'crossed', icon: 'bond_crossed', title: 'Double Cis or Trans Bond',testid: 'stereo-popup-crossed' },
     ];
     // The bond-order popup — mirrors ui/bond_order_popup.ui (Double, Triple,
-    // Coordinate, Zero). Coordinate / Zero need BondType::DATIVE/ZERO support
-    // in mol_model, which the lean MolModel doesn't expose yet — defer those.
+    // Coordinate, Zero). Coordinate = BondType::DATIVE, Zero = BondType::ZERO;
+    // both draw via the render `bt` field (dative arrow / dashed line).
     const BOND_ORDER_CHOICES: PopupChoice<BondMode>[] = [
-        { value: 'double', icon: 'bond_double', title: 'Double Bond', testid: 'order-popup-double' },
-        { value: 'triple', icon: 'bond_triple', title: 'Triple Bond', testid: 'order-popup-triple' },
+        { value: 'double',     icon: 'bond_double',     title: 'Double Bond',     testid: 'order-popup-double' },
+        { value: 'triple',     icon: 'bond_triple',     title: 'Triple Bond',     testid: 'order-popup-triple' },
+        { value: 'coordinate', icon: 'bond_coordinate', title: 'Coordinate Bond', testid: 'order-popup-coordinate' },
+        { value: 'zero',       icon: 'bond_zero',       title: 'Zero Order Bond', testid: 'order-popup-zero' },
     ];
     // Atom-query popup (Qt ui/atom_query_popup.ui). 8 choices in a 2×4 grid
     // with column headers (Any/Hetero/Metal/Halogen). The popup primitive
@@ -4676,8 +4688,12 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
             if (key === '0') {
+                // Qt Key_0 → BondTool::ZERO (sketcher_widget.cpp:1257).
+                // Arm zero-order bond mode + swap the bond-order slot to it.
                 e.preventDefault();
-                comingSoon('Zero bond');
+                pickBondMode('zero');
+                setBondOrderMode('zero');
+                setStatus('bond mode: zero order');
                 return;
             }
 

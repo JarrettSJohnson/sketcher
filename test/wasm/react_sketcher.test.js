@@ -3046,7 +3046,7 @@ test.describe('React Sketcher', () => {
         expect(rd.atoms[0].q).toBe(-1);
     });
 
-    test('stub shortcuts (0 bond) surface a status; D/T without selection surfaces a friendly hint', async ({
+    test('D/T without selection surface a friendly hint; 0 arms zero-order bond mode', async ({
         page,
     }) => {
         const status = page.getByTestId('sketcher-status');
@@ -3059,14 +3059,12 @@ test.describe('React Sketcher', () => {
         // now wired through setSelectedAtomsToHydrogenIsotope, but with no
         // selection they surface a "select atoms first" status that still
         // mentions Deuterium / Tritium so users can tell what the shortcut
-        // would do. Ctrl+C was a stub before batch 16 (now copies as MOL
-        // V3000); Ctrl+V was a stub before batch 17 (now pastes via
-        // clipboard-read + AUTO_DETECT); Ctrl+X was a stub before batch 18
-        // (now cuts via toMolBlockForSelection + deleteSelected).
+        // would do. '0' was a stub before batch 54 — now arms zero-order
+        // bond mode (DATIVE/ZERO draw via the render bt field).
         const checks = [
             ['d', /Deuterium.*select atoms first/],
             ['t', /Tritium.*select atoms first/],
-            ['0', /Zero bond/],
+            ['0', /zero order/i],
         ];
         for (const [combo, pattern] of checks) {
             await page.keyboard.press(combo);
@@ -5946,6 +5944,57 @@ M  END`;
         await page.getByTestId('undo').click();
         rd = await snapshot(page);
         expect(rd.bonds.every((b) => b.topo === undefined)).toBe(true);
+    });
+
+    // -------- Batch 54: Coordinate/Zero bond-order modes --------
+    // Qt's bond_order_popup.ui has Double / Triple / Coordinate / Zero; the
+    // '0' key arms the zero bond (sketcher_widget.cpp:1257). Both draw via the
+    // render `bt` field (DATIVE=17 arrow / ZERO=21 dashed).
+    test('bond-order popup: exposes Coordinate and Zero choices', async ({
+        page,
+    }) => {
+        const btn = page.getByTestId('bond-double');
+        await btn.hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await expect(page.getByTestId('order-popup-coordinate'))
+            .toBeVisible();
+        await expect(page.getByTestId('order-popup-zero')).toBeVisible();
+        await page.mouse.up();
+    });
+
+    test('bond-order popup: picking Coordinate then drawing makes a DATIVE bond', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 140, y: 180 } });
+        await canvas.click({ position: { x: 300, y: 180 } });
+        // Arm coordinate via the bond-order popup.
+        await page.getByTestId('bond-double').hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await page.getByTestId('order-popup-coordinate').click();
+        // Draw the bond between the two atoms.
+        await canvas.click({ position: { x: 140, y: 180 } });
+        await canvas.click({ position: { x: 300, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.bonds[0].bt).toBe(17); // DATIVE
+    });
+
+    test('0 key arms zero-order bond mode; drawing makes a ZERO bond', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 140, y: 180 } });
+        await canvas.click({ position: { x: 300, y: 180 } });
+        // Press '0' to arm zero-order bond mode, then draw between the atoms.
+        await page.keyboard.press('0');
+        await canvas.click({ position: { x: 140, y: 180 } });
+        await canvas.click({ position: { x: 300, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.bonds[0].bt).toBe(21); // ZERO
     });
 
 });
