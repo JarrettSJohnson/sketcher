@@ -342,6 +342,17 @@ export interface MolModelInstance {
               label: string): void;
     /** Number of substance groups on the molecule. */
     numSGroups(): number;
+    /**
+     * Remove the substance group at `index` (its position in the render
+     * description's `sgroups`). Single undo step. Backs "Remove Brackets".
+     */
+    removeSGroup(index: number): void;
+    /**
+     * Update the TYPE / CONNECT / LABEL of the substance group at `index` in
+     * place. Single undo step. Backs the bracket "Modify Notation…" flow.
+     */
+    modifySGroup(index: number, typeStr: string, connectStr: string,
+                 label: string): void;
     /** Perceive aromaticity — sets arom flag on atoms/bonds. Single undo step. */
     aromatize(): void;
     /** Kekulize aromatic bonds back to explicit SINGLE/DOUBLE alternation. Single undo step. */

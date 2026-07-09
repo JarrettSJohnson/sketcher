@@ -406,6 +406,58 @@ unsigned int MolModel::numSGroups() const
     return static_cast<unsigned int>(RDKit::getSubstanceGroups(m_mol).size());
 }
 
+void MolModel::removeSGroup(unsigned int index)
+{
+    if (index >= RDKit::getSubstanceGroups(m_mol).size()) {
+        return;
+    }
+    doMutation(
+        [this, index] {
+            // RDKit has no "remove one S-group" API, so rebuild the vector
+            // without the target (rdkit/sgroup.cpp remove_sgroups_from_molecule).
+            auto& sgs = RDKit::getSubstanceGroups(m_mol);
+            std::vector<RDKit::SubstanceGroup> kept;
+            kept.reserve(sgs.size() - 1);
+            for (unsigned int i = 0; i < sgs.size(); ++i) {
+                if (i != index) {
+                    kept.push_back(sgs[i]);
+                }
+            }
+            sgs = std::move(kept);
+        },
+        "Remove substance group");
+}
+
+void MolModel::modifySGroup(unsigned int index, const std::string& type_str,
+                            const std::string& connect_str,
+                            const std::string& label)
+{
+    if (index >= RDKit::getSubstanceGroups(m_mol).size()) {
+        return;
+    }
+    doMutation(
+        [this, index, type_str, connect_str, label] {
+            auto& sg = RDKit::getSubstanceGroups(m_mol)[index];
+            sg.setProp(std::string("TYPE"), type_str);
+            // Empty CONNECT/LABEL are cleared, matching Qt set_string_property.
+            if (connect_str.empty()) {
+                if (sg.hasProp("CONNECT")) {
+                    sg.clearProp("CONNECT");
+                }
+            } else {
+                sg.setProp(std::string("CONNECT"), connect_str);
+            }
+            if (label.empty()) {
+                if (sg.hasProp("LABEL")) {
+                    sg.clearProp("LABEL");
+                }
+            } else {
+                sg.setProp(std::string("LABEL"), label);
+            }
+        },
+        "Modify substance group");
+}
+
 void MolModel::setAtomPos(unsigned int idx, double x, double y)
 {
     if (idx >= m_mol.getNumAtoms()) {

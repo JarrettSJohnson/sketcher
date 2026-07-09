@@ -734,6 +734,21 @@ class MolModel : public UndoableModel
     /** Number of substance groups on the molecule. */
     unsigned int numSGroups() const;
 
+    /**
+     * Remove the substance group at `index` (position in getSubstanceGroups).
+     * Uses RDKit's rebuild-without-it workaround (rdkit/sgroup.cpp:56). No-op if
+     * `index` is out of range. Single undo step. Backs "Remove Brackets".
+     */
+    void removeSGroup(unsigned int index);
+
+    /**
+     * Update the TYPE / CONNECT / LABEL of the substance group at `index` in
+     * place (atoms + bonds unchanged). No-op if `index` is out of range. Single
+     * undo step. Backs the bracket "Modify Notation…" flow.
+     */
+    void modifySGroup(unsigned int index, const std::string& type_str,
+                      const std::string& connect_str, const std::string& label);
+
     /** Fired once per applied/undone/redone mutation. */
     Signal<> modelChanged;
 

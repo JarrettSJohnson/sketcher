@@ -528,7 +528,8 @@ std::string sgroups_json(RDKit::RWMol& mol)
     os << std::fixed;
     os << "\"sgroups\":[";
     bool first_sg = true;
-    for (const auto& sg : sgroups) {
+    for (unsigned int sg_idx = 0; sg_idx < sgroups.size(); ++sg_idx) {
+        const auto& sg = sgroups[sg_idx];
         const auto bonds = sg.getBonds();
         if (bonds.size() != 2) {
             continue; // only two-attachment bracket S-groups render
@@ -630,7 +631,11 @@ std::string sgroups_json(RDKit::RWMol& mol)
         }
         os << "],\"label\":\"" << json_escape(label) << "\",\"repeat\":\""
            << json_escape(repeat) << "\",\"lx\":" << lx << ",\"ly\":" << ly
-           << "}";
+           // Raw values for the right-click "Modify Notation…" flow: the true
+           // getSubstanceGroups index + TYPE / CONNECT / raw LABEL props.
+           << ",\"idx\":" << sg_idx << ",\"type\":\"" << json_escape(type_str)
+           << "\",\"connect\":\"" << json_escape(connect_str)
+           << "\",\"rawLabel\":\"" << json_escape(label_str) << "\"}";
     }
     os << "]";
     return first_sg ? "" : os.str();
@@ -1547,6 +1552,15 @@ class MolModelJS
     {
         return m_model.numSGroups();
     }
+    void removeSGroup(unsigned int index)
+    {
+        m_model.removeSGroup(index);
+    }
+    void modifySGroup(unsigned int index, const std::string& type_str,
+                      const std::string& connect_str, const std::string& label)
+    {
+        m_model.modifySGroup(index, type_str, connect_str, label);
+    }
     void aromatize()
     {
         m_model.aromatize();
@@ -1795,6 +1809,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("canAtomsFormSGroup", &MolModelJS::canAtomsFormSGroup)
         .function("addSGroup", &MolModelJS::addSGroup)
         .function("numSGroups", &MolModelJS::numSGroups)
+        .function("removeSGroup", &MolModelJS::removeSGroup)
+        .function("modifySGroup", &MolModelJS::modifySGroup)
         .function("aromatize", &MolModelJS::aromatize)
         .function("kekulize", &MolModelJS::kekulize)
         .function("cleanUp", &MolModelJS::cleanUp)

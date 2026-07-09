@@ -427,6 +427,12 @@ interface SGroupDesc {
     repeat: string;
     lx: number;
     ly: number;
+    // Raw values for the right-click "Modify Notation…" flow: the true
+    // getSubstanceGroups index + TYPE / CONNECT / raw LABEL.
+    idx: number;
+    type: string;
+    connect: string;
+    rawLabel: string;
 }
 interface RenderDesc {
     atoms: AtomDesc[];
@@ -819,6 +825,46 @@ function nearestBondIndex(
         if (d < bestDist) {
             bestIdx = i;
             bestDist = d;
+        }
+    }
+    return bestIdx;
+}
+
+// Array index into rd.sgroups whose bracket the pixel is near (or -1). Used to
+// route a right-click on a bracket to the BracketSubgroupContextMenu. Distance
+// is point-to-segment across both bracket polylines, with an 8-px tolerance.
+function nearestSGroupIndex(
+    canvas: HTMLCanvasElement,
+    view: View,
+    rd: RenderDesc,
+    pixelX: number,
+    pixelY: number,
+): number {
+    const sgroups = rd.sgroups;
+    if (!sgroups) return -1;
+    const TOL = 8;
+    let bestIdx = -1;
+    let bestDist = TOL;
+    for (let s = 0; s < sgroups.length; ++s) {
+        for (const poly of sgroups[s].brackets) {
+            for (let k = 0; k + 1 < poly.length; ++k) {
+                const p1 = pixelFromModel(canvas, view, poly[k].x, poly[k].y);
+                const p2 = pixelFromModel(
+                    canvas, view, poly[k + 1].x, poly[k + 1].y);
+                const dx = p2.px - p1.px;
+                const dy = p2.py - p1.py;
+                const len2 = dx * dx + dy * dy;
+                if (len2 === 0) continue;
+                let t = ((pixelX - p1.px) * dx + (pixelY - p1.py) * dy) / len2;
+                t = Math.max(0, Math.min(1, t));
+                const qx = p1.px + t * dx;
+                const qy = p1.py + t * dy;
+                const d = Math.hypot(qx - pixelX, qy - pixelY);
+                if (d < bestDist) {
+                    bestIdx = s;
+                    bestDist = d;
+                }
+            }
         }
     }
     return bestIdx;
@@ -2808,15 +2854,24 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [customNucleotide, setCustomNucleotide] = useState<
         { sugar: string; base: string; phos: string }>(
         { sugar: 'R', base: 'A', phos: 'P' });
-    // Bracket-subgroup dialog (Qt BracketSubgroupDialog). Non-null holds the
-    // selected atom indices being bracketed; `type`/`pattern`/`label` are the
-    // dialog fields. SRU polymer uses a numeric label; copolymer forces "co".
+    // Bracket-subgroup dialog (Qt BracketSubgroupDialog). Non-null while open;
+    // `type`/`pattern`/`label` are the dialog fields. Two modes: creating a new
+    // S-group over `atomIndices`, or modifying the existing S-group `sgroupIdx`
+    // (from a bracket right-click "Modify Notation…"). SRU uses a numeric
+    // label; copolymer forces "co".
     const [bracketDialog, setBracketDialog] = useState<
-        { atomIndices: number[] } | null>(null);
+        { atomIndices: number[]; sgroupIdx?: number } | null>(null);
     const [bracketType, setBracketType] = useState<'SRU' | 'COP'>('SRU');
     const [bracketPattern, setBracketPattern] =
         useState<'HT' | 'HH' | 'EU'>('HT');
     const [bracketLabel, setBracketLabel] = useState<string>('');
+    // Right-click context menu on a bracket subgroup — Qt
+    // BracketSubgroupContextMenu (Modify Notation… / Remove Brackets). Carries
+    // the S-group index + its current notation for pre-filling the dialog.
+    const [bracketContextMenu, setBracketContextMenu] = useState<
+        { x: number; y: number; sgroupIdx: number;
+          type: 'SRU' | 'COP'; pattern: 'HT' | 'HH' | 'EU';
+          rawLabel: string } | null>(null);
     // Non-natural peptide analogs grouped by natural residue (D-/N-methyl
     // variants etc.) from the monomer DB, fetched once. Drives the per-residue
     // analog popups on the amino-acid tiles (Qt MonomerToolWidget, SKETCH-2482).
@@ -3496,6 +3551,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const atomContextMenuRef = useRef<HTMLDivElement | null>(null);
     const apContextMenuRef = useRef<HTMLDivElement | null>(null);
     const monomerContextMenuRef = useRef<HTMLDivElement | null>(null);
+    const bracketContextMenuRef = useRef<HTMLDivElement | null>(null);
     // Bounds-clamp the right-click menus within the viewport — Qt's QMenu
     // does this automatically (flips upward / leftward at edges). The
     // background menu has 21 items and tall layouts can easily push the
@@ -3590,11 +3646,27 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             el.style.top = `${y}px`;
         }
     }, [monomerContextMenu]);
+    useLayoutEffect(() => {
+        if (!bracketContextMenu) return;
+        const el = bracketContextMenuRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        let { x, y } = bracketContextMenu;
+        if (x + rect.width > vw) x = Math.max(0, vw - rect.width - 4);
+        if (y + rect.height > vh) y = Math.max(0, vh - rect.height - 4);
+        if (x !== bracketContextMenu.x || y !== bracketContextMenu.y) {
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+        }
+    }, [bracketContextMenu]);
     useEffect(() => {
         if (!moreMenuOpen && !importMenuOpen && !exportMenuOpen
             && !configureViewOpen && !helpMenuOpen && !bgContextMenu
             && !selContextMenu && !bondContextMenu && !atomContextMenu
-            && !apContextMenu && !monomerContextMenu) return;
+            && !apContextMenu && !monomerContextMenu && !bracketContextMenu)
+            return;
         function onDocMouseDown(e: globalThis.MouseEvent): void {
             const t = e.target as Node;
             if (moreMenuOpen && moreMenuWrapperRef.current
@@ -3641,6 +3713,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 && !monomerContextMenuRef.current.contains(t)) {
                 setMonomerContextMenu(null);
             }
+            if (bracketContextMenu && bracketContextMenuRef.current
+                && !bracketContextMenuRef.current.contains(t)) {
+                setBracketContextMenu(null);
+            }
         }
         document.addEventListener('mousedown', onDocMouseDown);
         return () => {
@@ -3648,7 +3724,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         };
     }, [moreMenuOpen, importMenuOpen, exportMenuOpen, configureViewOpen,
         helpMenuOpen, bgContextMenu, selContextMenu, bondContextMenu,
-        atomContextMenu, apContextMenu, monomerContextMenu]);
+        atomContextMenu, apContextMenu, monomerContextMenu, bracketContextMenu]);
 
     const onCanvasClick = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
@@ -4830,6 +4906,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             e.preventDefault();
             const m = modelRef.current;
             const canvas = canvasRef.current;
+            // Bracket menu is opened only by its own branch below; clear any
+            // stale one up front so every other dispatch path closes it too.
+            setBracketContextMenu(null);
             // Snapshot scene state once — used by all menu paths.
             let sceneEmpty = true;
             let selAtoms = 0;
@@ -5001,6 +5080,36 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     });
                     setBgContextMenu(null);
                     setSelContextMenu(null);
+                    setAtomContextMenu(null);
+                    setApContextMenu(null);
+                    setMonomerContextMenu(null);
+                    return;
+                }
+            }
+            // Bracket subgroup hit — Qt BracketSubgroupContextMenu. Runs after
+            // atom/bond so a click on an atom inside the group still hits the
+            // atom; only bracket lines route here.
+            if (canvas && rd.sgroups && rd.sgroups.length > 0) {
+                const rect = canvas.getBoundingClientRect();
+                const px = e.clientX - rect.left;
+                const py = e.clientY - rect.top;
+                const s = nearestSGroupIndex(canvas, viewRef.current, rd, px, py);
+                if (s >= 0) {
+                    const sg = rd.sgroups[s];
+                    const type = sg.type === 'COP' ? 'COP' : 'SRU';
+                    const pattern = (sg.connect === 'HH' || sg.connect === 'EU')
+                        ? sg.connect : 'HT';
+                    setBracketContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        sgroupIdx: sg.idx,
+                        type,
+                        pattern,
+                        rawLabel: sg.rawLabel,
+                    });
+                    setBgContextMenu(null);
+                    setSelContextMenu(null);
+                    setBondContextMenu(null);
                     setAtomContextMenu(null);
                     setApContextMenu(null);
                     setMonomerContextMenu(null);
@@ -7764,6 +7873,47 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         }} />
                 </div>
             )}
+            {/* BracketSubgroupContextMenu (Qt
+                menu/bracket_subgroup_context_menu.cpp): right-click a bracket →
+                Modify Notation… (re-opens the dialog pre-filled) + Remove
+                Brackets (removeSGroup). */}
+            {bracketContextMenu && (
+                <div
+                    ref={bracketContextMenuRef}
+                    style={{
+                        ...styles.bgContextMenu,
+                        left: bracketContextMenu.x,
+                        top: bracketContextMenu.y,
+                    }}
+                    data-testid='bracket-context-menu'
+                    onContextMenu={(e) => e.preventDefault()}
+                >
+                    <div style={styles.moreSectionLabel}>Bracket Subgroup</div>
+                    <MoreItem
+                        label='Modify Notation…'
+                        testid='bracket-ctx-modify'
+                        onClick={() => {
+                            const bc = bracketContextMenu;
+                            setBracketContextMenu(null);
+                            setBracketType(bc.type);
+                            setBracketPattern(bc.pattern);
+                            setBracketLabel(bc.rawLabel);
+                            setBracketDialog({
+                                atomIndices: [],
+                                sgroupIdx: bc.sgroupIdx,
+                            });
+                        }} />
+                    <MoreItem
+                        label='Remove Brackets'
+                        testid='bracket-ctx-remove'
+                        onClick={() => {
+                            const bc = bracketContextMenu;
+                            setBracketContextMenu(null);
+                            modelRef.current?.removeSGroup(bc.sgroupIdx);
+                            setStatus('removed brackets');
+                        }} />
+                </div>
+            )}
             {pasteModalOpen && (
                 <div style={styles.modalOverlay}
                     data-testid='paste-text-modal'
@@ -7821,7 +7971,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         }
                     }}>
                     <div style={styles.modalCard}>
-                        <div style={styles.modalTitle}>Bracket Subgroup</div>
+                        <div style={styles.modalTitle}>
+                            {typeof bracketDialog.sgroupIdx === 'number'
+                                ? 'Modify Bracket Subgroup'
+                                : 'Bracket Subgroup'}
+                        </div>
                         <label style={styles.modalLabel}>
                             Subgroup type:
                             <select
@@ -7878,11 +8032,18 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 onClick={() => {
                                     const bd = bracketDialog;
                                     setBracketDialog(null);
-                                    modelRef.current?.addSGroup(
-                                        bd.atomIndices, bracketType,
-                                        bracketPattern, bracketLabel);
-                                    modelRef.current?.clearSelection();
-                                    setStatus('added bracket subgroup');
+                                    if (typeof bd.sgroupIdx === 'number') {
+                                        modelRef.current?.modifySGroup(
+                                            bd.sgroupIdx, bracketType,
+                                            bracketPattern, bracketLabel);
+                                        setStatus('modified bracket subgroup');
+                                    } else {
+                                        modelRef.current?.addSGroup(
+                                            bd.atomIndices, bracketType,
+                                            bracketPattern, bracketLabel);
+                                        modelRef.current?.clearSelection();
+                                        setStatus('added bracket subgroup');
+                                    }
                                 }}>
                                 OK
                             </button>

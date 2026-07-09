@@ -6858,4 +6858,70 @@ M  END`;
         expect(body).toContain('>n</text>');
     });
 
+    // Create an SRU bracket over the middle two atoms and return the render.
+    async function makeBracket(page) {
+        await selectMiddleTwoAndOpenSelMenu(page);
+        await page.getByTestId('sel-ctx-add-brackets').click();
+        await page.getByTestId('bracket-ok').click();
+        return snapshot(page);
+    }
+    // Pixel on a bracket's long side, 25% from the top endpoint — offset far
+    // enough from the crossing bond that the bond hit-test doesn't win.
+    async function bracketLinePixel(page, sg) {
+        const b = sg.brackets[0]; // [b0+short, b0, b1, b1+short]
+        const pt = {
+            x: b[1].x + 0.25 * (b[2].x - b[1].x),
+            y: b[1].y + 0.25 * (b[2].y - b[1].y),
+        };
+        return beadPixel(page, pt);
+    }
+
+    test('sgroup context menu: right-click a bracket opens Modify / Remove', async ({
+        page,
+    }) => {
+        const rd = await makeBracket(page);
+        expect(rd.sgroups).toHaveLength(1);
+        const canvas = page.getByTestId('sketcher-canvas');
+        const lp = await bracketLinePixel(page, rd.sgroups[0]);
+        await canvas.click({ position: { x: lp.px, y: lp.py }, button: 'right' });
+        await expect(page.getByTestId('bracket-context-menu')).toBeVisible();
+        await expect(page.getByTestId('bracket-ctx-modify')).toBeVisible();
+        await expect(page.getByTestId('bracket-ctx-remove')).toBeVisible();
+    });
+
+    test('sgroup context menu: Remove Brackets deletes the S-group (undoable)', async ({
+        page,
+    }) => {
+        const rd = await makeBracket(page);
+        const canvas = page.getByTestId('sketcher-canvas');
+        const lp = await bracketLinePixel(page, rd.sgroups[0]);
+        await canvas.click({ position: { x: lp.px, y: lp.py }, button: 'right' });
+        await page.getByTestId('bracket-ctx-remove').click();
+        let rd2 = await snapshot(page);
+        expect(rd2.sgroups ?? []).toHaveLength(0);
+        await page.getByTestId('undo').click();
+        rd2 = await snapshot(page);
+        expect(rd2.sgroups).toHaveLength(1);
+    });
+
+    test('sgroup context menu: Modify Notation re-types the S-group', async ({
+        page,
+    }) => {
+        const rd = await makeBracket(page);
+        expect(rd.sgroups[0].label).toBe('n'); // SRU default
+        const canvas = page.getByTestId('sketcher-canvas');
+        const lp = await bracketLinePixel(page, rd.sgroups[0]);
+        await canvas.click({ position: { x: lp.px, y: lp.py }, button: 'right' });
+        await page.getByTestId('bracket-ctx-modify').click();
+        await expect(page.getByTestId('bracket-subgroup-modal')).toBeVisible();
+        // Pre-filled from the existing SRU group.
+        await expect(page.getByTestId('bracket-type-select'))
+            .toHaveValue('SRU');
+        await page.getByTestId('bracket-type-select').selectOption('COP');
+        await page.getByTestId('bracket-ok').click();
+        const rd2 = await snapshot(page);
+        expect(rd2.sgroups).toHaveLength(1);
+        expect(rd2.sgroups[0].label).toBe('co');
+    });
+
 });

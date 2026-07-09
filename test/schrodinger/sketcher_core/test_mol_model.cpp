@@ -18,6 +18,7 @@
 #include <GraphMol/Atom.h>
 #include <GraphMol/Bond.h>
 #include <GraphMol/MonomerInfo.h>
+#include <GraphMol/SubstanceGroup.h>
 
 #include "schrodinger/rdkit_extensions/helm.h"
 #include "schrodinger/rdkit_extensions/monomer_database.h"
@@ -2060,6 +2061,61 @@ BOOST_AUTO_TEST_CASE(testAddSGroupNoOpOnInvalidAtoms)
     m.addSGroup({0u, 1u, 2u, 3u}, "SRU", "HT", "");
     BOOST_CHECK_EQUAL(m.numSGroups(), 0u);
     BOOST_CHECK_EQUAL(stack.count(), base);
+}
+
+BOOST_AUTO_TEST_CASE(testRemoveSGroupIsUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCCC");
+    m.addSGroup({1u, 2u}, "SRU", "HT", "n");
+    BOOST_CHECK_EQUAL(m.numSGroups(), 1u);
+
+    m.removeSGroup(0);
+    BOOST_CHECK_EQUAL(m.numSGroups(), 0u);
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.numSGroups(), 1u);
+    stack.redo();
+    BOOST_CHECK_EQUAL(m.numSGroups(), 0u);
+
+    // Out-of-range index — no-op.
+    const auto count = stack.count();
+    m.removeSGroup(5);
+    BOOST_CHECK_EQUAL(stack.count(), count);
+}
+
+BOOST_AUTO_TEST_CASE(testModifySGroupUpdatesNotation)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCCC");
+    m.addSGroup({1u, 2u}, "SRU", "HT", "");
+    {
+        const auto& sgs = RDKit::getSubstanceGroups(m.mol());
+        std::string type;
+        sgs[0].getPropIfPresent("TYPE", type);
+        BOOST_CHECK_EQUAL(type, "SRU");
+    }
+
+    m.modifySGroup(0, "COP", "HH", "co");
+    {
+        const auto& sgs = RDKit::getSubstanceGroups(m.mol());
+        std::string type, connect, label;
+        sgs[0].getPropIfPresent("TYPE", type);
+        sgs[0].getPropIfPresent("CONNECT", connect);
+        sgs[0].getPropIfPresent("LABEL", label);
+        BOOST_CHECK_EQUAL(type, "COP");
+        BOOST_CHECK_EQUAL(connect, "HH");
+        BOOST_CHECK_EQUAL(label, "co");
+    }
+
+    stack.undo();
+    {
+        const auto& sgs = RDKit::getSubstanceGroups(m.mol());
+        std::string type;
+        sgs[0].getPropIfPresent("TYPE", type);
+        BOOST_CHECK_EQUAL(type, "SRU");
+    }
 }
 
 BOOST_AUTO_TEST_CASE(testKekulizeBenzeneReplacesAromaticWithExplicitDoubles)
