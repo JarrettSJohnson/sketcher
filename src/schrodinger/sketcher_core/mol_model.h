@@ -366,6 +366,21 @@ class MolModel : public UndoableModel
     void mutateMonomer(unsigned int idx, const std::string& res_name);
 
     /**
+     * Add a monomer at (x, y) bonded to the existing monomer `bound_to_idx`
+     * through a SPECIFIC attachment point on that monomer (`existing_ap`, a
+     * model name like "R2"). The new monomer's attachment point is resolved from
+     * the two monomers' kinds + the chosen existing AP (Qt's
+     * get_attachment_point_for_new_monomer), and the connection carries the
+     * explicit `existing_ap-new_ap` linkage. Backs clicking an unbound
+     * attachment-point stub — the way to chain a *different* residue (a plain
+     * body-click mutates instead). Single undo step. No-op when `bound_to_idx`
+     * is out of range or the new AP can't be resolved.
+     */
+    void addBoundMonomerViaAP(const std::string& res_name, int chain_type,
+                              double x, double y, unsigned int bound_to_idx,
+                              const std::string& existing_ap);
+
+    /**
      * Add `delta` to the formal charge of every selected atom in a single
      * undoable command. Preserves the selection (charge edits don't reindex).
      * Refreshes the implicit-H cache so render description picks up the new

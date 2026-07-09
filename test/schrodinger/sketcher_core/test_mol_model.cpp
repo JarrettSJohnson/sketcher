@@ -2603,6 +2603,57 @@ BOOST_AUTO_TEST_CASE(testMutateMonomerNoOpOnBadIndex)
     BOOST_CHECK_EQUAL(label, "A");
 }
 
+BOOST_AUTO_TEST_CASE(testAddBoundMonomerViaApUsesExplicitLinkage)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addMonomer("A", 0, 0.0, 0.0);
+    // Chain a Glycine onto Alanine's C-terminus (R2). The new peptide attaches
+    // via its N (R1), so the linkage is R2-R1.
+    m.addBoundMonomerViaAP("G", 0, 1.5, 0.0, /*bound_to_idx=*/0,
+                           /*existing_ap=*/"R2");
+    BOOST_REQUIRE_EQUAL(m.mol().getNumAtoms(), 2u);
+    BOOST_REQUIRE_EQUAL(m.mol().getNumBonds(), 1u);
+    const auto* bond = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_REQUIRE(bond != nullptr);
+    std::string linkage;
+    BOOST_CHECK(bond->getPropIfPresent(LINKAGE, linkage));
+    BOOST_CHECK_EQUAL(linkage, "R2-R1");
+}
+
+BOOST_AUTO_TEST_CASE(testAddBoundMonomerViaApNTerminusReversesBondDirection)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addMonomer("A", 0, 0.0, 0.0);
+    // Chaining off the N-terminus (R1) attaches the new peptide's C (R2). The
+    // stored linkage is always canonicalized higher→lower ("R2-R1"), so the
+    // N-vs-C direction shows up in the bond's begin/end atoms instead: the new
+    // upstream monomer (idx 1) becomes the bond's begin atom.
+    m.addBoundMonomerViaAP("G", 0, -1.5, 0.0, /*bound_to_idx=*/0,
+                           /*existing_ap=*/"R1");
+    const auto* bond = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_REQUIRE(bond != nullptr);
+    std::string linkage;
+    BOOST_CHECK(bond->getPropIfPresent(LINKAGE, linkage));
+    BOOST_CHECK_EQUAL(linkage, "R2-R1");
+    BOOST_CHECK_EQUAL(bond->getBeginAtomIdx(), 1u); // new monomer is upstream
+    BOOST_CHECK_EQUAL(bond->getEndAtomIdx(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(testAddBoundMonomerViaApNoOpOnBadInputs)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addMonomer("A", 0, 0.0, 0.0);
+    const auto count = stack.count();
+    m.addBoundMonomerViaAP("G", 0, 1.5, 0.0, /*bound_to_idx=*/9, "R2");
+    BOOST_CHECK_EQUAL(stack.count(), count); // bad index
+    m.addBoundMonomerViaAP("G", 0, 1.5, 0.0, /*bound_to_idx=*/0, "pair");
+    BOOST_CHECK_EQUAL(stack.count(), count); // non-numbered existing AP
+    BOOST_CHECK_EQUAL(m.mol().getNumAtoms(), 1u);
+}
+
 BOOST_AUTO_TEST_CASE(testToFormatStringExportsPeptideAsHelmAndFasta)
 {
     UndoStack stack;

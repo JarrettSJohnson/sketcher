@@ -924,6 +924,65 @@ MonomerConnection resolve_monomer_connection(MonomerKind existing_kind,
     // backbone (R2-R1) connection from the existing monomer to the new one.
     return {existing_idx, new_idx, ConnectionType::FORWARD};
 }
+
+// Monomer kind for a newly-armed monomer, from its chain-type int + symbol.
+MonomerKind new_monomer_kind(int chain_type, const std::string& res_name)
+{
+    const auto ct = static_cast<rdkit_extensions::ChainType>(chain_type);
+    if (ct == rdkit_extensions::ChainType::PEPTIDE) {
+        return MonomerKind::PEPTIDE;
+    }
+    if (ct == rdkit_extensions::ChainType::CHEM) {
+        return MonomerKind::CHEM;
+    }
+    return na_kind_from_symbol(res_name); // RNA/DNA → sugar/phos/base
+}
+
+// The attachment point the NEW monomer should use, given the existing monomer's
+// kind + chosen AP and the new monomer's kind. Port of Qt's
+// get_attachment_point_for_new_monomer (draw_monomer_scene_tool.cpp). AP model
+// names: peptide N=R1/C=R2/X=R3; sugar 5'=R1/3'=R2/1'=R3; phosphate prev=R1/
+// next=R2; base N1/9=R1. Returns "pair" for a nucleobase pairing (unsupported
+// by the stub-chain path) and "" for CHEM's single AP fallthrough is "R1".
+std::string resolve_new_ap(MonomerKind existing, const std::string& existing_ap,
+                           MonomerKind neu)
+{
+    switch (neu) {
+        case MonomerKind::CHEM:
+            return "R1";
+        case MonomerKind::PEPTIDE:
+            if (existing == MonomerKind::PEPTIDE) {
+                if (existing_ap == "R1") {
+                    return "R2"; // existing N → new C
+                }
+                if (existing_ap == "R2") {
+                    return "R1"; // existing C → new N
+                }
+            }
+            return "R3"; // side chain
+        case MonomerKind::NA_BASE:
+            if (existing == MonomerKind::NA_SUGAR && existing_ap == "R3") {
+                return "R1"; // sugar 1' → base N1/9
+            }
+            return "pair";
+        case MonomerKind::NA_SUGAR:
+            if (existing == MonomerKind::NA_PHOSPHATE) {
+                if (existing_ap == "R1") {
+                    return "R2"; // phosphate prev-sugar → sugar 3'
+                }
+                if (existing_ap == "R2") {
+                    return "R1"; // phosphate next-sugar → sugar 5'
+                }
+            }
+            return "R3"; // sugar 1'
+        case MonomerKind::NA_PHOSPHATE:
+            if (existing == MonomerKind::NA_SUGAR && existing_ap == "R2") {
+                return "R1"; // sugar 3' → phosphate prev-sugar
+            }
+            return "R2"; // phosphate next-sugar
+    }
+    return "R1";
+}
 } // namespace
 
 void MolModel::addMonomer(const std::string& res_name, int chain_type,
@@ -1070,6 +1129,41 @@ void MolModel::mutateMonomer(unsigned int idx, const std::string& res_name)
             rdkit_extensions::mutateMonomer(m_mol, idx, res_name);
         },
         "Mutate monomer");
+}
+
+void MolModel::addBoundMonomerViaAP(const std::string& res_name, int chain_type,
+                                    double x, double y,
+                                    unsigned int bound_to_idx,
+                                    const std::string& existing_ap)
+{
+    if (bound_to_idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    // Only numbered "R#" existing APs are chainable via the stub path; base
+    // "pair" and unresolved new APs are skipped (base pairing isn't modeled).
+    if (existing_ap.empty() || existing_ap[0] != 'R') {
+        return;
+    }
+    const auto existing_kind = monomer_kind(m_mol.getAtomWithIdx(bound_to_idx));
+    const auto new_kind = new_monomer_kind(chain_type, res_name);
+    const std::string new_ap =
+        resolve_new_ap(existing_kind, existing_ap, new_kind);
+    if (new_ap.empty() || new_ap[0] != 'R') {
+        return; // would need a "pair" linkage — unsupported here
+    }
+    const std::string linkage = existing_ap + "-" + new_ap;
+    doMutation(
+        [this, res_name, x, y, bound_to_idx, linkage] {
+            m_mol.setProp(::HELM_MODEL, true);
+            const auto [chain_id, resnum] =
+                monomer_chain_and_resnum(m_mol.getAtomWithIdx(bound_to_idx));
+            const auto idx = rdkit_extensions::addMonomer(
+                m_mol, res_name, resnum + 1, chain_id,
+                rdkit_extensions::MonomerType::REGULAR);
+            set_monomer_pos(m_mol, static_cast<unsigned int>(idx), x, y);
+            rdkit_extensions::addConnection(m_mol, bound_to_idx, idx, linkage);
+        },
+        "Add bound monomer");
 }
 
 void MolModel::adjustChargeOnSelectedAtoms(int delta)

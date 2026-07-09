@@ -186,6 +186,17 @@ export interface MolModelInstance {
      */
     mutateMonomer(idx: number, resName: string): void;
     /**
+     * Add a monomer at (x, y) bonded to the existing monomer `boundToIdx`
+     * through a specific attachment point (`existingAp`, a model name like
+     * "R2"). The new monomer's AP is resolved from both kinds; the connection
+     * uses the explicit `existingAp-newAp` linkage. Backs clicking an unbound
+     * attachment-point stub to chain a different residue. Single undo step.
+     * No-op when out of range or the linkage can't be resolved.
+     */
+    addBoundMonomerViaAP(resName: string, chainType: number, x: number,
+                         y: number, boundToIdx: number,
+                         existingAp: string): void;
+    /**
      * Rotate selected atoms (or all atoms when nothing is selected) by
      * angle_rad counterclockwise around their centroid. Single undo step.
      */

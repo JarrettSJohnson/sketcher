@@ -163,6 +163,11 @@ interface AtomDesc {
     // Monomer display label (1-letter residue symbol, e.g. "A"). Present with
     // `mon`. Rendered centered inside the bead.
     lbl?: string;
+    // Unbound attachment points on a monomer bead — click targets for chaining
+    // a different residue (Qt UnboundMonomericAttachmentPointItem). `n` is the
+    // pretty label ("C"/"3'"), `r` the model name for the linkage ("R2"), and
+    // (dx,dy) a model-space direction unit vector (+y up).
+    aps?: { n: string; r: string; dx: number; dy: number }[];
 }
 interface BondDesc {
     a: number;
@@ -234,6 +239,14 @@ const NA_BACKBONE_FILL = '#E0E0E0';
 // NA_BACKBONE_TO_BASE_CONNECTOR). The backbone connector reuses
 // MONOMER_CONNECTOR_COLOR (GRAY4 #444444), shared with peptides.
 const NA_BASE_CONNECTOR_COLOR = '#666666';
+// Unbound attachment-point "nubbin" — a short stub + circle + label radiating
+// from the bead (Qt UNBOUND_AP_* in monomer_constants.h). px in scene units.
+const UNBOUND_AP_LINE_LENGTH = 9;
+const UNBOUND_AP_LINE_THICKNESS = 1.5;
+const UNBOUND_AP_CIRCLE_RADIUS = 3;
+const UNBOUND_AP_COLOR = '#AAAAAA';
+// Click hit radius (px) around an AP circle for the stub-chain interaction.
+const AP_HIT_RADIUS = 11;
 // Center-to-center spacing for a linear monomer chain, in model units. Matches
 // Qt's MONOMER_BOND_LENGTH (rdkit_extensions/helm/monomer_coordgen.cpp = 1.5).
 const MONOMER_BOND_LENGTH = 1.5;
@@ -1134,15 +1147,40 @@ function pointInDragShape(d: DragShape, px: number, py: number): boolean {
     return pointInPolygon(px, py, d.lassoPoints ?? []);
 }
 
+// Screen geometry of an unbound AP nubbin: the stub start (at the bead edge),
+// the circle center (the click target), and the screen-space unit direction.
+// Model dir has +y up; the canvas flips y, hence -dy.
+function apStubGeometry(
+    canvas: HTMLCanvasElement, view: View, bead: AtomDesc,
+    ap: { dx: number; dy: number },
+): { startX: number; startY: number; cx: number; cy: number;
+     sdx: number; sdy: number } {
+    const p = pixelFromModel(canvas, view, bead.x, bead.y);
+    const half = Math.max(10, view.scale * 0.37);
+    const sdx = ap.dx;
+    const sdy = -ap.dy;
+    const startX = p.px + sdx * half;
+    const startY = p.py + sdy * half;
+    return {
+        startX, startY,
+        cx: startX + sdx * UNBOUND_AP_LINE_LENGTH,
+        cy: startY + sdy * UNBOUND_AP_LINE_LENGTH,
+        sdx, sdy,
+    };
+}
+
 // Render a coarse-grained monomeric scene: connectors under labeled beads.
 // Mirrors Qt's AbstractMonomerItem (rounded-rect peptide bead, residue-class
 // fill, 1-letter label) + MonomerConnectorItem. Bead/font/connector sizes
 // scale with the view so zoom stays consistent with atomistic spacing.
+// `showAps` draws the unbound attachment-point nubbins (when the monomer draw
+// tool is active), matching Qt's on-hover UnboundMonomericAttachmentPointItem.
 function drawMonomers(
     ctx: CanvasRenderingContext2D,
     canvas: HTMLCanvasElement,
     view: View,
     rd: RenderDesc,
+    showAps: boolean = false,
 ): void {
     const byIdx = new Map<number, AtomDesc>();
     for (const a of rd.atoms) byIdx.set(a.i, a);
@@ -1207,6 +1245,39 @@ function drawMonomers(
         ctx.textBaseline = 'middle';
         ctx.fillText((a.lbl ?? '').slice(0, 6), p.px, p.py);
     }
+    // Unbound attachment-point nubbins (stub + open circle + label), drawn on
+    // top when the monomer tool is active so the user has explicit click
+    // targets for chaining a different residue.
+    if (showAps) {
+        const apFont = `${Math.max(8, Math.round(view.scale * 0.28))}px `
+            + 'sans-serif';
+        for (const a of rd.atoms) {
+            if (!a.aps) continue;
+            for (const ap of a.aps) {
+                const g = apStubGeometry(canvas, view, a, ap);
+                ctx.strokeStyle = UNBOUND_AP_COLOR;
+                ctx.lineWidth = UNBOUND_AP_LINE_THICKNESS;
+                ctx.beginPath();
+                ctx.moveTo(g.startX, g.startY);
+                ctx.lineTo(g.cx, g.cy);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.ellipse(g.cx, g.cy, UNBOUND_AP_CIRCLE_RADIUS,
+                    UNBOUND_AP_CIRCLE_RADIUS, 0, 0, 2 * Math.PI);
+                ctx.fillStyle = 'white';
+                ctx.fill();
+                ctx.stroke();
+                // Label just past the circle, along the same direction.
+                ctx.fillStyle = UNBOUND_AP_COLOR;
+                ctx.font = apFont;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(ap.n,
+                    g.cx + g.sdx * (UNBOUND_AP_CIRCLE_RADIUS + 6),
+                    g.cy + g.sdy * (UNBOUND_AP_CIRCLE_RADIUS + 6));
+            }
+        }
+    }
 }
 
 function drawSketch(
@@ -1219,6 +1290,7 @@ function drawSketch(
     rotationHandle: RotationHandle | null,
     chainDrag: ChainDrag | null,
     displayOptions: DisplayOptions = DEFAULT_DISPLAY_OPTIONS,
+    showMonomerAps: boolean = false,
 ): void {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -1233,7 +1305,7 @@ function drawSketch(
     // Coarse-grained monomeric scene: render labeled beads + connectors and
     // skip the atomistic passes entirely (Qt AbstractMonomerItem/Connector).
     if (rd.monomeric) {
-        drawMonomers(ctx, canvas, view, rd);
+        drawMonomers(ctx, canvas, view, rd, showMonomerAps);
         return;
     }
 
@@ -3088,6 +3160,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             rotationHandle,
             chainDrag,
             displayOptions,
+            tool === 'monomer',
         );
     });
 
@@ -3429,6 +3502,35 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 // empty canvas drops it free. A full nucleotide (RNA/DNA tile)
                 // routes through addNucleotide; a single monomer (amino-acid or
                 // NA building-block tile) through addMonomer.
+                // First: an unbound attachment-point stub click chains a
+                // (possibly different) single monomer via that specific AP —
+                // the way to attach a different residue without mutating. Only
+                // for single-monomer arming (not the nucleotide tools).
+                if (!nucleotideSpec) {
+                    for (const a of rd.atoms) {
+                        if (!a.aps) continue;
+                        let hitAp: { r: string; dx: number; dy: number }
+                            | null = null;
+                        for (const ap of a.aps) {
+                            const g = apStubGeometry(canvas, viewRef.current,
+                                a, ap);
+                            if (Math.hypot(px - g.cx, py - g.cy)
+                                <= AP_HIT_RADIUS) {
+                                hitAp = ap;
+                                break;
+                            }
+                        }
+                        if (hitAp) {
+                            const nx = a.x + hitAp.dx * MONOMER_BOND_LENGTH;
+                            const ny = a.y + hitAp.dy * MONOMER_BOND_LENGTH;
+                            model.addBoundMonomerViaAP(monomerResName,
+                                monomerChainType, nx, ny, a.i, hitAp.r);
+                            setStatus(`chained ${monomerResName} to monomer `
+                                + `#${a.i} via ${hitAp.r}`);
+                            return;
+                        }
+                    }
+                }
                 const beadHit = hit >= 0
                     ? rd.atoms.find((a) => a.i === hit) : undefined;
                 if (nucleotideSpec) {

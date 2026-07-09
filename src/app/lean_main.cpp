@@ -7,12 +7,16 @@
  * Copyright Schrodinger LLC, All Rights Reserved.
  --------------------------------------------------------------------------- */
 
+#include <array>
 #include <cctype>
 #include <cstddef>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
@@ -80,6 +84,270 @@ std::string monomer_subtype(const RDKit::Atom* atom)
         return "base";
     }
     return "chem";
+}
+
+// ---- Unbound attachment-point solver ------------------------------------
+// A faithful port of sketcher/rdkit/monomeric.cpp's get_unbound_attachment_
+// points + calculate_direction_for_unbound_attachment_point. Computes, for a
+// monomer, the attachment points that are NOT used by a connection, each with a
+// cardinal/diagonal direction for drawing its "nubbin". Self-contained: needs
+// only the mol + conformer (no monomer DB). Directions are model-space unit
+// vectors (+y up); the JS renderer converts via pixelFromModel.
+
+enum class Dir { N, S, E, W, NE, NW, SE, SW };
+
+std::pair<double, double> dir_vec(Dir d)
+{
+    constexpr double k = 0.70710678; // 1/sqrt(2)
+    switch (d) {
+        case Dir::N:
+            return {0.0, 1.0};
+        case Dir::S:
+            return {0.0, -1.0};
+        case Dir::E:
+            return {1.0, 0.0};
+        case Dir::W:
+            return {-1.0, 0.0};
+        case Dir::NE:
+            return {k, k};
+        case Dir::NW:
+            return {-k, k};
+        case Dir::SE:
+            return {k, -k};
+        case Dir::SW:
+            return {-k, -k};
+    }
+    return {0.0, 0.0};
+}
+
+Dir dir_opposite(Dir d)
+{
+    switch (d) {
+        case Dir::N:
+            return Dir::S;
+        case Dir::S:
+            return Dir::N;
+        case Dir::E:
+            return Dir::W;
+        case Dir::W:
+            return Dir::E;
+        default:
+            return d;
+    }
+}
+
+Dir dir_clockwise(Dir d)
+{
+    switch (d) {
+        case Dir::N:
+            return Dir::E;
+        case Dir::E:
+            return Dir::S;
+        case Dir::S:
+            return Dir::W;
+        case Dir::W:
+            return Dir::N;
+        default:
+            return d;
+    }
+}
+
+std::vector<Dir> dir_perpendiculars(Dir d)
+{
+    if (d == Dir::N || d == Dir::S) {
+        return {Dir::W, Dir::E};
+    }
+    return {Dir::N, Dir::S};
+}
+
+Dir cardinal_for_point(double dx, double dy)
+{
+    if (std::fabs(dx) >= std::fabs(dy)) {
+        return dx > 0 ? Dir::E : Dir::W;
+    }
+    return dy > 0 ? Dir::N : Dir::S;
+}
+
+// Parse the AP number this atom uses on `bond` from its "RX-RY" linkage prop.
+// Returns 0 for an unparseable/absent linkage.
+int bound_ap_num_on_bond(const RDKit::Atom* atom, const RDKit::Bond* bond)
+{
+    std::string linkage;
+    if (!bond->getPropIfPresent(::LINKAGE, linkage)) {
+        return 0;
+    }
+    const auto dash = linkage.find('-');
+    if (dash == std::string::npos || linkage.empty() || linkage[0] != 'R') {
+        return 0; // e.g. a "pair" custom linkage — no numbered AP here
+    }
+    try {
+        const bool is_begin = bond->getBeginAtom() == atom;
+        const std::string tok = is_begin ? linkage.substr(1, dash - 1)
+                                         : linkage.substr(dash + 2);
+        return std::stoi(tok);
+    } catch (...) {
+        return 0;
+    }
+}
+
+// "Pretty" AP display names by monomer subtype (Qt NUMBERED_AP_NAMES_BY_
+// MONOMER_TYPE); index i → R(i+1). Empty → fall back to "R<n>".
+const std::vector<std::string>& ap_display_names(const std::string& subtype)
+{
+    static const std::vector<std::string> PEP = {"N", "C", "X"};
+    static const std::vector<std::string> SUGAR = {"5'", "3'", "1'"};
+    static const std::vector<std::string> BASE = {"N1/9"};
+    static const std::vector<std::string> EMPTY = {};
+    if (subtype == "pep") {
+        return PEP;
+    }
+    if (subtype == "sugar") {
+        return SUGAR;
+    }
+    if (subtype == "base") {
+        return BASE;
+    }
+    return EMPTY;
+}
+
+struct UnboundAP {
+    std::string display;   // "pretty" label, e.g. "C" / "3'" / "R2"
+    std::string model;     // model name for the linkage, e.g. "R2" / "pair"
+    double dx;
+    double dy;
+};
+
+std::vector<UnboundAP> unbound_aps_for_monomer(const RDKit::Atom* atom)
+{
+    const std::string subtype = monomer_subtype(atom);
+    // Numbered-AP count per subtype (Qt). CHEM/unknown: skip (we don't model
+    // arbitrary CHEM AP counts in the lean port).
+    int num_numbered = 0;
+    bool has_pair = false;
+    if (subtype == "pep" || subtype == "sugar") {
+        num_numbered = 3;
+    } else if (subtype == "phos") {
+        num_numbered = 2;
+    } else if (subtype == "base") {
+        num_numbered = 1;
+        has_pair = true;
+    } else {
+        return {};
+    }
+
+    const auto& mol = atom->getOwningMol();
+    const auto& conf = mol.getConformer();
+    const auto self_pos = conf.getAtomPos(atom->getIdx());
+
+    // Bound APs: number → cardinal direction of the neighbor.
+    std::unordered_map<int, Dir> bound_dir_by_num;
+    std::unordered_set<Dir> occupied;
+    bool pair_bound = false;
+    for (const auto* bond : mol.atomBonds(atom)) {
+        const int n = bound_ap_num_on_bond(atom, bond);
+        const auto* nbr = bond->getOtherAtom(atom);
+        const auto npos = conf.getAtomPos(nbr->getIdx());
+        const Dir d = cardinal_for_point(npos.x - self_pos.x,
+                                         npos.y - self_pos.y);
+        if (n > 0) {
+            bound_dir_by_num[n] = d;
+            occupied.insert(d);
+        } else {
+            // A non-numbered ("pair") linkage.
+            pair_bound = true;
+            occupied.insert(d);
+        }
+    }
+
+    // Directions assigned so far to unbound numbered APs (for opposite/
+    // perpendicular lookups), keyed by AP number.
+    std::unordered_map<int, Dir> assigned;
+    auto fetch_dir = [&](int ap_num) -> std::optional<Dir> {
+        if (auto it = bound_dir_by_num.find(ap_num);
+            it != bound_dir_by_num.end()) {
+            return it->second;
+        }
+        if (auto it = assigned.find(ap_num); it != assigned.end()) {
+            return it->second;
+        }
+        return std::nullopt;
+    };
+
+    static const std::array<Dir, 4> DIAGONALS = {Dir::NW, Dir::NE, Dir::SE,
+                                                 Dir::SW};
+    auto first_available =
+        [&](const std::vector<Dir>& prefer) -> std::optional<Dir> {
+        for (Dir d : prefer) {
+            if (!occupied.count(d)) {
+                return d;
+            }
+        }
+        for (Dir d : DIAGONALS) {
+            if (!occupied.count(d)) {
+                return d;
+            }
+        }
+        return std::nullopt;
+    };
+
+    // Direction for an unbound AP, mirroring Qt's calculate_direction_for_
+    // unbound_attachment_point.
+    auto calc_dir = [&](int ap_num, bool is_pair) -> std::optional<Dir> {
+        if (ap_num <= 2 || is_pair) {
+            const int opposite_ap = (ap_num == 2 || is_pair) ? 1 : 2;
+            const auto opp = fetch_dir(opposite_ap);
+            if (opp.has_value()) {
+                std::vector<Dir> tries = {dir_opposite(*opp)};
+                for (Dir p : dir_perpendiculars(*opp)) {
+                    tries.push_back(p);
+                }
+                return first_available(tries);
+            }
+            if (subtype == "base") {
+                return first_available({Dir::S, Dir::E, Dir::W, Dir::N});
+            }
+            return first_available({Dir::W, Dir::N, Dir::S, Dir::E});
+        }
+        if (ap_num == 3) {
+            const auto r1 = fetch_dir(1);
+            if (!r1.has_value()) {
+                return std::nullopt; // R1 must be placed first
+            }
+            const Dir cw = dir_clockwise(*r1);
+            return first_available(
+                {cw, dir_opposite(cw), dir_opposite(*r1)});
+        }
+        return first_available({Dir::W, Dir::E, Dir::N, Dir::S});
+    };
+
+    const auto& names = ap_display_names(subtype);
+    std::vector<UnboundAP> out;
+    for (int n = 1; n <= num_numbered; ++n) {
+        if (bound_dir_by_num.count(n)) {
+            continue; // this AP is in use
+        }
+        const auto d = calc_dir(n, /*is_pair=*/false);
+        if (!d.has_value()) {
+            continue;
+        }
+        assigned[n] = *d;
+        occupied.insert(*d);
+        const auto [vx, vy] = dir_vec(*d);
+        const std::string model = "R" + std::to_string(n);
+        const std::string disp = (n >= 1 && n <= static_cast<int>(names.size()))
+                                     ? names[n - 1]
+                                     : model;
+        out.push_back({disp, model, vx, vy});
+    }
+    if (has_pair && !pair_bound) {
+        const auto d = calc_dir(/*ap_num=*/-1, /*is_pair=*/true);
+        if (d.has_value()) {
+            occupied.insert(*d);
+            const auto [vx, vy] = dir_vec(*d);
+            out.push_back({"pair", "pair", vx, vy});
+        }
+    }
+    return out;
 }
 
 /**
@@ -282,6 +550,22 @@ std::string mol_to_render_description(
                << label << "\"";
             if (model != nullptr && model->isAtomSelected(i)) {
                 os << ",\"sel\":true";
+            }
+            // Unbound attachment points (draw target stubs the user can click
+            // to chain a monomer via a specific AP). Each: display name +
+            // model-space direction unit vector.
+            const auto aps = unbound_aps_for_monomer(atom);
+            if (!aps.empty()) {
+                os << ",\"aps\":[";
+                for (size_t k = 0; k < aps.size(); ++k) {
+                    if (k > 0) {
+                        os << ',';
+                    }
+                    os << "{\"n\":\"" << aps[k].display << "\",\"r\":\""
+                       << aps[k].model << "\",\"dx\":" << aps[k].dx
+                       << ",\"dy\":" << aps[k].dy << "}";
+                }
+                os << ']';
             }
             os << '}';
             continue;
@@ -892,6 +1176,13 @@ class MolModelJS
     {
         m_model.mutateMonomer(idx, res_name);
     }
+    void addBoundMonomerViaAP(const std::string& res_name, int chain_type,
+                              double x, double y, unsigned int bound_to_idx,
+                              const std::string& existing_ap)
+    {
+        m_model.addBoundMonomerViaAP(res_name, chain_type, x, y, bound_to_idx,
+                                     existing_ap);
+    }
     void rotateSelectedAtoms(double angle_rad)
     {
         m_model.rotateSelectedAtoms(angle_rad);
@@ -1209,6 +1500,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("addNucleotide", &MolModelJS::addNucleotide)
         .function("addBoundNucleotide", &MolModelJS::addBoundNucleotide)
         .function("mutateMonomer", &MolModelJS::mutateMonomer)
+        .function("addBoundMonomerViaAP", &MolModelJS::addBoundMonomerViaAP)
         .function("rotateSelectedAtoms", &MolModelJS::rotateSelectedAtoms)
         .function("flipSelectedAtoms", &MolModelJS::flipSelectedAtoms)
         .function("flipSubstituentAroundBond",

@@ -6351,6 +6351,81 @@ M  END`;
         expect(rd.atoms[0].mon).toBe('pep');
     });
 
+    // -------- Batch 63: attachment-point editing --------
+    // Qt UnboundMonomericAttachmentPointItem: a monomer exposes its free APs as
+    // clickable stubs. Clicking a stub chains a (possibly different) residue via
+    // that AP — the way to attach a different residue (a body-click mutates).
+    // Backed by the render description's per-atom `aps` + addBoundMonomerViaAP.
+    async function apClickPoint(page, bead, ap) {
+        // Mirror apStubGeometry: bead center in canvas px, then out along the
+        // AP direction (screen y is flipped) to the nubbin circle.
+        const view = await page.evaluate(() => ({ ...window.SketcherView.current }));
+        const cx = 540 / 2 + view.offsetX;
+        const cy = 360 / 2 + view.offsetY;
+        const bx = bead.x * view.scale + cx;
+        const by = -bead.y * view.scale + cy;
+        const half = Math.max(10, view.scale * 0.37);
+        const sdx = ap.dx;
+        const sdy = -ap.dy;
+        return {
+            x: bx + sdx * (half + 9),
+            y: by + sdy * (half + 9),
+        };
+    }
+
+    test('monomer tool: a free peptide exposes its N/C/X attachment points', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        const aps = rd.atoms[0].aps ?? [];
+        // Three unbound APs with pretty names N / C / X (model R1/R2/R3).
+        expect(aps.map((a) => a.n).sort()).toEqual(['C', 'N', 'X']);
+        expect(aps.map((a) => a.r).sort()).toEqual(['R1', 'R2', 'R3']);
+    });
+
+    test('monomer tool: clicking an AP stub chains a DIFFERENT residue (not mutate)', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        let rd = await snapshot(page);
+        const cAp = (rd.atoms[0].aps ?? []).find((a) => a.r === 'R2');
+        expect(cAp).toBeTruthy();
+        // Arm Glycine and click Alanine's C stub → chain (not mutate).
+        await page.getByTestId('monomer-aa-gly').click();
+        const pt = await apClickPoint(page, rd.atoms[0], cAp);
+        await canvas.click({ position: pt });
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.atoms.map((a) => a.lbl).sort()).toEqual(['A', 'G']);
+    });
+
+    test('monomer tool: a chained monomer no longer offers the used AP', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        // Chain a second Alanine off the first (same residue) via the bead.
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+        // The bonded monomers each expose fewer APs than a free one (3): the
+        // used backbone AP is dropped.
+        for (const a of rd.atoms) {
+            expect((a.aps ?? []).length).toBeLessThan(3);
+        }
+    });
+
     // -------- Batch 62: Custom nucleotide triple-builder --------
     // Qt CustomNucleotidePopup: three text fields (sugar/base/phosphate). Editing
     // updates the armed triple; a canvas click places addNucleotide(sugar,base,phos).
