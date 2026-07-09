@@ -90,6 +90,25 @@ export interface MolModelInstance {
      * are skipped. Preserves the selection. No-op when no bonds are selected.
      */
     setBondTypeForSelectedBonds(type: number): void;
+    /**
+     * Combined `setBondTypeUndoable(type)` + `setBondDirUndoable(dir)` as one
+     * undo step. Mirrors Qt's `MolModel::mutateBonds` (model/mol_model.cpp:
+     * 2288), used by the ModifyBondsMenu "Other Type" submenu (Coordinate /
+     * Zero Order / Single Up/Down (wavy) / Double Cis/Trans (crossed)) so the
+     * type+dir swap survives Ctrl+Z together. `type` is RDKit::Bond::BondType
+     * (1=SINGLE, 2=DOUBLE, 17=DATIVE/Coordinate, 21=ZERO). `dir` is
+     * RDKit::Bond::BondDir (0=NONE, 5=EITHERDOUBLE/crossed, 6=UNKNOWN/wavy).
+     * No-op when the bond is missing.
+     */
+    setBondTypeAndDirUndoable(begin: number, end: number,
+                              type: number, dir: number): void;
+    /**
+     * Selection-wide equivalent of `setBondTypeAndDirUndoable` — every
+     * selected bond gets both type and dir replaced inside one undo macro.
+     * Backs the SelectionContextMenu's Modify Bonds → Other Type items.
+     * No-op when no bonds are selected.
+     */
+    setBondTypeAndDirForSelectedBonds(type: number, dir: number): void;
     addRing(size: number, cx: number, cy: number, aromatic: boolean): void;
     /**
      * Add a single-bonded carbon chain at the given 2D positions. Pass

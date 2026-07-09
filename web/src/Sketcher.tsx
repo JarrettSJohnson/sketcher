@@ -139,6 +139,10 @@ interface BondDesc {
     sel?: boolean;
     arom?: boolean;
     dir?: number; // RDKit::Bond::BondDir: 1=BEGINWEDGE, 2=BEGINDASH
+    // Raw RDKit::Bond::BondType enum int, emitted only for coordinate
+    // (17=DATIVE) and zero-order (21=ZERO) bonds — the `o` bond-order double
+    // can't distinguish those from a plain single. Absent for ordinary bonds.
+    bt?: number;
 }
 
 // Mirror RDKit::Bond::BondDir for the values we render.
@@ -147,6 +151,13 @@ const BOND_DIR_WEDGE = 1;
 const BOND_DIR_DASH = 2;
 const BOND_DIR_EITHERDOUBLE = 5; // crossed double (cis/trans unknown)
 const BOND_DIR_UNKNOWN = 6;       // wavy single (up/down unknown)
+// Mirror RDKit::Bond::BondType values used by the Other Type bond submenu.
+// SINGLE / DOUBLE / TRIPLE / AROMATIC are passed as inline ints above; these
+// constants stand in where the value would otherwise be opaque.
+const BOND_TYPE_SINGLE = 1;
+const BOND_TYPE_DOUBLE = 2;
+const BOND_TYPE_DATIVE = 17;     // Qt BondTool::COORDINATE
+const BOND_TYPE_ZERO = 21;       // Qt BondTool::ZERO
 // Reaction objects live outside the RWMol — sketcher_core mirrors Qt's
 // `m_arrow` (optional) + `m_pluses` (vector) shape and emits them as a
 // flat `nonMol` array in render description JSON. Each entry's `type`
@@ -1062,6 +1073,41 @@ function drawSketch(
             ctx.moveTo(p1.px - ox, p1.py - oy);
             ctx.lineTo(p2.px + ox, p2.py + oy);
             ctx.stroke();
+        } else if (b.bt === BOND_TYPE_DATIVE) {
+            // Coordinate (dative) bond: a solid line with a filled arrowhead
+            // at the end atom. Qt bond_item.cpp:210-216 + calcArrowTip.
+            ctx.lineWidth = BOND_STROKE;
+            ctx.beginPath();
+            ctx.moveTo(p1.px, p1.py);
+            ctx.lineTo(p2.px, p2.py);
+            ctx.stroke();
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy);
+            const ux = dx / len;
+            const uy = dy / len;
+            const nx = -uy;
+            const ny = ux;
+            const aLen = 8; // arrow length (Qt DATIVE_ARROW_LENGTH=7)
+            const aHalf = 5; // arrow half-width (Qt DATIVE_ARROW_HALF_WIDTH=4)
+            const baseX = p2.px - ux * aLen;
+            const baseY = p2.py - uy * aLen;
+            ctx.beginPath();
+            ctx.moveTo(p2.px, p2.py);
+            ctx.lineTo(baseX + nx * aHalf, baseY + ny * aHalf);
+            ctx.lineTo(baseX - nx * aHalf, baseY - ny * aHalf);
+            ctx.closePath();
+            ctx.fill();
+        } else if (b.bt === BOND_TYPE_ZERO) {
+            // Zero-order bond: drawn with a dashed line (Qt m_dashed_pen,
+            // dash pattern {3,3}). bond_item.cpp:218-219.
+            ctx.lineWidth = BOND_STROKE;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(p1.px, p1.py);
+            ctx.lineTo(p2.px, p2.py);
+            ctx.stroke();
+            ctx.setLineDash([]);
         } else if (b.arom) {
             // Aromatic: plain solid line PLUS an inner dashed line offset
             // toward the molecule centroid. Replaces both the single-stroke
@@ -1649,6 +1695,37 @@ function buildSketchSvg(
                 `x2='${f(p2.px + ox)}' y2='${f(p2.py + oy)}' ` +
                 `stroke='${palette.bond}' stroke-width='${BOND_STROKE}'/>`,
             );
+        } else if (b.bt === BOND_TYPE_DATIVE) {
+            // Coordinate (dative) bond: solid line + filled arrowhead at the
+            // end atom. Mirrors the canvas branch / Qt bond_item.cpp:210-216.
+            const dx = p2.px - p1.px;
+            const dy = p2.py - p1.py;
+            const len = Math.hypot(dx, dy);
+            const ux = dx / len;
+            const uy = dy / len;
+            const nx = -uy;
+            const ny = ux;
+            const aLen = 8;
+            const aHalf = 5;
+            const baseX = p2.px - ux * aLen;
+            const baseY = p2.py - uy * aLen;
+            parts.push(
+                `<line x1='${f(p1.px)}' y1='${f(p1.py)}' ` +
+                `x2='${f(p2.px)}' y2='${f(p2.py)}' ` +
+                `stroke='${palette.bond}' stroke-width='${BOND_STROKE}'/>`,
+                `<polygon points='${f(p2.px)},${f(p2.py)} ` +
+                `${f(baseX + nx * aHalf)},${f(baseY + ny * aHalf)} ` +
+                `${f(baseX - nx * aHalf)},${f(baseY - ny * aHalf)}' ` +
+                `fill='${palette.bond}'/>`,
+            );
+        } else if (b.bt === BOND_TYPE_ZERO) {
+            // Zero-order bond: dashed line (Qt m_dashed_pen {3,3}).
+            parts.push(
+                `<line x1='${f(p1.px)}' y1='${f(p1.py)}' ` +
+                `x2='${f(p2.px)}' y2='${f(p2.py)}' ` +
+                `stroke='${palette.bond}' stroke-width='${BOND_STROKE}' ` +
+                `stroke-dasharray='3,3'/>`,
+            );
         } else if (b.arom) {
             parts.push(
                 `<line x1='${f(p1.px)}' y1='${f(p1.py)}' ` +
@@ -2072,7 +2149,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // current state without re-querying the model).
     const [bondContextMenu, setBondContextMenu] = useState<
         { x: number; y: number; bondIdx: number; a: number; b: number;
-          type: number; dir: number } | null
+          type: number; dir: number; bt?: number } | null
     >(null);
     // Per-atom right-click context menu — mirrors Qt's AtomContextMenu
     // (menu/atom_context_menu.cpp). Opens when right-click hits an atom and
@@ -3661,6 +3738,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         b: bd.b,
                         type: bd.o,
                         dir: bd.dir ?? 0,
+                        bt: bd.bt,
                     });
                     setBgContextMenu(null);
                     setSelContextMenu(null);
@@ -5564,11 +5642,14 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     {/* Modify Bonds (Qt: ModifyBondsMenu) — flattened from
                         the submenu form. Flip Substituent is hidden in the
                         selection branch (Qt setFlipVisible(false), so we
-                        skip it too). Other Type / Query / Topology submenus
-                        need wavy/crossed renderer support + query bonds and
-                        stay deferred. Each item is a no-op when no bonds are
-                        in the selection — the selection-wide primitives
-                        already early-return on empty bond sets. */}
+                        skip it too). Query / Topology submenus still need
+                        RDKit query-bond support and stay deferred. Each
+                        item is a no-op when no bonds are in the selection —
+                        the selection-wide primitives already early-return
+                        on empty bond sets. Other Type items (Coordinate /
+                        Zero / wavy / crossed) use the combined
+                        setBondTypeAndDirForSelectedBonds primitive so type
+                        + dir collapse to one undo step. */}
                     <div style={styles.moreSectionLabel}>Modify Bonds</div>
                     <MoreItem label='Single' testid='sel-ctx-bond-single'
                         onClick={() => {
@@ -5608,6 +5689,43 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 BOND_DIR_DASH);
                             setStatus('selected bonds → down dash');
                         }} />
+                    <MoreItem label='Coordinate'
+                        testid='sel-ctx-bond-coordinate'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            modelRef.current
+                                ?.setBondTypeAndDirForSelectedBonds(
+                                    BOND_TYPE_DATIVE, BOND_DIR_NONE);
+                            setStatus('selected bonds → coordinate');
+                        }} />
+                    <MoreItem label='Zero Order'
+                        testid='sel-ctx-bond-zero'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            modelRef.current
+                                ?.setBondTypeAndDirForSelectedBonds(
+                                    BOND_TYPE_ZERO, BOND_DIR_NONE);
+                            setStatus('selected bonds → zero order');
+                        }} />
+                    <MoreItem label='Single Up/Down'
+                        testid='sel-ctx-bond-single-either'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            modelRef.current
+                                ?.setBondTypeAndDirForSelectedBonds(
+                                    BOND_TYPE_SINGLE, BOND_DIR_UNKNOWN);
+                            setStatus('selected bonds → wavy single');
+                        }} />
+                    <MoreItem label='Double Cis/Trans'
+                        testid='sel-ctx-bond-double-either'
+                        onClick={() => {
+                            setSelContextMenu(null);
+                            modelRef.current
+                                ?.setBondTypeAndDirForSelectedBonds(
+                                    BOND_TYPE_DOUBLE,
+                                    BOND_DIR_EITHERDOUBLE);
+                            setStatus('selected bonds → crossed double');
+                        }} />
                     <div style={styles.moreDivider} />
                     <MoreItem label='Delete' testid='sel-ctx-delete'
                         onClick={() => {
@@ -5620,11 +5738,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 (menu/bond_context_menu.cpp). Order/labels follow that file.
                 Sections that need infrastructure not yet ported are
                 intentionally omitted (Flip Substituent: needs adjacency +
-                non-ring detection; Other Type / Query / Topology submenus:
-                need query bond support in the lean MolModel). Active
-                bond-type / bond-dir items show a leading checkmark so the
-                user can see the current state — Qt uses checkable QAction
-                groups for the same purpose. */}
+                non-ring detection; Query / Topology submenus: need RDKit
+                query bond support in the lean MolModel). Active bond-type
+                / bond-dir items show a leading checkmark so the user can
+                see the current state — Qt uses checkable QAction groups
+                for the same purpose. */}
             {bondContextMenu && (
                 <div
                     ref={bondContextMenuRef}
@@ -5712,6 +5830,65 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             setBondContextMenu(null);
                             modelRef.current?.setBondDirUndoable(
                                 bm.a, bm.b, 0,
+                            );
+                        }} />
+                    {/* Other Type — Qt's bond_context_menu.cpp:55-72 puts
+                        these in a nested submenu. Flattened here to match
+                        the rest of this context menu's layout. Each item
+                        applies type AND dir in one undo step via the lean
+                        `setBondTypeAndDirUndoable` macro so Ctrl+Z restores
+                        the bond in a single press. Coordinate / Zero match
+                        Qt's COORDINATE / ZERO BondTool entries; Single
+                        Up/Down is the "wavy" stereo (BondDir::UNKNOWN);
+                        Double Cis/Trans is the "crossed" double bond
+                        (BondDir::EITHERDOUBLE). */}
+                    <div style={styles.moreDivider} />
+                    <MoreItem
+                        label={(bondContextMenu.bt === BOND_TYPE_DATIVE
+                            ? '✓ ' : '   ') + 'Coordinate'}
+                        testid='bond-ctx-coordinate'
+                        onClick={() => {
+                            const bm = bondContextMenu;
+                            setBondContextMenu(null);
+                            modelRef.current?.setBondTypeAndDirUndoable(
+                                bm.a, bm.b, BOND_TYPE_DATIVE, BOND_DIR_NONE,
+                            );
+                        }} />
+                    <MoreItem
+                        label={(bondContextMenu.bt === BOND_TYPE_ZERO
+                            ? '✓ ' : '   ') + 'Zero Order'}
+                        testid='bond-ctx-zero'
+                        onClick={() => {
+                            const bm = bondContextMenu;
+                            setBondContextMenu(null);
+                            modelRef.current?.setBondTypeAndDirUndoable(
+                                bm.a, bm.b, BOND_TYPE_ZERO, BOND_DIR_NONE,
+                            );
+                        }} />
+                    <MoreItem
+                        label={(bondContextMenu.type === BOND_TYPE_SINGLE
+                            && bondContextMenu.dir === BOND_DIR_UNKNOWN
+                            ? '✓ ' : '   ') + 'Single Up/Down'}
+                        testid='bond-ctx-single-either'
+                        onClick={() => {
+                            const bm = bondContextMenu;
+                            setBondContextMenu(null);
+                            modelRef.current?.setBondTypeAndDirUndoable(
+                                bm.a, bm.b,
+                                BOND_TYPE_SINGLE, BOND_DIR_UNKNOWN,
+                            );
+                        }} />
+                    <MoreItem
+                        label={(bondContextMenu.type === BOND_TYPE_DOUBLE
+                            && bondContextMenu.dir === BOND_DIR_EITHERDOUBLE
+                            ? '✓ ' : '   ') + 'Double Cis/Trans'}
+                        testid='bond-ctx-double-either'
+                        onClick={() => {
+                            const bm = bondContextMenu;
+                            setBondContextMenu(null);
+                            modelRef.current?.setBondTypeAndDirUndoable(
+                                bm.a, bm.b,
+                                BOND_TYPE_DOUBLE, BOND_DIR_EITHERDOUBLE,
                             );
                         }} />
                     <div style={styles.moreDivider} />

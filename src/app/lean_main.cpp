@@ -347,6 +347,20 @@ std::string mol_to_render_description(
         os << "{\"a\":" << b->getBeginAtomIdx()
            << ",\"b\":" << b->getEndAtomIdx()
            << ",\"o\":" << b->getBondTypeAsDouble();
+        const auto bond_type = b->getBondType();
+        // `o` is the bond ORDER as a double (SINGLE=1, DOUBLE=2, ...), which
+        // can't distinguish a coordinate (DATIVE→1.0) or zero-order (ZERO→
+        // 0.0) bond from an ordinary single. Emit the raw BondType enum int
+        // as `bt` for exactly those cases so the renderer can draw Qt's
+        // dative arrow / dashed zero-order line (bond_item.cpp:210-219).
+        // Omitted otherwise to keep the description shape minimal.
+        if (bond_type == RDKit::Bond::BondType::DATIVE ||
+            bond_type == RDKit::Bond::BondType::DATIVEONE ||
+            bond_type == RDKit::Bond::BondType::DATIVEL ||
+            bond_type == RDKit::Bond::BondType::DATIVER ||
+            bond_type == RDKit::Bond::BondType::ZERO) {
+            os << ",\"bt\":" << static_cast<int>(bond_type);
+        }
         const auto dir = b->getBondDir();
         if (dir != RDKit::Bond::BondDir::NONE) {
             // Cast to underlying enum value — JS side knows the encoding
@@ -605,6 +619,19 @@ class MolModelJS
     {
         m_model.setBondTypeForSelectedBonds(
             static_cast<RDKit::Bond::BondType>(type));
+    }
+    void setBondTypeAndDirUndoable(unsigned int begin, unsigned int end,
+                                   int type, int dir)
+    {
+        m_model.setBondTypeAndDirUndoable(
+            begin, end, static_cast<RDKit::Bond::BondType>(type),
+            static_cast<RDKit::Bond::BondDir>(dir));
+    }
+    void setBondTypeAndDirForSelectedBonds(int type, int dir)
+    {
+        m_model.setBondTypeAndDirForSelectedBonds(
+            static_cast<RDKit::Bond::BondType>(type),
+            static_cast<RDKit::Bond::BondDir>(dir));
     }
     void addRing(unsigned int size, double cx, double cy, bool aromatic)
     {
@@ -902,6 +929,10 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("setBondTypeUndoable", &MolModelJS::setBondTypeUndoable)
         .function("setBondTypeForSelectedBonds",
                   &MolModelJS::setBondTypeForSelectedBonds)
+        .function("setBondTypeAndDirUndoable",
+                  &MolModelJS::setBondTypeAndDirUndoable)
+        .function("setBondTypeAndDirForSelectedBonds",
+                  &MolModelJS::setBondTypeAndDirForSelectedBonds)
         .function("addRing", &MolModelJS::addRing)
         .function("addAtomChain", &MolModelJS::addAtomChain)
         .function("rotateSelectedAtoms", &MolModelJS::rotateSelectedAtoms)

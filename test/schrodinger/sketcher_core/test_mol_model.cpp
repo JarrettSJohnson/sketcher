@@ -559,6 +559,92 @@ BOOST_AUTO_TEST_CASE(testSetBondTypeForSelectedBondsNoOpOnEmptySelection)
                       RDKit::Bond::SINGLE);
 }
 
+BOOST_AUTO_TEST_CASE(testSetBondTypeAndDirUndoableCollapsesToOneUndoStep)
+{
+    // Backs the bond / selection context menu's "Other Type" items
+    // (Coordinate / Zero Order / Single Up/Down / Double Cis/Trans). Picking
+    // any of those must replace both BondType and BondDir in one undo step so
+    // Ctrl+Z restores the bond fully in a single press — mirrors Qt's
+    // `MolModel::mutateBonds` (model/mol_model.cpp:2288).
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    m.addBond(0, 1, RDKit::Bond::DOUBLE);
+    const auto count_before = stack.count();
+    m.setBondTypeAndDirUndoable(0, 1, RDKit::Bond::SINGLE,
+                                RDKit::Bond::BondDir::UNKNOWN);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondType(),
+                      RDKit::Bond::SINGLE);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondDir(),
+                      RDKit::Bond::BondDir::UNKNOWN);
+    // The macro registers one entry on the undo stack regardless of the
+    // two underlying setBondType / setBondDir commands inside it.
+    BOOST_CHECK_EQUAL(stack.count(), count_before + 1);
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondType(),
+                      RDKit::Bond::DOUBLE);
+    BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(0)->getBondDir(),
+                      RDKit::Bond::BondDir::NONE);
+}
+
+BOOST_AUTO_TEST_CASE(testSetBondTypeAndDirUndoableNoOpsWhenBondMissing)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    const auto count_before = stack.count();
+    m.setBondTypeAndDirUndoable(0, 5, RDKit::Bond::DOUBLE,
+                                RDKit::Bond::BondDir::EITHERDOUBLE);
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+}
+
+BOOST_AUTO_TEST_CASE(
+    testSetBondTypeAndDirForSelectedBondsCollapsesToOneUndoStep)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    m.addAtom("C", 2, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    m.addBond(1, 2, RDKit::Bond::SINGLE);
+    m.setBondSelected(0, true);
+    m.setBondSelected(1, true);
+    const auto count_before = stack.count();
+    m.setBondTypeAndDirForSelectedBonds(RDKit::Bond::DOUBLE,
+                                        RDKit::Bond::BondDir::EITHERDOUBLE);
+    for (unsigned i = 0; i < 2; ++i) {
+        BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(i)->getBondType(),
+                          RDKit::Bond::DOUBLE);
+        BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(i)->getBondDir(),
+                          RDKit::Bond::BondDir::EITHERDOUBLE);
+    }
+    BOOST_CHECK_EQUAL(stack.count(), count_before + 1);
+    stack.undo();
+    for (unsigned i = 0; i < 2; ++i) {
+        BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(i)->getBondType(),
+                          RDKit::Bond::SINGLE);
+        BOOST_CHECK_EQUAL(m.mol().getBondWithIdx(i)->getBondDir(),
+                          RDKit::Bond::BondDir::NONE);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(testSetBondTypeAndDirForSelectedBondsNoOpOnEmptySelection)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    const auto count_before = stack.count();
+    m.setBondTypeAndDirForSelectedBonds(RDKit::Bond::DOUBLE,
+                                        RDKit::Bond::BondDir::EITHERDOUBLE);
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+}
+
 BOOST_AUTO_TEST_CASE(testSetBondTypeNoOpsWhenBondMissingOrUnchanged)
 {
     UndoStack stack;

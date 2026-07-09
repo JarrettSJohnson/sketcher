@@ -188,6 +188,28 @@ class MolModel : public UndoableModel
     void setBondTypeForSelectedBonds(RDKit::Bond::BondType type);
 
     /**
+     * Apply both `setBondTypeUndoable(type)` and `setBondDirUndoable(dir)` as
+     * one undo step. Mirrors Qt's `MolModel::mutateBonds` (model/mol_model.cpp:
+     * 2288) — the "Other Type" submenu in ModifyBondsMenu (Coordinate / Zero
+     * Order / Single Up/Down (wavy) / Double Cis/Trans (crossed)) replaces
+     * both type and dir as a unit so Ctrl+Z restores the bond in one step.
+     * No-op when the bond is missing.
+     */
+    void setBondTypeAndDirUndoable(unsigned int begin_idx,
+                                   unsigned int end_idx,
+                                   RDKit::Bond::BondType type,
+                                   RDKit::Bond::BondDir dir);
+
+    /**
+     * Selection-wide equivalent of `setBondTypeAndDirUndoable` — every
+     * selected bond gets both type and dir replaced inside one undo macro.
+     * Used by the SelectionContextMenu's Modify Bonds → Other Type items
+     * (Coordinate / Zero / Wavy / Crossed). No-op when no bonds are selected.
+     */
+    void setBondTypeAndDirForSelectedBonds(RDKit::Bond::BondType type,
+                                           RDKit::Bond::BondDir dir);
+
+    /**
      * Insert a planar regular polygon of `size` carbon atoms centered at
      * (cx, cy). When `aromatic` is true (and `size` is even), bonds alternate
      * SINGLE / DOUBLE in Kekulé form so benzene renders the classic three-

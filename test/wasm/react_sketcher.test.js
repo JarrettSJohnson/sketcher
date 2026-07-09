@@ -5212,4 +5212,226 @@ test.describe('React Sketcher', () => {
         expect(rd.atoms[0].el).toBe('C');
     });
 
+    // -------- Batch 46: Other Type bond submenu --------
+    // Qt's ModifyBondsMenu (menu/bond_context_menu.cpp:55-72) tucks four
+    // bond modes into an "Other Type" submenu — Coordinate (DATIVE), Zero
+    // Order (ZERO), Single Up/Down (wavy = SINGLE + BondDir::UNKNOWN),
+    // Double Cis/Trans (crossed = DOUBLE + BondDir::EITHERDOUBLE). React
+    // port flattens the submenu into the existing bond + selection context
+    // menus and routes through the new combined
+    // setBondTypeAndDir{Undoable,ForSelectedBonds} primitive so type + dir
+    // collapse to a single undo step.
+    test('bond context menu: Other Type items are visible (Coordinate / Zero / Single Up/Down / Double Cis/Trans)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        for (const id of [
+            'bond-ctx-coordinate', 'bond-ctx-zero',
+            'bond-ctx-single-either', 'bond-ctx-double-either',
+        ]) {
+            await expect(page.getByTestId(id)).toBeVisible();
+        }
+    });
+
+    test('bond context menu: Single Up/Down sets SINGLE + BondDir::UNKNOWN in one undo step (wavy)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        // Promote to DOUBLE first so picking Single Up/Down has to change
+        // BOTH type (2→1) and dir (none→6) — exercises the combined macro.
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-double').click();
+        let rd = await snapshot(page);
+        expect(rd.bonds[0].o).toBe(2);
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-single-either').click();
+        await expect(page.getByTestId('bond-context-menu')).toHaveCount(0);
+        rd = await snapshot(page);
+        expect(rd.bonds[0].o).toBe(1);
+        expect(rd.bonds[0].dir).toBe(6); // BondDir::UNKNOWN (wavy)
+        // ONE undo restores both: type back to DOUBLE and dir cleared.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].o).toBe(2);
+        expect(rd.bonds[0].dir ?? 0).toBe(0);
+    });
+
+    test('bond context menu: Double Cis/Trans sets DOUBLE + BondDir::EITHERDOUBLE in one undo step (crossed)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        let rd = await snapshot(page);
+        expect(rd.bonds[0].o).toBe(1);
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-double-either').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].o).toBe(2);
+        expect(rd.bonds[0].dir).toBe(5); // BondDir::EITHERDOUBLE (crossed)
+        // ONE undo collapses both back to SINGLE / no dir.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].o).toBe(1);
+        expect(rd.bonds[0].dir ?? 0).toBe(0);
+    });
+
+    test('bond context menu: Coordinate switches BondType to DATIVE (17) and clears any wedge', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        // Put a wedge on first so picking Coordinate has to clear it.
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-wedge-up').click();
+        let rd = await snapshot(page);
+        expect(rd.bonds[0].dir).toBe(1); // BEGINWEDGE
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-coordinate').click();
+        rd = await snapshot(page);
+        // `o` is the bond ORDER double (DATIVE→1); the raw type comes through
+        // as `bt` so the renderer can draw the dative arrow.
+        expect(rd.bonds[0].bt).toBe(17); // BondType::DATIVE
+        expect(rd.bonds[0].dir ?? 0).toBe(0);
+        // One undo restores SINGLE + BEGINWEDGE together.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.bonds[0].o).toBe(1);
+        expect(rd.bonds[0].bt).toBeUndefined();
+        expect(rd.bonds[0].dir).toBe(1);
+    });
+
+    test('bond context menu: Zero Order switches BondType to ZERO (21)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-zero').click();
+        const rd = await snapshot(page);
+        expect(rd.bonds[0].bt).toBe(21); // BondType::ZERO (o double = 0)
+    });
+
+    test('bond context menu: active Other Type item carries the leading check', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 120, y: 180 } });
+        await canvas.click({ position: { x: 260, y: 180 } });
+        await page.getByTestId('tool-select').click();
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await page.getByTestId('bond-ctx-zero').click();
+        await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
+        await expect(page.getByTestId('bond-ctx-zero'))
+            .toContainText('✓ Zero Order');
+        await expect(page.getByTestId('bond-ctx-coordinate'))
+            .not.toContainText('✓');
+    });
+
+    test('selection context menu: Other Type items are visible alongside the existing Single/Double/Triple/Up/Down', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        for (const id of [
+            'sel-ctx-bond-coordinate', 'sel-ctx-bond-zero',
+            'sel-ctx-bond-single-either', 'sel-ctx-bond-double-either',
+        ]) {
+            await expect(page.getByTestId(id)).toBeVisible();
+        }
+    });
+
+    test('selection context menu: Single Up/Down on selection sets every bond to SINGLE + dir 6 in one undo step', async ({
+        page,
+    }) => {
+        await loadText(page, 'C=CC=C'); // butadiene: bonds alternate D-S-D
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-bond-single-either').click();
+        const rd = await snapshot(page);
+        // Every bond is now SINGLE (o=1) with dir=UNKNOWN (6).
+        expect(rd.bonds.every((b) => b.o === 1)).toBe(true);
+        expect(rd.bonds.every((b) => b.dir === 6)).toBe(true);
+        // ONE undo restores ALL bonds at once (the macro covers every
+        // type+dir pair across the selection).
+        await page.getByTestId('undo').click();
+        const rd2 = await snapshot(page);
+        expect(rd2.bonds.some((b) => b.o === 2)).toBe(true);
+        expect(rd2.bonds.every((b) => (b.dir ?? 0) === 0)).toBe(true);
+    });
+
+    test('selection context menu: Double Cis/Trans on selection sets every bond to DOUBLE + dir 5 in one undo step', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCC');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-bond-double-either').click();
+        const rd = await snapshot(page);
+        expect(rd.bonds.every((b) => b.o === 2)).toBe(true);
+        expect(rd.bonds.every((b) => b.dir === 5)).toBe(true);
+        await page.getByTestId('undo').click();
+        const rd2 = await snapshot(page);
+        expect(rd2.bonds.every((b) => b.o === 1)).toBe(true);
+        expect(rd2.bonds.every((b) => (b.dir ?? 0) === 0)).toBe(true);
+    });
+
+    test('selection context menu: Coordinate on selection sets every bond to DATIVE (17)', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-bond-coordinate').click();
+        const rd = await snapshot(page);
+        expect(rd.bonds.every((b) => b.bt === 17)).toBe(true); // DATIVE
+    });
+
+    test('selection context menu: Zero Order on selection sets every bond to ZERO (21)', async ({
+        page,
+    }) => {
+        await loadText(page, 'CCO');
+        await page.keyboard.press('Control+A');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 50, y: 50 }, button: 'right' });
+        await page.getByTestId('sel-ctx-bond-zero').click();
+        const rd = await snapshot(page);
+        expect(rd.bonds.every((b) => b.bt === 21)).toBe(true); // ZERO
+    });
+
 });

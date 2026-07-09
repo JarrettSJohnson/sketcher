@@ -450,6 +450,41 @@ void MolModel::setBondTypeForSelectedBonds(RDKit::Bond::BondType type)
     }
 }
 
+void MolModel::setBondTypeAndDirUndoable(unsigned int begin_idx,
+                                         unsigned int end_idx,
+                                         RDKit::Bond::BondType type,
+                                         RDKit::Bond::BondDir dir)
+{
+    if (begin_idx >= m_mol.getNumAtoms() || end_idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    if (m_mol.getBondBetweenAtoms(begin_idx, end_idx) == nullptr) {
+        return;
+    }
+    auto macro = createUndoMacro("Change bond type and stereo");
+    setBondTypeUndoable(begin_idx, end_idx, type);
+    setBondDirUndoable(begin_idx, end_idx, dir);
+}
+
+void MolModel::setBondTypeAndDirForSelectedBonds(RDKit::Bond::BondType type,
+                                                 RDKit::Bond::BondDir dir)
+{
+    if (m_selected_bonds.empty()) {
+        return;
+    }
+    const std::vector<unsigned int> bonds(m_selected_bonds.begin(),
+                                          m_selected_bonds.end());
+    auto macro = createUndoMacro("Change bond type and stereo on selection");
+    for (auto idx : bonds) {
+        if (idx >= m_mol.getNumBonds()) {
+            continue;
+        }
+        const auto* b = m_mol.getBondWithIdx(idx);
+        setBondTypeUndoable(b->getBeginAtomIdx(), b->getEndAtomIdx(), type);
+        setBondDirUndoable(b->getBeginAtomIdx(), b->getEndAtomIdx(), dir);
+    }
+}
+
 void MolModel::addRing(unsigned int size, double cx, double cy, bool aromatic)
 {
     if (size < 3) {

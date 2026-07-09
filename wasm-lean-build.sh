@@ -16,7 +16,7 @@ ${EXT_ROOT}/zlib-1.3.1;\
 ${EXT_ROOT}/zstd-1.5.5;\
 ${EXT_ROOT}/boost-1.87.0;\
 ${EXT_ROOT}/eigen-3.4.0;\
-${EXT_ROOT}/rdkit-2026.03.2;\
+${EXT_ROOT}/rdkit-2026.03.3;\
 ${EXT_ROOT}/sqlite-3.42.0"
 
 emcmake cmake -B ${BUILD_DIR} -G Ninja \
