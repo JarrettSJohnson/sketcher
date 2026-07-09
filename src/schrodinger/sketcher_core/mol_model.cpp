@@ -2035,6 +2035,10 @@ std::string MolModel::toFormatString(const std::string& format_name,
         fmt = rdkit_extensions::Format::MDL_MOLV3000;
     } else if (format_name == "mdl_molv2000") {
         fmt = rdkit_extensions::Format::MDL_MOLV2000;
+    } else if (format_name == "helm") {
+        fmt = rdkit_extensions::Format::HELM;
+    } else if (format_name == "fasta") {
+        fmt = rdkit_extensions::Format::FASTA;
     } else {
         return "";
     }

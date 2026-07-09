@@ -5185,6 +5185,13 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 onClick={() => { setMoreMenuOpen(false); void doCopyAs('xyz', 'XYZ'); }} />
             <MoreItem label='Marvin Document' testid='copy-as-mrv'
                 onClick={() => { setMoreMenuOpen(false); void doCopyAs('mrv', 'Marvin'); }} />
+            {/* Sequence formats — always offered (Qt get_standard_export_formats
+                comment: rdkit_extensions::to_string converts atomistic↔monomeric
+                on the fly; conversion failures surface as an empty copy). */}
+            <MoreItem label='HELM' testid='copy-as-helm'
+                onClick={() => { setMoreMenuOpen(false); void doCopyAs('helm', 'HELM'); }} />
+            <MoreItem label='FASTA' testid='copy-as-fasta'
+                onClick={() => { setMoreMenuOpen(false); void doCopyAs('fasta', 'FASTA'); }} />
         </div>
     );
 

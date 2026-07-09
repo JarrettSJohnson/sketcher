@@ -2277,6 +2277,8 @@ test.describe('React Sketcher', () => {
             'PDB',
             'XYZ',
             'Marvin Document',
+            'HELM',
+            'FASTA',
         ];
         for (const label of expected) {
             await expect(menu).toContainText(label);
@@ -6205,6 +6207,43 @@ M  END`;
         expect(rd.atoms).toHaveLength(1);
         expect(rd.atoms[0].lbl).toBe('C');
         expect(rd.atoms[0].mon).toBe('base');
+    });
+
+    // -------- Batch 58: HELM / FASTA sequence export (Copy As) --------
+    // Qt get_standard_export_formats() always offers HELM + FASTA (to_string
+    // converts atomistic↔monomeric on the fly). Backed by MolModel.toFormatString.
+    test('Copy As: HELM exports a placed peptide chain as a HELM string', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 160, y: 180 } });
+        // Chain a second Alanine (same residue armed) → PEPTIDE1{A.A}.
+        await canvas.click({ position: { x: 160, y: 180 } });
+        await page.getByTestId('more-actions-btn').click();
+        await page.getByTestId('copy-as-helm').click();
+        const clip = await readClipboard(page);
+        expect(clip).toMatch(/PEPTIDE1\{/);
+        expect(clip).toMatch(/A\.A/);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/copied HELM:/);
+    });
+
+    test('Copy As: FASTA exports a placed peptide as its one-letter sequence', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 160, y: 180 } });
+        await canvas.click({ position: { x: 160, y: 180 } });
+        await page.getByTestId('more-actions-btn').click();
+        await page.getByTestId('copy-as-fasta').click();
+        const clip = await readClipboard(page);
+        expect(clip).toMatch(/AA/);
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/copied FASTA:/);
     });
 
 });

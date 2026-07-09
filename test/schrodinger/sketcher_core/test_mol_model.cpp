@@ -2599,3 +2599,31 @@ BOOST_AUTO_TEST_CASE(testMutateMonomerNoOpOnBadIndex)
     BOOST_CHECK(m.mol().getAtomWithIdx(0)->getPropIfPresent(ATOM_LABEL, label));
     BOOST_CHECK_EQUAL(label, "A");
 }
+
+BOOST_AUTO_TEST_CASE(testToFormatStringExportsPeptideAsHelmAndFasta)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    // Build a two-residue peptide chain A→G.
+    m.addMonomer("A", 0, 0.0, 0.0);
+    m.addBoundMonomer("G", 0, 1.5, 0.0, /*bound_to_idx=*/0);
+    // HELM names the polymer PEPTIDE1 and lists the residues in order.
+    const auto helm = m.toFormatString("helm", /*selectionOnly=*/false);
+    BOOST_CHECK(helm.find("PEPTIDE1{") != std::string::npos);
+    BOOST_CHECK(helm.find("A.G") != std::string::npos);
+    // FASTA writes the one-letter sequence.
+    const auto fasta = m.toFormatString("fasta", /*selectionOnly=*/false);
+    BOOST_CHECK(!fasta.empty());
+    BOOST_CHECK(fasta.find("AG") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(testToFormatStringExportsNucleotideAsHelm)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    // A single RNA nucleotide round-trips to HELM as the RNA polymer R(U)P.
+    m.addNucleotide("R", "U", "P", 0.0, 0.0);
+    const auto helm = m.toFormatString("helm", /*selectionOnly=*/false);
+    BOOST_CHECK(helm.find("RNA1{") != std::string::npos);
+    BOOST_CHECK(helm.find("R(U)P") != std::string::npos);
+}

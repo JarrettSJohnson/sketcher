@@ -515,7 +515,9 @@ class MolModel : public UndoableModel
      * `get_standard_export_formats()` list (file_import_export.cpp:75):
      *   "smiles", "extended_smiles", "smarts", "extended_smarts",
      *   "inchi", "inchikey", "pdb", "xyz", "mrv", "maestro",
-     *   "mdl_molv3000", "mdl_molv2000"
+     *   "mdl_molv3000", "mdl_molv2000", "helm", "fasta"
+     * The sequence formats ("helm"/"fasta") are always offered — to_string
+     * converts atomistic↔monomeric on the fly and surfaces failures as "".
      * `selection_only=true` extracts the current selection first (using the
      * same auto-extend-to-bond-endpoints logic as `toMolBlockForSelection`)
      * — returns "" when nothing is selected. `false` exports the whole mol.
