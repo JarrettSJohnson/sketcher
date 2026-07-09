@@ -2771,6 +2771,17 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [apContextMenu, setApContextMenu] = useState<
         { x: number; y: number; atomIdx: number } | null
     >(null);
+    // Per-monomer right-click context menu — mirrors Qt's MonomerContextMenu
+    // (menu/monomer_context_menu.cpp:129). Runs ahead of the generic atom menu
+    // when the scene is monomeric and the hit atom is a monomer bead. Peptide
+    // beads get "Mutate Residue" + a dynamic "Set D-Form / Set L-Form" toggle +
+    // a disabled "Protonate" stub + Delete; other monomer types get Delete only.
+    // `dformTarget` is the D↔L toggled symbol (from monomer_dform_toggle), ""
+    // when the residue has no DB counterpart.
+    const [monomerContextMenu, setMonomerContextMenu] = useState<
+        { x: number; y: number; atomIdx: number; mon: string; lbl: string;
+          dformTarget: string } | null
+    >(null);
     // Top-bar Import / Export dropdowns + their modals. Mirrors Qt's
     // ImportMenu / ExportMenu (menu/sketcher_top_bar_menus.cpp) + the
     // PasteInTextDialog / FileExportDialog popups they open.
@@ -3281,6 +3292,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const bondContextMenuRef = useRef<HTMLDivElement | null>(null);
     const atomContextMenuRef = useRef<HTMLDivElement | null>(null);
     const apContextMenuRef = useRef<HTMLDivElement | null>(null);
+    const monomerContextMenuRef = useRef<HTMLDivElement | null>(null);
     // Bounds-clamp the right-click menus within the viewport — Qt's QMenu
     // does this automatically (flips upward / leftward at edges). The
     // background menu has 21 items and tall layouts can easily push the
@@ -3360,11 +3372,26 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             el.style.top = `${y}px`;
         }
     }, [apContextMenu]);
+    useLayoutEffect(() => {
+        if (!monomerContextMenu) return;
+        const el = monomerContextMenuRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        let { x, y } = monomerContextMenu;
+        if (x + rect.width > vw) x = Math.max(0, vw - rect.width - 4);
+        if (y + rect.height > vh) y = Math.max(0, vh - rect.height - 4);
+        if (x !== monomerContextMenu.x || y !== monomerContextMenu.y) {
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+        }
+    }, [monomerContextMenu]);
     useEffect(() => {
         if (!moreMenuOpen && !importMenuOpen && !exportMenuOpen
             && !configureViewOpen && !helpMenuOpen && !bgContextMenu
             && !selContextMenu && !bondContextMenu && !atomContextMenu
-            && !apContextMenu) return;
+            && !apContextMenu && !monomerContextMenu) return;
         function onDocMouseDown(e: globalThis.MouseEvent): void {
             const t = e.target as Node;
             if (moreMenuOpen && moreMenuWrapperRef.current
@@ -3407,6 +3434,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 && !apContextMenuRef.current.contains(t)) {
                 setApContextMenu(null);
             }
+            if (monomerContextMenu && monomerContextMenuRef.current
+                && !monomerContextMenuRef.current.contains(t)) {
+                setMonomerContextMenu(null);
+            }
         }
         document.addEventListener('mousedown', onDocMouseDown);
         return () => {
@@ -3414,7 +3445,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         };
     }, [moreMenuOpen, importMenuOpen, exportMenuOpen, configureViewOpen,
         helpMenuOpen, bgContextMenu, selContextMenu, bondContextMenu,
-        atomContextMenu, apContextMenu]);
+        atomContextMenu, apContextMenu, monomerContextMenu]);
 
     const onCanvasClick = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>): void => {
@@ -4518,6 +4549,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 setBondContextMenu(null);
                 setAtomContextMenu(null);
                 setApContextMenu(null);
+                setMonomerContextMenu(null);
                 return;
             }
             // Item hit-tests run in Qt's per-item z-order: atoms before
@@ -4534,6 +4566,30 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 if (atomIdx >= 0) {
                     const ad = rd.atoms.find((a) => a.i === atomIdx);
                     if (ad) {
+                        // Monomer beads get Qt's MonomerContextMenu
+                        // (menu/monomer_context_menu.cpp), NOT the atomistic
+                        // atom menu. Peptide beads carry Mutate Residue + the
+                        // D-/L-form toggle; every monomer type gets Delete.
+                        if (rd.monomeric && typeof ad.mon === 'string') {
+                            const lbl = ad.lbl ?? '';
+                            const dformTarget = ad.mon === 'pep'
+                                ? (Module.monomer_dform_toggle(lbl) || '')
+                                : '';
+                            setMonomerContextMenu({
+                                x: e.clientX,
+                                y: e.clientY,
+                                atomIdx,
+                                mon: ad.mon,
+                                lbl,
+                                dformTarget,
+                            });
+                            setBgContextMenu(null);
+                            setSelContextMenu(null);
+                            setBondContextMenu(null);
+                            setAtomContextMenu(null);
+                            setApContextMenu(null);
+                            return;
+                        }
                         // Attachment-point dummies get Qt's dedicated tiny
                         // menu (just Delete), not the generic atom menu —
                         // matches AttachmentPointContextMenu in
@@ -4548,6 +4604,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             setSelContextMenu(null);
                             setBondContextMenu(null);
                             setAtomContextMenu(null);
+                            setMonomerContextMenu(null);
                             return;
                         }
                         setAtomContextMenu({
@@ -4575,6 +4632,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         setSelContextMenu(null);
                         setBondContextMenu(null);
                         setApContextMenu(null);
+                        setMonomerContextMenu(null);
                         return;
                     }
                 }
@@ -4605,6 +4663,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     setSelContextMenu(null);
                     setAtomContextMenu(null);
                     setApContextMenu(null);
+                    setMonomerContextMenu(null);
                     return;
                 }
             }
@@ -4614,6 +4673,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             setBondContextMenu(null);
             setAtomContextMenu(null);
             setApContextMenu(null);
+            setMonomerContextMenu(null);
         },
         [],
     );
@@ -7242,6 +7302,104 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             const am = apContextMenu;
                             setApContextMenu(null);
                             modelRef.current?.removeAtom(am.atomIdx);
+                        }} />
+                </div>
+            )}
+            {/* MonomerContextMenu (Qt: menu/monomer_context_menu.cpp:129).
+                Peptide beads expose Mutate Residue (natural AAs) + a dynamic
+                Set D-/L-Form toggle + a disabled Protonate stub; every monomer
+                type gets Delete. The per-AA analog sub-lists (Qt's nested
+                Mutate Residue > AA > analog submenu) are flattened here to the
+                20 naturals, consistent with the rest of the port's context
+                menus — the most common non-natural variant (D-form) is the
+                dedicated toggle; other analogs remain reachable via the sidebar
+                palette. Delete reuses removeAtom, which strips the bead's
+                connection bonds. */}
+            {monomerContextMenu && (
+                <div
+                    ref={monomerContextMenuRef}
+                    style={{
+                        ...styles.bgContextMenu,
+                        left: monomerContextMenu.x,
+                        top: monomerContextMenu.y,
+                    }}
+                    data-testid='monomer-context-menu'
+                    onContextMenu={(e) => e.preventDefault()}
+                >
+                    <div style={styles.moreSectionLabel}>
+                        {monomerContextMenu.lbl || 'Monomer'}
+                    </div>
+                    {monomerContextMenu.mon === 'pep' && (
+                        <>
+                            <div style={styles.moreSectionLabel}>
+                                Mutate Residue
+                            </div>
+                            <div style={styles.atomCtxElementGrid}>
+                                {AMINO_ACIDS.map(([id, sym, full]) => {
+                                    const active =
+                                        monomerContextMenu.lbl === sym;
+                                    return (
+                                        <LetterButton
+                                            key={id}
+                                            label={sym}
+                                            active={active}
+                                            disabled={active}
+                                            testid={`monomer-ctx-mutate-${id}`}
+                                            title={active
+                                                ? `Already ${full}`
+                                                : `Mutate to ${full}`}
+                                            onClick={() => {
+                                                if (active) return;
+                                                const mm = monomerContextMenu;
+                                                setMonomerContextMenu(null);
+                                                modelRef.current?.mutateMonomer(
+                                                    mm.atomIdx, sym);
+                                                setStatus(
+                                                    `Mutate residue: ${full}`);
+                                            }} />
+                                    );
+                                })}
+                            </div>
+                            <div style={styles.moreDivider} />
+                            {/* Set D-Form / Set L-Form (Qt
+                                createSetDFormAction). Label + target come from
+                                monomer_dform_toggle: a shorter target means the
+                                residue is currently a D-form → offer L; empty
+                                target → no DB counterpart → disabled. */}
+                            <MoreItem
+                                label={monomerContextMenu.dformTarget
+                                    && monomerContextMenu.dformTarget.length
+                                        < monomerContextMenu.lbl.length
+                                    ? 'Set L-Form' : 'Set D-Form'}
+                                testid='monomer-ctx-dform'
+                                disabled={!monomerContextMenu.dformTarget}
+                                onClick={() => {
+                                    const mm = monomerContextMenu;
+                                    setMonomerContextMenu(null);
+                                    if (!mm.dformTarget) return;
+                                    modelRef.current?.mutateMonomer(
+                                        mm.atomIdx, mm.dformTarget);
+                                    setStatus(
+                                        mm.dformTarget.length < mm.lbl.length
+                                            ? 'Set L-form' : 'Set D-form');
+                                }} />
+                            {/* Protonate — Qt reserves this slot disabled
+                                (createProtonateAction): the monomer DB has no
+                                protonated/deprotonated pairs today. */}
+                            <MoreItem
+                                label='Protonate'
+                                testid='monomer-ctx-protonate'
+                                disabled
+                                onClick={() => { /* reserved stub */ }} />
+                            <div style={styles.moreDivider} />
+                        </>
+                    )}
+                    <MoreItem label='Delete' testid='monomer-ctx-delete'
+                        onClick={() => {
+                            const mm = monomerContextMenu;
+                            setMonomerContextMenu(null);
+                            modelRef.current?.removeAtom(mm.atomIdx);
+                            setStatus('deleted monomer');
                         }} />
                 </div>
             )}

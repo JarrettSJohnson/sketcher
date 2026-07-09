@@ -897,6 +897,46 @@ std::string monomer_analogs_json(int chain_type)
     }
 }
 
+/**
+ * Return the D↔L toggled HELM symbol for a PEPTIDE residue, or "" when no
+ * valid counterpart exists in the monomer DB. Ported verbatim in intent from
+ * Qt's MonomerContextMenu (menu/monomer_context_menu.cpp): `dFoo` is the
+ * D-form of `Foo` iff both exist as PEPTIDEs AND share the same NATURAL_ANALOG
+ * — prefix alone is unsafe because a custom DB could name an entry `dXyz`
+ * with no semantic link to `Xyz`. Backs the "Set D-Form / Set L-Form" toggle:
+ * the JS side derives the label + enabled state from the returned string
+ * (shorter than the input ⇒ currently D-form ⇒ "Set L-Form"; empty ⇒ disabled).
+ */
+std::string monomer_dform_toggle(const std::string& sym)
+{
+    try {
+        auto& db = schrodinger::rdkit_extensions::MonomerDatabase::instance();
+        const auto ct = schrodinger::rdkit_extensions::ChainType::PEPTIDE;
+        const auto analog_of = [&](const std::string& s) {
+            return db.getNaturalAnalog(s, ct);
+        };
+        // D → L: strip the leading 'd' when the stripped form exists with a
+        // matching natural analog (mirrors is_d_form + the strip branch).
+        if (sym.size() >= 2 && sym.front() == 'd') {
+            const auto full = analog_of(sym);
+            const auto stripped = analog_of(sym.substr(1));
+            if (full && stripped && !full->empty() && *full == *stripped) {
+                return sym.substr(1);
+            }
+        }
+        // L → D: prepend 'd' when the candidate exists with a matching analog.
+        const auto candidate = std::string("d") + sym;
+        const auto cand_analog = analog_of(candidate);
+        const auto sym_analog = analog_of(sym);
+        if (cand_analog && sym_analog && !cand_analog->empty() &&
+            *cand_analog == *sym_analog) {
+            return candidate;
+        }
+    } catch (...) {
+    }
+    return "";
+}
+
 // -- Phase 0 spike consumer ------------------------------------------------
 // A trivial undoable model demonstrating that sketcher_core::UndoableModel +
 // UndoStack + Signal compose into an end-to-end pattern with no Qt. Exposed
@@ -1447,6 +1487,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
     emscripten::function("render_description_from_text",
                          &render_description_from_text);
     emscripten::function("monomer_analogs_json", &monomer_analogs_json);
+    emscripten::function("monomer_dform_toggle", &monomer_dform_toggle);
 
     // Phase 0 spike: Qt-free undoable model
     emscripten::class_<Counter>("Counter")

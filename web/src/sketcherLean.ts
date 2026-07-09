@@ -354,6 +354,12 @@ export interface SketcherLeanModule {
      * ChainType int (0=PEPTIDE, 1=RNA). Returns "{}" on failure.
      */
     monomer_analogs_json(chainType: number): string;
+    /**
+     * Return the D↔L toggled HELM symbol for a PEPTIDE residue, or "" when no
+     * valid counterpart exists in the monomer DB. Backs the monomer context
+     * menu's "Set D-Form / Set L-Form" toggle (Qt monomer_context_menu.cpp).
+     */
+    monomer_dform_toggle(sym: string): string;
     MolModel: MolModelConstructor;
     mol_model_subscribe(m: MolModelInstance, cb: () => void): number;
     mol_model_unsubscribe(handle: number): void;

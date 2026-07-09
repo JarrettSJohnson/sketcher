@@ -6518,4 +6518,115 @@ M  END`;
         expect(rd.atoms.find((a) => a.mon === 'base').lbl).toBe('T');
     });
 
+    // -------- Batch 65: monomer context menu --------
+    // Qt MonomerContextMenu (menu/monomer_context_menu.cpp): right-clicking a
+    // monomer bead. Peptide beads expose Mutate Residue (natural AAs) + a
+    // dynamic Set D-/L-Form toggle + a disabled Protonate stub + Delete; every
+    // other monomer type gets Delete only.
+    test('monomer context menu: right-click a peptide bead opens MonomerContextMenu (not the atom menu)', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd = await snapshot(page);
+        const bp = await beadPixel(page, rd.atoms[0]);
+        await canvas.click({ position: { x: bp.px, y: bp.py }, button: 'right' });
+        await expect(page.getByTestId('monomer-context-menu')).toBeVisible();
+        // The generic atomistic atom menu must NOT show for a monomer bead.
+        await expect(page.getByTestId('atom-context-menu')).toHaveCount(0);
+        // Peptide action set: Mutate Residue grid + D-form + Protonate + Delete.
+        await expect(page.getByTestId('monomer-ctx-mutate-gly')).toBeVisible();
+        await expect(page.getByTestId('monomer-ctx-dform')).toBeVisible();
+        await expect(page.getByTestId('monomer-ctx-protonate')).toBeVisible();
+        await expect(page.getByTestId('monomer-ctx-protonate')).toBeDisabled();
+        await expect(page.getByTestId('monomer-ctx-delete')).toBeVisible();
+        // Set D-Form is enabled (Alanine has a dA counterpart) and labelled for
+        // the L→D direction.
+        await expect(page.getByTestId('monomer-ctx-dform')).toBeEnabled();
+        await expect(page.getByTestId('monomer-ctx-dform')).toHaveText(/Set D-Form/);
+    });
+
+    test('monomer context menu: Delete removes the bead and is undoable', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        let rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        const bp = await beadPixel(page, rd.atoms[0]);
+        await canvas.click({ position: { x: bp.px, y: bp.py }, button: 'right' });
+        await page.getByTestId('monomer-ctx-delete').click();
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(0);
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].lbl).toBe('A');
+    });
+
+    test('monomer context menu: Mutate Residue changes the residue label in place', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        let rd = await snapshot(page);
+        const bp = await beadPixel(page, rd.atoms[0]);
+        await canvas.click({ position: { x: bp.px, y: bp.py }, button: 'right' });
+        // The current residue (A) is shown active/disabled; mutating to Gly.
+        await expect(page.getByTestId('monomer-ctx-mutate-ala')).toBeDisabled();
+        await page.getByTestId('monomer-ctx-mutate-gly').click();
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].lbl).toBe('G');
+    });
+
+    test('monomer context menu: Set D-Form toggles A ↔ dA with a flipping label', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        let rd = await snapshot(page);
+        let bp = await beadPixel(page, rd.atoms[0]);
+        await canvas.click({ position: { x: bp.px, y: bp.py }, button: 'right' });
+        await page.getByTestId('monomer-ctx-dform').click(); // A → dA
+        rd = await snapshot(page);
+        expect(rd.atoms[0].lbl).toBe('dA');
+        // Re-open: the toggle now reads "Set L-Form" and flips back to A.
+        bp = await beadPixel(page, rd.atoms[0]);
+        await canvas.click({ position: { x: bp.px, y: bp.py }, button: 'right' });
+        await expect(page.getByTestId('monomer-ctx-dform')).toHaveText(/Set L-Form/);
+        await page.getByTestId('monomer-ctx-dform').click(); // dA → A
+        rd = await snapshot(page);
+        expect(rd.atoms[0].lbl).toBe('A');
+    });
+
+    test('monomer context menu: a non-peptide bead offers only Delete', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-nucleic').click();
+        await page.getByTestId('monomer-na-a').click(); // single Adenine base
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd = await snapshot(page);
+        const base = rd.atoms.find((a) => a.mon === 'base');
+        expect(base).toBeTruthy();
+        const bp = await beadPixel(page, base);
+        await canvas.click({ position: { x: bp.px, y: bp.py }, button: 'right' });
+        await expect(page.getByTestId('monomer-context-menu')).toBeVisible();
+        await expect(page.getByTestId('monomer-ctx-delete')).toBeVisible();
+        // Peptide-only actions are hidden for a nucleobase.
+        await expect(page.getByTestId('monomer-ctx-mutate-gly')).toHaveCount(0);
+        await expect(page.getByTestId('monomer-ctx-dform')).toHaveCount(0);
+        await expect(page.getByTestId('monomer-ctx-protonate')).toHaveCount(0);
+    });
+
 });
