@@ -20,7 +20,7 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 
 type Tool = 'atom' | 'bond' | 'select' | 'move-rotate' | 'erase' | 'ring'
     | 'atom-chain' | 'rgroup' | 'attachment-point' | 'reaction'
-    | 'atom-query';
+    | 'atom-query' | 'bond-query';
 
 // Reaction sub-mode — Qt: EnumerationTool::{RXN_ARROW, RXN_PLUS} in the
 // reaction popup. The two map 1:1 to MolModel::addRxnArrow / addRxnPlus.
@@ -52,6 +52,24 @@ type AtomQueryChoice = 'A' | 'AH' | 'Q' | 'QH' | 'M' | 'MH' | 'X' | 'XH';
 // doesn't expose RDKit::QueryBond yet).
 type BondQueryChoice = 'aromatic' | 'any' | 'single_double' | 'single_aromatic'
     | 'double_aromatic';
+// BondQueryChoice → the label string the lean MolModel primitives expect
+// (addQueryBondBetweenAtoms / mutateBondToQuery). "aromatic" is a real bond
+// type; the rest are RDKit query bonds.
+const BOND_QUERY_CPP_LABEL: Record<BondQueryChoice, string> = {
+    aromatic: 'aromatic',
+    any: 'Any',
+    single_double: 'S/D',
+    single_aromatic: 'S/A',
+    double_aromatic: 'D/A',
+};
+// Short face shown on the B▾ button for each mode (aromatic uses its icon).
+const BOND_QUERY_FACE: Record<BondQueryChoice, string> = {
+    aromatic: '',
+    any: 'Any',
+    single_double: 'S/D',
+    single_aromatic: 'S/A',
+    double_aromatic: 'D/A',
+};
 // Qt's bond_group is a single radio group covering single/double/triple plus
 // the stereo variants — picking any one button replaces the previously-active
 // bond mode. We mirror that here: BondMode collapses "what order is the next
@@ -2208,6 +2226,9 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // Selected wildcard for the atom-query (A▾) draw tool. Mirrors Qt's
     // ModularToolButton remembering the last-picked atom-query variant.
     const [atomQueryMode, setAtomQueryMode] = useState<AtomQueryChoice>('A');
+    // Selected query for the bond-query (B▾) draw tool.
+    const [bondQueryMode, setBondQueryMode] =
+        useState<BondQueryChoice>('aromatic');
     // Each stereo / bond-order slot is a Qt ModularToolButton: clicking
     // applies its currently-selected mode; picking from its popup swaps the
     // mode AND applies it. The selected mode determines both icon and
@@ -3143,6 +3164,34 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
 
+            if (tool === 'bond-query') {
+                // Bond-query (B▾) tool — two-click bonding like the bond tool,
+                // but the completed bond is stamped with the armed query (or
+                // aromatic). Clicking two atoms creates/converts in one step.
+                if (hit < 0) {
+                    setStatus('click an atom to start a query bond');
+                    setPendingBondAtom(null);
+                    return;
+                }
+                if (pendingRef.current === null) {
+                    setPendingBondAtom(hit);
+                    setStatus(`query bond start: atom #${hit}`);
+                    return;
+                }
+                if (pendingRef.current === hit) {
+                    setPendingBondAtom(null);
+                    setStatus('query bond cancelled');
+                    return;
+                }
+                const cppLabel = BOND_QUERY_CPP_LABEL[bondQueryMode];
+                model.addQueryBondBetweenAtoms(
+                    pendingRef.current, hit, cppLabel);
+                setStatus(
+                    `query bond: ${pendingRef.current}-${hit} (${cppLabel})`);
+                setPendingBondAtom(null);
+                return;
+            }
+
             // Bond tool.
             if (hit < 0) {
                 setStatus('click on an atom to start a bond');
@@ -3179,7 +3228,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 setPendingBondAtom(null);
             }
         },
-        [tool, element, ring, reactionMode, atomQueryMode],
+        [tool, element, ring, reactionMode, atomQueryMode, bondQueryMode],
     );
 
     const onCanvasMove = useCallback(
@@ -5171,13 +5220,22 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             }}
                         />
                         <IconButtonWithPopup<BondQueryChoice>
-                            icon='bond_aromatic'
+                            icon={bondQueryMode === 'aromatic'
+                                ? 'bond_aromatic' : ''}
+                            label={BOND_QUERY_FACE[bondQueryMode]}
                             testid='bond-query'
                             title='Bond Query – press & hold to change'
-                            active={false}
+                            active={tool === 'bond-query'}
                             choices={BOND_QUERY_CHOICES}
-                            onClick={() => comingSoon('Bond query (needs RDKit query bond support)')}
-                            onPick={(q) => comingSoon(`Bond query "${q.replace('_', '/')}" (needs RDKit query bond support)`)}
+                            onClick={() => {
+                                setTool('bond-query');
+                                setPendingBondAtom(null);
+                            }}
+                            onPick={(q) => {
+                                setBondQueryMode(q);
+                                setTool('bond-query');
+                                setPendingBondAtom(null);
+                            }}
                         />
                         <IconButton icon='bond_chain' testid='atom-chain'
                             title='Atom Chain'

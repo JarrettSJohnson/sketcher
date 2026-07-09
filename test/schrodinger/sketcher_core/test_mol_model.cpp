@@ -704,6 +704,68 @@ BOOST_AUTO_TEST_CASE(testMutateBondToQueryNoOpsOnBadLabelOrMissingBond)
     BOOST_CHECK(!m.mol().getBondBetweenAtoms(0, 1)->hasQuery());
 }
 
+BOOST_AUTO_TEST_CASE(testAddQueryBondBetweenAtomsCreatesQueryBondInOneStep)
+{
+    // Two unbonded atoms; the bond-query tool completes a gesture between them
+    // → a query bond appears in one undo step.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    const auto count_before = stack.count();
+    m.addQueryBondBetweenAtoms(0, 1, "S/A");
+    const auto* qb = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_REQUIRE(qb != nullptr);
+    BOOST_CHECK(qb->hasQuery());
+    std::string label;
+    BOOST_CHECK(qb->getPropIfPresent(BOND_QUERY_LABEL_PROP, label));
+    BOOST_CHECK_EQUAL(label, "S/A");
+    BOOST_CHECK_EQUAL(stack.count(), count_before + 1);
+    stack.undo();
+    BOOST_CHECK(m.mol().getBondBetweenAtoms(0, 1) == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(testAddQueryBondBetweenAtomsAromaticUsesRealType)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addQueryBondBetweenAtoms(0, 1, "aromatic");
+    const auto* b = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_REQUIRE(b != nullptr);
+    BOOST_CHECK(!b->hasQuery()); // aromatic is a real type, not a query
+    BOOST_CHECK_EQUAL(b->getBondType(), RDKit::Bond::AROMATIC);
+}
+
+BOOST_AUTO_TEST_CASE(testAddQueryBondBetweenAtomsConvertsExistingBond)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    const auto bonds_before = m.mol().getNumBonds();
+    m.addQueryBondBetweenAtoms(0, 1, "Any");
+    // No duplicate bond — the existing one is converted.
+    BOOST_CHECK_EQUAL(m.mol().getNumBonds(), bonds_before);
+    BOOST_CHECK(m.mol().getBondBetweenAtoms(0, 1)->hasQuery());
+}
+
+BOOST_AUTO_TEST_CASE(testAddQueryBondBetweenAtomsNoOpsOnBadInput)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1.5, 0);
+    const auto count_before = stack.count();
+    m.addQueryBondBetweenAtoms(0, 0, "Any");  // same atom
+    m.addQueryBondBetweenAtoms(0, 9, "Any");  // out of range
+    m.addQueryBondBetweenAtoms(0, 1, "ZZ");   // bad label
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    BOOST_CHECK(m.mol().getBondBetweenAtoms(0, 1) == nullptr);
+}
+
 BOOST_AUTO_TEST_CASE(testMutateSelectedBondsToQueryAppliesAsOneUndoStep)
 {
     UndoStack stack;

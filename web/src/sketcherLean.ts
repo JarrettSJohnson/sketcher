@@ -123,6 +123,12 @@ export interface MolModelInstance {
      * selected or the label is unrecognized.
      */
     mutateSelectedBondsToQuery(label: string): void;
+    /**
+     * Ensure a bond between the two atoms then stamp it with the query (or
+     * "aromatic") — one undo step. Backs the bond-query (B▾) draw tool's
+     * two-atom gesture. `label` is "aromatic" or "Any"/"S/D"/"S/A"/"D/A".
+     */
+    addQueryBondBetweenAtoms(begin: number, end: number, label: string): void;
     addRing(size: number, cx: number, cy: number, aromatic: boolean): void;
     /**
      * Add a single-bonded carbon chain at the given 2D positions. Pass

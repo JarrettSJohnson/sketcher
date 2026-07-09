@@ -243,6 +243,16 @@ class MolModel : public UndoableModel
     void mutateSelectedBondsToQuery(const std::string& label);
 
     /**
+     * Ensure a bond exists between `begin_idx` and `end_idx`, then stamp it
+     * with the given query (or aromatic type) as one undo step. Backs the
+     * bond-query (B▾) draw tool completing a two-atom gesture. `label` is
+     * "aromatic" (a real BondType) or one of "Any"/"S/D"/"S/A"/"D/A". No-op
+     * for the same atom, out-of-range indices, or an unrecognized label.
+     */
+    void addQueryBondBetweenAtoms(unsigned int begin_idx, unsigned int end_idx,
+                                  const std::string& label);
+
+    /**
      * Insert a planar regular polygon of `size` carbon atoms centered at
      * (cx, cy). When `aromatic` is true (and `size` is even), bonds alternate
      * SINGLE / DOUBLE in Kekulé form so benzene renders the classic three-

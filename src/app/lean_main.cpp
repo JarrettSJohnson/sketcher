@@ -662,6 +662,11 @@ class MolModelJS
     {
         m_model.mutateSelectedBondsToQuery(label);
     }
+    void addQueryBondBetweenAtoms(unsigned int begin, unsigned int end,
+                                  const std::string& label)
+    {
+        m_model.addQueryBondBetweenAtoms(begin, end, label);
+    }
     void addRing(unsigned int size, double cx, double cy, bool aromatic)
     {
         m_model.addRing(size, cx, cy, aromatic);
@@ -981,6 +986,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("mutateBondToQuery", &MolModelJS::mutateBondToQuery)
         .function("mutateSelectedBondsToQuery",
                   &MolModelJS::mutateSelectedBondsToQuery)
+        .function("addQueryBondBetweenAtoms",
+                  &MolModelJS::addQueryBondBetweenAtoms)
         .function("addRing", &MolModelJS::addRing)
         .function("addAtomChain", &MolModelJS::addAtomChain)
         .function("rotateSelectedAtoms", &MolModelJS::rotateSelectedAtoms)

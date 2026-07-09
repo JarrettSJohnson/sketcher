@@ -562,6 +562,37 @@ void MolModel::mutateBondToQuery(unsigned int begin_idx, unsigned int end_idx,
     doCommand(std::move(redo), std::move(undo), "Set bond query");
 }
 
+void MolModel::addQueryBondBetweenAtoms(unsigned int begin_idx,
+                                        unsigned int end_idx,
+                                        const std::string& label)
+{
+    // Backs the bond-query (B▾) draw tool completing a two-atom gesture:
+    // ensure a bond exists between the two atoms, then stamp it with the chosen
+    // query (or aromatic type) — all in one undo step. `label` is "aromatic"
+    // (a real bond type) or one of the query labels handled by make_bond_query.
+    if (begin_idx == end_idx || begin_idx >= m_mol.getNumAtoms() ||
+        end_idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    const bool is_aromatic = (label == "aromatic");
+    if (!is_aromatic) {
+        auto probe = make_bond_query(label);
+        if (probe.query == nullptr) {
+            return; // unrecognized label — no-op
+        }
+        delete probe.query;
+    }
+    auto macro = createUndoMacro("Add query bond");
+    if (m_mol.getBondBetweenAtoms(begin_idx, end_idx) == nullptr) {
+        addBond(begin_idx, end_idx, RDKit::Bond::BondType::SINGLE);
+    }
+    if (is_aromatic) {
+        setBondTypeUndoable(begin_idx, end_idx, RDKit::Bond::BondType::AROMATIC);
+    } else {
+        mutateBondToQuery(begin_idx, end_idx, label);
+    }
+}
+
 void MolModel::mutateSelectedBondsToQuery(const std::string& label)
 {
     if (m_selected_bonds.empty()) {

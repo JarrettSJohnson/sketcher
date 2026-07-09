@@ -2753,9 +2753,10 @@ test.describe('React Sketcher', () => {
         page,
     }) => {
         // Several Qt-side widgets are present for visual fidelity but the
-        // underlying action isn't wired yet. (atom-query was wired in Batch 50
-        // — clicking it now arms the query-atom draw tool, so only bond-query
-        // remains a stub here; it still needs RDKit query bonds.)
+        // underlying action isn't wired yet. (atom-query was wired in Batch 50,
+        // bond-query in Batch 52 — both are draw tools now, so the atomistic
+        // toolbar has no coming-soon stubs left; the remaining stubs are the
+        // monomeric-page tiles.)
         // Import/Export open real menus (Batch 12); Save Image opens its
         // own dialog (Batch 13); Settings is the Configure View dropdown
         // (Batch 14); Help is its own dropdown (Batch 15) — all covered by
@@ -2768,13 +2769,6 @@ test.describe('React Sketcher', () => {
         // Batch 31 — its inner AMINO/NUCLEIC buttons are the new stubs;
         // all covered by their own tests.)
         const status = page.getByTestId('sketcher-status');
-        // Atomistic-page stubs.
-        for (const [testid, pattern] of [
-            ['bond-query', /Bond query/],
-        ]) {
-            await page.getByTestId(testid).click();
-            await expect(status).toContainText(pattern);
-        }
         // Flip to monomeric page; every amino-acid tile is a stub for now
         // (MolModel doesn't speak monomer yet). Probe one to confirm the
         // routing — full grid is covered by the dedicated batch-32 test.
@@ -3612,13 +3606,12 @@ test.describe('React Sketcher', () => {
         await expect(page.getByTestId('atom-query-popup')).toHaveCount(0);
     });
 
-    test('bond-query popup: long-press exposes aromatic/Any/S-D/S-A/D-A; pick still surfaces coming-soon (query bonds need RDKit support)', async ({
+    test('bond-query popup: long-press exposes aromatic/Any/S-D/S-A/D-A; pick arms the bond-query draw tool', async ({
         page,
     }) => {
         // Qt BondQueryPopup renders 5 choices in a horizontal row: aromatic
-        // (icon) / Any / S/D / S/A / D/A. RDKit::QueryBond isn't in the lean
-        // MolModel yet, so picks should route through comingSoon().
-        const status = page.getByTestId('sketcher-status');
+        // (icon) / Any / S/D / S/A / D/A. Picking one arms the bond-query (B▾)
+        // draw tool (Batch 52 wired the query-bond primitive behind it).
         const bondQueryBtn = page.getByTestId('bond-query');
 
         await bondQueryBtn.hover();
@@ -3633,10 +3626,10 @@ test.describe('React Sketcher', () => {
         }
         await page.mouse.up();
 
-        // Pick "S/D" — status surfaces the pick + coming-soon-ness.
+        // Pick "S/D" — the button face updates and the tool is now armed
+        // (drawing exercised in the bond-query tool tests below).
         await page.getByTestId('bond-query-popup-single-double').click();
-        await expect(status).toContainText(/single\/double/i);
-        await expect(status).toContainText(/query bond/i);
+        await expect(page.getByTestId('bond-query')).toContainText('S/D');
         await expect(page.getByTestId('bond-query-popup')).toHaveCount(0);
     });
 
@@ -5819,6 +5812,70 @@ M  END`;
         await page.getByTestId('undo').click();
         rd = await snapshot(page);
         expect(rd.bonds.every((b) => b.qlabel === undefined)).toBe(true);
+    });
+
+    // -------- Batch 52: bond-query (B▾) draw tool --------
+    // Qt's DrawBondSceneTool armed with a query. Two-click bonding creates a
+    // query bond; the aromatic mode makes a real aromatic bond. Backed by
+    // addQueryBondBetweenAtoms.
+    test('bond-query tool: two clicks create the armed query bond', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Two loose carbons.
+        await canvas.click({ position: { x: 140, y: 180 } });
+        await canvas.click({ position: { x: 300, y: 180 } });
+        // Arm bond-query and pick S/D from the popup.
+        await page.getByTestId('bond-query').hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await page.getByTestId('bond-query-popup-single-double').click();
+        // Two-click the atoms.
+        await canvas.click({ position: { x: 140, y: 180 } });
+        await canvas.click({ position: { x: 300, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.bonds[0].qlabel).toBe('S/D');
+        expect(rd.bonds[0].o).toBe(1);
+    });
+
+    test('bond-query tool: aromatic mode makes a real aromatic bond (no query label)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 140, y: 180 } });
+        await canvas.click({ position: { x: 300, y: 180 } });
+        // Default bond-query mode is aromatic; a plain click arms the tool.
+        await page.getByTestId('bond-query').click();
+        await canvas.click({ position: { x: 140, y: 180 } });
+        await canvas.click({ position: { x: 300, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.bonds[0].arom).toBe(true);
+        expect(rd.bonds[0].qlabel).toBeUndefined();
+    });
+
+    test('bond-query tool: completing on an existing bond converts it (no duplicate)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 140, y: 180 } });
+        await canvas.click({ position: { x: 300, y: 180 } });
+        await page.getByTestId('bond-single').click();
+        await canvas.click({ position: { x: 140, y: 180 } });
+        await canvas.click({ position: { x: 300, y: 180 } });
+        let rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(1);
+        // Arm bond-query (Any) and re-draw over the same two atoms.
+        await page.getByTestId('bond-query').hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await page.getByTestId('bond-query-popup-any').click();
+        await canvas.click({ position: { x: 140, y: 180 } });
+        await canvas.click({ position: { x: 300, y: 180 } });
+        rd = await snapshot(page);
+        expect(rd.bonds).toHaveLength(1); // converted, not duplicated
+        expect(rd.bonds[0].qlabel).toBe('Any');
     });
 
 });
