@@ -2627,3 +2627,40 @@ BOOST_AUTO_TEST_CASE(testToFormatStringExportsNucleotideAsHelm)
     BOOST_CHECK(helm.find("RNA1{") != std::string::npos);
     BOOST_CHECK(helm.find("R(U)P") != std::string::npos);
 }
+
+BOOST_AUTO_TEST_CASE(testLoadFromTextImportsHelmWithGeneratedCoords)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    // HELM is in the AUTO_DETECT list; loadFromText parses it and generates a
+    // bead layout (a HELM parse carries no conformer on its own).
+    m.loadFromText("PEPTIDE1{A.G.C}$$$$V2.0");
+    BOOST_CHECK(schrodinger::rdkit_extensions::isMonomeric(m.mol()));
+    BOOST_REQUIRE_EQUAL(m.mol().getNumAtoms(), 3u);
+    BOOST_REQUIRE_EQUAL(m.mol().getNumBonds(), 2u);
+    // A conformer was generated so the render bridge can read positions.
+    BOOST_REQUIRE_EQUAL(m.mol().getNumConformers(), 1u);
+    std::vector<std::string> labels;
+    for (const auto* atom : m.mol().atoms()) {
+        std::string label;
+        atom->getPropIfPresent(ATOM_LABEL, label);
+        labels.push_back(label);
+    }
+    std::sort(labels.begin(), labels.end());
+    BOOST_CHECK((labels == std::vector<std::string>{"A", "C", "G"}));
+}
+
+BOOST_AUTO_TEST_CASE(testHelmExportImportRoundTrips)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addMonomer("A", 0, 0.0, 0.0);
+    m.addBoundMonomer("G", 0, 1.5, 0.0, /*bound_to_idx=*/0);
+    const auto helm = m.toFormatString("helm", /*selectionOnly=*/false);
+    BOOST_REQUIRE(!helm.empty());
+    // Reloading the exported HELM reproduces the same monomer count.
+    m.loadFromText(helm);
+    BOOST_CHECK(schrodinger::rdkit_extensions::isMonomeric(m.mol()));
+    BOOST_CHECK_EQUAL(m.mol().getNumAtoms(), 2u);
+    BOOST_CHECK_EQUAL(m.mol().getNumBonds(), 1u);
+}

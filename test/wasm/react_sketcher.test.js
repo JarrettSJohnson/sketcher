@@ -6246,4 +6246,38 @@ M  END`;
             .toContainText(/copied FASTA:/);
     });
 
+    // -------- Batch 59: HELM import (paste in text) --------
+    // HELM is in the AUTO_DETECT list; loadFromText parses it and generates a
+    // bead layout (a HELM parse carries no conformer). Backed by
+    // compute_monomer_mol_coords in MolModel::loadFromText.
+    test('Import: pasting a HELM string loads a monomeric peptide chain', async ({
+        page,
+    }) => {
+        await loadText(page, 'PEPTIDE1{A.G.C}$$$$V2.0');
+        const rd = await snapshot(page);
+        expect(rd.monomeric).toBe(true);
+        expect(rd.atoms).toHaveLength(3);
+        // Residues render as peptide beads with their 1-letter labels.
+        expect(rd.atoms.every((a) => a.mon === 'pep')).toBe(true);
+        expect(rd.atoms.map((a) => a.lbl).sort()).toEqual(['A', 'C', 'G']);
+        // Two backbone connections chain the three residues.
+        expect(rd.bonds).toHaveLength(2);
+        // Coords were generated (beads aren't all stacked at the origin).
+        const xs = rd.atoms.map((a) => a.x);
+        expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(0);
+    });
+
+    test('Import: pasting a HELM RNA strand loads 3-node nucleotides', async ({
+        page,
+    }) => {
+        await loadText(page, 'RNA1{R(A)P.R(U)P}$$$$V2.0');
+        const rd = await snapshot(page);
+        expect(rd.monomeric).toBe(true);
+        // Two nucleotides = 6 monomers (sugar/base/phosphate each).
+        expect(rd.atoms).toHaveLength(6);
+        const kinds = rd.atoms.map((a) => a.mon).sort();
+        expect(kinds).toEqual(
+            ['base', 'base', 'phos', 'phos', 'sugar', 'sugar']);
+    });
+
 });

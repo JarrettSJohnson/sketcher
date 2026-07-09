@@ -37,6 +37,7 @@
 #include "schrodinger/rdkit_extensions/coord_utils.h"
 #include "schrodinger/rdkit_extensions/dummy_atom.h"
 #include "schrodinger/rdkit_extensions/helm.h"
+#include "schrodinger/rdkit_extensions/helm/monomer_coordgen.h"
 #include "schrodinger/rdkit_extensions/molops.h"
 #include "schrodinger/rdkit_extensions/monomer_mol.h"
 #include "schrodinger/rdkit_extensions/rgroup.h"
@@ -1514,6 +1515,18 @@ void MolModel::loadFromText(const std::string& text)
     // is std::invalid_argument when nothing parses.
     auto parsed = rdkit_extensions::to_rdkit(text);
     RDKit::RWMol new_mol(*parsed);
+    // Monomeric parses (HELM / FASTA — both are in the AUTO_DETECT list) come
+    // back as coarse-grained mols with no 2D conformer. Generate a bead layout
+    // (Qt runs the same monomer coordgen on import) so the render bridge, which
+    // reads getConformer(), has positions. Skip the atomistic prepare — its
+    // sanitize/stereo passes don't apply to monomer dummies.
+    if (rdkit_extensions::isMonomeric(new_mol)) {
+        if (new_mol.getNumConformers() == 0) {
+            rdkit_extensions::compute_monomer_mol_coords(new_mol);
+        }
+        doMutation([this, new_mol] { m_mol = new_mol; }, "Load");
+        return;
+    }
     // MOL blocks carry their own conformer; we only need to compute when one
     // isn't present (typical for SMILES/InChI inputs).
     prepare_loaded_mol(new_mol, /*needs_2d_coords=*/false);

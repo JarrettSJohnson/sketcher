@@ -372,6 +372,10 @@ if(EMSCRIPTEN)
     -sMODULARIZE=1
     -sEXPORTED_RUNTIME_METHODS=[getExceptionMessage]
     -sALLOW_MEMORY_GROWTH=1
+    # Emscripten's default 64KB stack overflows inside RDKit's monomer
+    # coordinate generation (HELM/FASTA import → compute_monomer_mol_coords),
+    # surfacing as "memory access out of bounds". Give the app a roomy stack.
+    -sSTACK_SIZE=5MB
     -sENVIRONMENT=web
     -lembind
     -fexceptions
