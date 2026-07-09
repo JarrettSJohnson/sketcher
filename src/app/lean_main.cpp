@@ -31,6 +31,8 @@
 #include "schrodinger/rdkit_extensions/coord_utils.h"
 #include "schrodinger/rdkit_extensions/file_format.h"
 #include "schrodinger/rdkit_extensions/helm.h"
+#include "schrodinger/rdkit_extensions/monomer_database.h"
+#include "schrodinger/rdkit_extensions/monomer_mol.h"
 #include "schrodinger/rdkit_extensions/rgroup.h"
 #include "schrodinger/rdkit_extensions/stereochemistry.h"
 
@@ -524,6 +526,91 @@ std::string render_description_from_text(const std::string& text,
 std::string render_description_from_smiles(const std::string& smiles)
 {
     return render_description_from_text(smiles, Format::SMILES);
+}
+
+// Minimal JSON string escaping (backslash + double-quote + control chars) for
+// the small monomer names/symbols we emit below.
+std::string json_escape(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size() + 2);
+    for (char c : s) {
+        switch (c) {
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                out += c;
+        }
+    }
+    return out;
+}
+
+/**
+ * Return the monomer database's non-natural analogs grouped by their natural
+ * analog, as a JSON object: { "A": [ {"s":"<symbol>","n":"<name>"}, ... ], ... }
+ * `chain_type` is a rdkit_extensions::ChainType int (0=PEPTIDE, 1=RNA). The
+ * natural residue itself (symbol == natural analog) is filtered out so each list
+ * holds only variants (e.g. D-alanine, N-methyl-alanine for "A"). Backs the
+ * per-residue analog popups (Qt MonomerToolWidget, SKETCH-2482). Returns "{}"
+ * on any failure so the JS side degrades to plain tiles.
+ */
+std::string monomer_analogs_json(int chain_type)
+{
+    try {
+        const auto ct =
+            static_cast<schrodinger::rdkit_extensions::ChainType>(chain_type);
+        auto& db = schrodinger::rdkit_extensions::MonomerDatabase::instance();
+        const auto by_analog = db.getMonomersByNaturalAnalog(ct);
+        std::ostringstream os;
+        os << '{';
+        bool first_group = true;
+        for (const auto& [analog, monomers] : by_analog) {
+            // Collect variant (symbol, name) pairs, skipping the natural residue.
+            std::vector<std::pair<std::string, std::string>> variants;
+            for (const auto& m : monomers) {
+                if (!m.symbol.has_value()) {
+                    continue;
+                }
+                const std::string sym = *m.symbol;
+                if (sym == analog) {
+                    continue; // the natural residue itself
+                }
+                variants.emplace_back(sym, m.name.value_or(sym));
+            }
+            if (variants.empty()) {
+                continue;
+            }
+            if (!first_group) {
+                os << ',';
+            }
+            first_group = false;
+            os << '"' << json_escape(analog) << "\":[";
+            bool first_v = true;
+            for (const auto& [sym, name] : variants) {
+                if (!first_v) {
+                    os << ',';
+                }
+                first_v = false;
+                os << "{\"s\":\"" << json_escape(sym) << "\",\"n\":\""
+                   << json_escape(name) << "\"}";
+            }
+            os << ']';
+        }
+        os << '}';
+        return os.str();
+    } catch (...) {
+        return "{}";
+    }
 }
 
 // -- Phase 0 spike consumer ------------------------------------------------
@@ -1068,6 +1155,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
                          &render_description_from_smiles);
     emscripten::function("render_description_from_text",
                          &render_description_from_text);
+    emscripten::function("monomer_analogs_json", &monomer_analogs_json);
 
     // Phase 0 spike: Qt-free undoable model
     emscripten::class_<Counter>("Counter")

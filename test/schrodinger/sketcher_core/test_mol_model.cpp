@@ -8,6 +8,7 @@
 #define BOOST_TEST_MODULE sketcher_core_mol_model
 
 #include <cmath>
+#include <iostream>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
@@ -19,6 +20,8 @@
 #include <GraphMol/MonomerInfo.h>
 
 #include "schrodinger/rdkit_extensions/helm.h"
+#include "schrodinger/rdkit_extensions/monomer_database.h"
+#include "schrodinger/rdkit_extensions/monomer_mol.h"
 #include "schrodinger/sketcher_core/mol_model.h"
 #include "schrodinger/sketcher_core/undo_stack.h"
 
@@ -2626,6 +2629,33 @@ BOOST_AUTO_TEST_CASE(testToFormatStringExportsNucleotideAsHelm)
     const auto helm = m.toFormatString("helm", /*selectionOnly=*/false);
     BOOST_CHECK(helm.find("RNA1{") != std::string::npos);
     BOOST_CHECK(helm.find("R(U)P") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(testMonomerDatabaseProvidesPeptideAnalogs)
+{
+    // The baked-in monomer DB groups non-natural analogs by their natural
+    // residue — this backs the per-residue analog popups (SKETCH-2482). Verify
+    // Alanine's group carries the D- and N-methyl variants.
+    auto& db = schrodinger::rdkit_extensions::MonomerDatabase::instance();
+    const auto by_analog = db.getMonomersByNaturalAnalog(
+        schrodinger::rdkit_extensions::ChainType::PEPTIDE);
+    BOOST_REQUIRE(by_analog.count("A") == 1u);
+    std::vector<std::string> a_syms;
+    for (const auto& m : by_analog.at("A")) {
+        if (m.symbol) {
+            a_syms.push_back(*m.symbol);
+        }
+    }
+    BOOST_CHECK(std::find(a_syms.begin(), a_syms.end(), "dA") != a_syms.end());
+    BOOST_CHECK(std::find(a_syms.begin(), a_syms.end(), "meA") != a_syms.end());
+    // A placed analog is just a monomer with that symbol — round-trips through
+    // addMonomer + HELM export.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addMonomer("dA", 0, 0.0, 0.0);
+    std::string label;
+    BOOST_CHECK(m.mol().getAtomWithIdx(0)->getPropIfPresent(ATOM_LABEL, label));
+    BOOST_CHECK_EQUAL(label, "dA");
 }
 
 BOOST_AUTO_TEST_CASE(testLoadFromTextImportsHelmWithGeneratedCoords)

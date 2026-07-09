@@ -6320,4 +6320,36 @@ M  END`;
         expect(rd.atoms.find((a) => a.mon === 'sugar').lbl).toBe('dR');
     });
 
+    // -------- Batch 61: amino-acid analog popups (SKETCH-2482) --------
+    // Each AA tile press&holds to a popup of its non-natural analogs (D- and
+    // N-methyl variants etc.) pulled from the monomer DB
+    // (Module.monomer_analogs_json). Picking one arms that variant symbol.
+    test('monomer tool: an amino-acid tile exposes its D-/N-methyl analogs', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click(); // arm A (active)
+        await page.getByTestId('monomer-aa-ala').click(); // reopen popup
+        const popup = page.getByTestId('monomer-aa-ala-popup');
+        await expect(popup).toBeVisible();
+        // Alanine's analogs include D-alanine (dA) and N-methyl-alanine (meA).
+        await expect(page.getByTestId('monomer-aa-analog-dA')).toBeVisible();
+        await expect(page.getByTestId('monomer-aa-analog-meA')).toBeVisible();
+    });
+
+    test('monomer tool: picking an analog places that variant monomer', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        await page.getByTestId('monomer-aa-analog-dA').click(); // D-alanine
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 160, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].lbl).toBe('dA');
+        expect(rd.atoms[0].mon).toBe('pep');
+    });
+
 });

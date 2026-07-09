@@ -337,6 +337,12 @@ interface MolModelConstructor {
 
 export interface SketcherLeanModule {
     render_description_from_smiles(smiles: string): string;
+    /**
+     * Non-natural monomer analogs grouped by natural residue, as a JSON string:
+     * `{ "A": [{"s":"dA","n":"D-Alanine"}, ...], ... }`. `chainType` is a
+     * ChainType int (0=PEPTIDE, 1=RNA). Returns "{}" on failure.
+     */
+    monomer_analogs_json(chainType: number): string;
     MolModel: MolModelConstructor;
     mol_model_subscribe(m: MolModelInstance, cb: () => void): number;
     mol_model_unsubscribe(handle: number): void;

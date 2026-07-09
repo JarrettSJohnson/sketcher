@@ -2,6 +2,7 @@ import {
     useCallback,
     useEffect,
     useLayoutEffect,
+    useMemo,
     useReducer,
     useRef,
     useState,
@@ -2538,6 +2539,18 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // active tile (e.g. "rna"/"dna") for the pressed-state highlight.
     const [nucleotideSpec, setNucleotideSpec] = useState<
         { id: string; sugar: string; base: string; phos: string } | null>(null);
+    // Non-natural peptide analogs grouped by natural residue (D-/N-methyl
+    // variants etc.) from the monomer DB, fetched once. Drives the per-residue
+    // analog popups on the amino-acid tiles (Qt MonomerToolWidget, SKETCH-2482).
+    const peptideAnalogs = useMemo<Record<string, { s: string; n: string }[]>>(
+        () => {
+            try {
+                return JSON.parse(Module.monomer_analogs_json(0));
+            } catch {
+                return {};
+            }
+        }, [],
+    );
     // Each stereo / bond-order slot is a Qt ModularToolButton: clicking
     // applies its currently-selected mode; picking from its popup swaps the
     // mode AND applies it. The selected mode determines both icon and
@@ -5781,25 +5794,62 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         {monomerSubMode === 'amino' && (
                         <div style={styles.elementGrid}
                             data-testid='amino-acid-grid'>
-                            {AMINO_ACIDS.map(([id, sym, full]) => (
-                                <LetterButton key={id}
-                                    label={sym}
-                                    testid={`monomer-aa-${id}`}
-                                    title={`Draw ${full} (${sym})`}
-                                    active={tool === 'monomer'
-                                        && !nucleotideSpec
-                                        && monomerChainType === 0
-                                        && monomerResName === sym}
-                                    onClick={() => {
-                                        setMonomerResName(sym);
-                                        setMonomerChainType(0); // PEPTIDE
-                                        setNucleotideSpec(null);
-                                        setTool('monomer');
-                                        setPendingBondAtom(null);
-                                        setStatus(`monomer: ${full} (${sym}) `
-                                            + '— click canvas to place');
-                                    }} />
-                            ))}
+                            {AMINO_ACIDS.map(([id, sym, full]) => {
+                                const variants = peptideAnalogs[sym] ?? [];
+                                const armMonomer = (
+                                    s: string, label: string,
+                                ): void => {
+                                    setMonomerResName(s);
+                                    setMonomerChainType(0); // PEPTIDE
+                                    setNucleotideSpec(null);
+                                    setTool('monomer');
+                                    setPendingBondAtom(null);
+                                    setStatus(`monomer: ${label} `
+                                        + '— click canvas to place');
+                                };
+                                // A tile is "armed" when its natural residue OR
+                                // any of its variants is the active monomer.
+                                const armed = tool === 'monomer'
+                                    && !nucleotideSpec
+                                    && monomerChainType === 0
+                                    && (monomerResName === sym
+                                        || variants.some(
+                                            (v) => v.s === monomerResName));
+                                if (variants.length === 0) {
+                                    return (
+                                        <LetterButton key={id}
+                                            label={sym}
+                                            testid={`monomer-aa-${id}`}
+                                            title={`Draw ${full} (${sym})`}
+                                            active={armed}
+                                            onClick={() =>
+                                                armMonomer(sym,
+                                                    `${full} (${sym})`)} />
+                                    );
+                                }
+                                // Press & hold surfaces the D-/N-methyl (etc.)
+                                // analogs from the monomer DB (SKETCH-2482).
+                                const choices = variants.map((v) => ({
+                                    value: v.s,
+                                    label: v.s,
+                                    title: `${v.n} (${v.s})`,
+                                    testid: `monomer-aa-analog-${v.s}`,
+                                }));
+                                return (
+                                    <IconButtonWithPopup<string>
+                                        key={id}
+                                        label={sym}
+                                        testid={`monomer-aa-${id}`}
+                                        title={`Draw ${full} (${sym}) `
+                                            + '— press & hold for analogs'}
+                                        active={armed}
+                                        choices={choices}
+                                        onClick={() =>
+                                            armMonomer(sym, `${full} (${sym})`)}
+                                        onPick={(s) => armMonomer(s, s)}
+                                    />
+                                );
+                            })}
                         </div>
                         )}
                         {monomerSubMode === 'nucleic' && (
