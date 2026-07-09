@@ -300,6 +300,33 @@ class MolModel : public UndoableModel
     void addAtomChain(const std::vector<double>& xs,
                       const std::vector<double>& ys, int bound_to_atom_idx);
 
+    // -- Monomers (coarse-grained peptide/nucleic-acid mode) ---------------
+    // A monomer is a single dummy RDKit::Atom carrying residue metadata (via
+    // rdkit_extensions::makeMonomer), a connection is a single RDKit::Bond, and
+    // the mol is flagged `HELM_MODEL` (isMonomeric). Mirrors Qt's MolModel
+    // monomer methods (model/mol_model.cpp), which sit on the same rdkit_
+    // extensions coarse-grain API. Atomistic and monomeric content don't mix.
+
+    /**
+     * Place a new free-standing monomer at (x, y), starting a fresh chain.
+     * `res_name` is the monomer symbol (e.g. "A" for Alanine); `chain_type` is
+     * an int matching rdkit_extensions::ChainType (0=PEPTIDE, 1=RNA, 2=DNA,
+     * 3=CHEM). Flags the mol monomeric. Backs the monomer draw tool clicking
+     * empty canvas (Qt's MolModel::addMonomer). Single undo step.
+     */
+    void addMonomer(const std::string& res_name, int chain_type, double x,
+                    double y);
+
+    /**
+     * Add a monomer at (x, y) bonded to the existing monomer `bound_to_idx`
+     * with a backbone (R2-R1) connection, continuing that monomer's chain
+     * (residue number = neighbor + 1). Backs the monomer draw tool clicking on
+     * an existing monomer (Qt's MolModel::addBoundMonomer). Single undo step.
+     * No-op when `bound_to_idx` is out of range.
+     */
+    void addBoundMonomer(const std::string& res_name, int chain_type, double x,
+                         double y, unsigned int bound_to_idx);
+
     /**
      * Add `delta` to the formal charge of every selected atom in a single
      * undoable command. Preserves the selection (charge edits don't reindex).

@@ -20,7 +20,7 @@ import type { MolModelInstance, SketcherLeanModule } from './sketcherLean';
 
 type Tool = 'atom' | 'bond' | 'select' | 'move-rotate' | 'erase' | 'ring'
     | 'atom-chain' | 'rgroup' | 'attachment-point' | 'reaction'
-    | 'atom-query' | 'bond-query';
+    | 'atom-query' | 'bond-query' | 'monomer';
 
 // Reaction sub-mode — Qt: EnumerationTool::{RXN_ARROW, RXN_PLUS} in the
 // reaction popup. The two map 1:1 to MolModel::addRxnArrow / addRxnPlus.
@@ -155,6 +155,12 @@ interface AtomDesc {
     // of the atom label. Qt: AtomItem::updateChargeAndRadicalLabel
     // (molviewer/atom_item.cpp:539-575).
     nrad?: number;
+    // Monomer bead type ("pep" for peptide; NA types follow later). Present
+    // only for coarse-grained monomer atoms; drives shape + color-class lookup.
+    mon?: string;
+    // Monomer display label (1-letter residue symbol, e.g. "A"). Present with
+    // `mon`. Rendered centered inside the bead.
+    lbl?: string;
 }
 interface BondDesc {
     a: number;
@@ -175,6 +181,10 @@ interface BondDesc {
     // MolModel::setBondTopologyForBond. Drawn as Qt's ⭔ / "Not ⭔" annotation
     // alongside any query label. Absent when unconstrained.
     topo?: string;
+    // Monomer connection flag. Present for coarse-grained monomer connections;
+    // the renderer draws a plain connector between beads instead of a chemical
+    // bond (a monomer bond is DATIVE and would otherwise render as an arrow).
+    mon?: boolean;
 }
 
 // Combined bond annotation text (query label + ring-topology symbol), drawn
@@ -186,6 +196,57 @@ function bondAnnotationText(b: BondDesc): string {
     if (b.topo === 'ring') parts.push('⭔');
     else if (b.topo === 'notring') parts.push('Not ⭔');
     return parts.join(' ');
+}
+
+// Amino-acid fill colors by 1-letter residue, ported verbatim from Qt's
+// AMINO_ACID_COLOR_BY_RES_NAME + MONOMER_COLOR_MAP
+// (molviewer/monomer_constants.h). Color is per chemistry class.
+const AMINO_ACID_COLOR_BY_RES_NAME: Record<string, string> = {
+    A: '#B4FCB4', B: '#F3E0F9', C: '#FCFCB6', D: '#FCB7D6', E: '#FCB7D6',
+    F: '#FBC6B7', G: '#B4FCB4', H: '#B8D1FC', I: '#B4FCB4', K: '#B8D1FC',
+    L: '#B4FCB4', M: '#B4FCB4', N: '#B9FCFD', P: '#DADADA', Q: '#B9FCFD',
+    R: '#B8D1FC', S: '#B9FCFD', T: '#B9FCFD', V: '#B4FCB4', W: '#FBC6B7',
+    Y: '#FBC6B7', Z: '#F3E0F9',
+};
+// Chrome colors (monomer_constants.h): unnatural fill, borders, label text.
+const MONOMER_DEFAULT_FILL = '#F0E7E1';   // OTHER
+const MONOMER_BORDER_STD = '#444444';     // GRAY4 — standard residues
+const MONOMER_BORDER_NONSTD = '#330000';  // DARK_RED — D-/non-standard
+const MONOMER_LABEL_COLOR = '#333333';    // GRAY3
+const MONOMER_CONNECTOR_COLOR = '#444444'; // GRAY4 — peptide linear connector
+// Center-to-center spacing for a linear monomer chain, in model units. Matches
+// Qt's MONOMER_BOND_LENGTH (rdkit_extensions/helm/monomer_coordgen.cpp = 1.5).
+const MONOMER_BOND_LENGTH = 1.5;
+
+// Fill for a peptide monomer bead — matches Qt's get_color_for_monomer:
+// direct residue-class lookup, else the unnatural-AA default. (DB natural-
+// analog fallback for dA/meA lands with nucleic acids + analogs.)
+function monomerFill(lbl: string | undefined): string {
+    if (lbl && AMINO_ACID_COLOR_BY_RES_NAME[lbl]) {
+        return AMINO_ACID_COLOR_BY_RES_NAME[lbl];
+    }
+    return MONOMER_DEFAULT_FILL;
+}
+// Border: standard residues get a gray outline; D-/non-standard get dark red
+// (Qt amino_acid_item.cpp::get_amino_acid_type).
+function monomerBorder(lbl: string | undefined): string {
+    return (lbl && AMINO_ACID_COLOR_BY_RES_NAME[lbl])
+        ? MONOMER_BORDER_STD
+        : MONOMER_BORDER_NONSTD;
+}
+// Trace a rounded-rect subpath (canvas). Used for peptide monomer beads.
+function roundedRectPath(
+    ctx: CanvasRenderingContext2D,
+    x: number, y: number, w: number, h: number, r: number,
+): void {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
 }
 
 // Mirror RDKit::Bond::BondDir for the values we render.
@@ -267,6 +328,9 @@ interface RenderDesc {
     atoms: AtomDesc[];
     bonds: BondDesc[];
     nonMol?: NonMolDesc[];
+    // True when the mol is coarse-grained monomeric — the whole scene renders
+    // as labeled beads + connectors instead of atoms/bonds.
+    monomeric?: boolean;
 }
 
 const CANVAS_W = 540;
@@ -1000,6 +1064,60 @@ function pointInDragShape(d: DragShape, px: number, py: number): boolean {
     return pointInPolygon(px, py, d.lassoPoints ?? []);
 }
 
+// Render a coarse-grained monomeric scene: connectors under labeled beads.
+// Mirrors Qt's AbstractMonomerItem (rounded-rect peptide bead, residue-class
+// fill, 1-letter label) + MonomerConnectorItem. Bead/font/connector sizes
+// scale with the view so zoom stays consistent with atomistic spacing.
+function drawMonomers(
+    ctx: CanvasRenderingContext2D,
+    canvas: HTMLCanvasElement,
+    view: View,
+    rd: RenderDesc,
+): void {
+    const byIdx = new Map<number, AtomDesc>();
+    for (const a of rd.atoms) byIdx.set(a.i, a);
+    // Connectors first so beads paint on top.
+    ctx.strokeStyle = MONOMER_CONNECTOR_COLOR;
+    ctx.lineWidth = Math.max(2, view.scale * 0.1);
+    for (const b of rd.bonds) {
+        const a1 = byIdx.get(b.a);
+        const a2 = byIdx.get(b.b);
+        if (!a1 || !a2) continue;
+        const p1 = pixelFromModel(canvas, view, a1.x, a1.y);
+        const p2 = pixelFromModel(canvas, view, a2.x, a2.y);
+        ctx.beginPath();
+        ctx.moveTo(p1.px, p1.py);
+        ctx.lineTo(p2.px, p2.py);
+        ctx.stroke();
+    }
+    // Beads. Qt bead ≈ 0.75 model units; keep that proportion off view.scale.
+    const half = Math.max(10, view.scale * 0.37);
+    const radius = Math.max(3, view.scale * 0.1);
+    const font = `${Math.max(9, Math.round(view.scale * 0.42))}px sans-serif`;
+    for (const a of rd.atoms) {
+        const p = pixelFromModel(canvas, view, a.x, a.y);
+        // Selection halo (sage ring), matching the atomistic selection look.
+        if (a.sel) {
+            roundedRectPath(ctx, p.px - half - 3, p.py - half - 3,
+                (half + 3) * 2, (half + 3) * 2, radius + 2);
+            ctx.fillStyle = ACCENT_GREEN;
+            ctx.fill();
+        }
+        roundedRectPath(ctx, p.px - half, p.py - half, half * 2, half * 2,
+            radius);
+        ctx.fillStyle = monomerFill(a.lbl);
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = monomerBorder(a.lbl);
+        ctx.stroke();
+        ctx.fillStyle = MONOMER_LABEL_COLOR;
+        ctx.font = font;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText((a.lbl ?? '').slice(0, 6), p.px, p.py);
+    }
+}
+
 function drawSketch(
     canvas: HTMLCanvasElement,
     view: View,
@@ -1020,6 +1138,13 @@ function drawSketch(
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     // Original sketcher has no grid — a clean working-area canvas reads
     // without competing for attention with the structure.
+
+    // Coarse-grained monomeric scene: render labeled beads + connectors and
+    // skip the atomistic passes entirely (Qt AbstractMonomerItem/Connector).
+    if (rd.monomeric) {
+        drawMonomers(ctx, canvas, view, rd);
+        return;
+    }
 
     const BOND_STROKE = displayOptions.bondLineWidth;
     const BOND_DOUBLE_OFFSET = 4.5;
@@ -1712,6 +1837,46 @@ function buildSketchSvg(
     const px = (x: number, y: number): { px: number; py: number } =>
         pixelFromModel(measureCanvas, view, x, y);
 
+    // Coarse-grained monomeric scene — beads + connectors, mirroring
+    // drawMonomers. Emitted instead of the atomistic atom/bond passes.
+    if (rd.monomeric) {
+        const byIdx = new Map<number, AtomDesc>();
+        for (const a of rd.atoms) byIdx.set(a.i, a);
+        const cw = Math.max(2, view.scale * 0.1);
+        for (const b of rd.bonds) {
+            const a1 = byIdx.get(b.a);
+            const a2 = byIdx.get(b.b);
+            if (!a1 || !a2) continue;
+            const p1 = px(a1.x, a1.y);
+            const p2 = px(a2.x, a2.y);
+            parts.push(
+                `<line x1='${f(p1.px)}' y1='${f(p1.py)}' ` +
+                `x2='${f(p2.px)}' y2='${f(p2.py)}' ` +
+                `stroke='${MONOMER_CONNECTOR_COLOR}' stroke-width='${f(cw)}'/>`,
+            );
+        }
+        const half = Math.max(10, view.scale * 0.37);
+        const radius = Math.max(3, view.scale * 0.1);
+        const fs = Math.max(9, Math.round(view.scale * 0.42));
+        for (const a of rd.atoms) {
+            const p = px(a.x, a.y);
+            parts.push(
+                `<rect x='${f(p.px - half)}' y='${f(p.py - half)}' ` +
+                `width='${f(half * 2)}' height='${f(half * 2)}' ` +
+                `rx='${f(radius)}' ry='${f(radius)}' ` +
+                `fill='${monomerFill(a.lbl)}' ` +
+                `stroke='${monomerBorder(a.lbl)}' stroke-width='2'/>`,
+                `<text x='${f(p.px)}' y='${f(p.py)}' ` +
+                `fill='${MONOMER_LABEL_COLOR}' font-family='sans-serif' ` +
+                `font-size='${fs}' text-anchor='middle' ` +
+                `dominant-baseline='central'>${esc((a.lbl ?? '').slice(0, 6))}` +
+                `</text>`,
+            );
+        }
+        parts.push('</svg>');
+        return parts.join('');
+    }
+
     let centroidX = 0;
     let centroidY = 0;
     for (const a of rd.atoms) {
@@ -2247,6 +2412,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // Selected query for the bond-query (B▾) draw tool.
     const [bondQueryMode, setBondQueryMode] =
         useState<BondQueryChoice>('aromatic');
+    // Armed monomer for the monomer draw tool: the 1-letter residue symbol and
+    // its ChainType int (0=PEPTIDE). Set when an amino-acid tile is clicked.
+    const [monomerResName, setMonomerResName] = useState<string>('A');
+    const [monomerChainType, setMonomerChainType] = useState<number>(0);
     // Each stereo / bond-order slot is a Qt ModularToolButton: clicking
     // applies its currently-selected mode; picking from its popup swaps the
     // mode AND applies it. The selected mode determines both icon and
@@ -3084,6 +3253,27 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
 
+            if (tool === 'monomer') {
+                // Monomer draw tool — Qt's DrawMonomerSceneTool. Clicking an
+                // existing monomer bead chains a new monomer off it (backbone
+                // connection, placed one MONOMER_BOND_LENGTH to the right);
+                // clicking empty canvas drops a free monomer.
+                if (hit >= 0) {
+                    const bead = rd.atoms.find((a) => a.i === hit);
+                    if (bead) {
+                        model.addBoundMonomer(monomerResName, monomerChainType,
+                            bead.x + MONOMER_BOND_LENGTH, bead.y, hit);
+                        setStatus(`chained ${monomerResName} to monomer #${hit}`);
+                        return;
+                    }
+                }
+                const { x, y } = modelFromPixel(canvas, viewRef.current, px, py);
+                model.addMonomer(monomerResName, monomerChainType, x, y);
+                setStatus(`placed ${monomerResName} at `
+                    + `(${x.toFixed(2)}, ${y.toFixed(2)})`);
+                return;
+            }
+
             if (tool === 'ring') {
                 // Click anywhere — empty canvas or atom — drops a fresh ring
                 // centered on the click. Mirrors the Qt sketcher's ring-tool
@@ -3257,7 +3447,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 setPendingBondAtom(null);
             }
         },
-        [tool, element, ring, reactionMode, atomQueryMode, bondQueryMode],
+        [tool, element, ring, reactionMode, atomQueryMode, bondQueryMode,
+         monomerResName, monomerChainType],
     );
 
     const onCanvasMove = useCallback(
@@ -5410,8 +5601,17 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                     label={sym}
                                     testid={`monomer-aa-${id}`}
                                     title={`Draw ${full} (${sym})`}
-                                    onClick={() => comingSoon(
-                                        `Draw ${full} monomer`)} />
+                                    active={tool === 'monomer'
+                                        && monomerChainType === 0
+                                        && monomerResName === sym}
+                                    onClick={() => {
+                                        setMonomerResName(sym);
+                                        setMonomerChainType(0); // PEPTIDE
+                                        setTool('monomer');
+                                        setPendingBondAtom(null);
+                                        setStatus(`monomer: ${full} (${sym}) `
+                                            + '— click canvas to place');
+                                    }} />
                             ))}
                         </div>
                         )}

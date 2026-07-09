@@ -28,6 +28,7 @@
 #include "schrodinger/rdkit_extensions/convert.h"
 #include "schrodinger/rdkit_extensions/coord_utils.h"
 #include "schrodinger/rdkit_extensions/file_format.h"
+#include "schrodinger/rdkit_extensions/helm.h"
 #include "schrodinger/rdkit_extensions/rgroup.h"
 #include "schrodinger/rdkit_extensions/stereochemistry.h"
 
@@ -205,14 +206,25 @@ std::string mol_to_render_description(
         }
         return R"({"atoms":[],"bonds":[],)" + non_mol_fragment + "}";
     }
-    apply_stereo_annotations(mol);
+    // Monomeric (coarse-grained) mols render as labeled beads + connectors, not
+    // as atoms/bonds. Detect once; skip atomistic stereo perception (it doesn't
+    // apply to monomer dummies) and emit a top-level flag so the JS renderer
+    // switches to monomer drawing for the whole scene.
+    const bool is_monomeric = schrodinger::rdkit_extensions::isMonomeric(mol);
+    if (!is_monomeric) {
+        apply_stereo_annotations(mol);
+    }
     const auto& conf = mol.getConformer();
 
     std::ostringstream os;
     os.precision(4);
     os << std::fixed;
 
-    os << "{\"atoms\":[";
+    os << "{";
+    if (is_monomeric) {
+        os << "\"monomeric\":true,";
+    }
+    os << "\"atoms\":[";
     for (unsigned int i = 0; i < mol.getNumAtoms(); ++i) {
         const auto* atom = mol.getAtomWithIdx(i);
         const auto& p = conf.getAtomPos(i);
@@ -221,6 +233,19 @@ std::string mol_to_render_description(
         }
         os << "{\"i\":" << i << ",\"el\":\"" << atom->getSymbol()
            << "\",\"x\":" << p.x << ",\"y\":" << p.y;
+        if (is_monomeric) {
+            // Monomer bead: emit its type (MVP: all peptide) and 1-letter
+            // display label (the residue symbol, from the atomLabel prop).
+            // Skip all atomistic chemistry annotations — they don't apply.
+            std::string label;
+            atom->getPropIfPresent(ATOM_LABEL, label);
+            os << ",\"mon\":\"pep\",\"lbl\":\"" << label << "\"";
+            if (model != nullptr && model->isAtomSelected(i)) {
+                os << ",\"sel\":true";
+            }
+            os << '}';
+            continue;
+        }
         // Chemistry annotations — emitted only when non-default to keep the
         // JSON shape minimal for the common case (neutral C/H/O/N skeletons).
         const int charge = atom->getFormalCharge();
@@ -356,6 +381,17 @@ std::string mol_to_render_description(
         os << "{\"a\":" << b->getBeginAtomIdx()
            << ",\"b\":" << b->getEndAtomIdx()
            << ",\"o\":" << b->getBondTypeAsDouble();
+        if (is_monomeric) {
+            // Monomer connection: the JS renderer draws a plain connector
+            // between the two beads. Skip all atomistic bond annotations
+            // (a monomer bond is DATIVE, which would otherwise emit "bt").
+            os << ",\"mon\":true";
+            if (model != nullptr && model->isBondSelected(i)) {
+                os << ",\"sel\":true";
+            }
+            os << '}';
+            continue;
+        }
         const auto bond_type = b->getBondType();
         // `o` is the bond ORDER as a double (SINGLE=1, DOUBLE=2, ...), which
         // can't distinguish a coordinate (DATIVE→1.0) or zero-order (ZERO→
@@ -699,6 +735,16 @@ class MolModelJS
         }
         m_model.addAtomChain(cxs, cys, bound_to_atom_idx);
     }
+    void addMonomer(const std::string& res_name, int chain_type, double x,
+                    double y)
+    {
+        m_model.addMonomer(res_name, chain_type, x, y);
+    }
+    void addBoundMonomer(const std::string& res_name, int chain_type, double x,
+                         double y, unsigned int bound_to_idx)
+    {
+        m_model.addBoundMonomer(res_name, chain_type, x, y, bound_to_idx);
+    }
     void rotateSelectedAtoms(double angle_rad)
     {
         m_model.rotateSelectedAtoms(angle_rad);
@@ -1010,6 +1056,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
                   &MolModelJS::setSelectedBondsTopology)
         .function("addRing", &MolModelJS::addRing)
         .function("addAtomChain", &MolModelJS::addAtomChain)
+        .function("addMonomer", &MolModelJS::addMonomer)
+        .function("addBoundMonomer", &MolModelJS::addBoundMonomer)
         .function("rotateSelectedAtoms", &MolModelJS::rotateSelectedAtoms)
         .function("flipSelectedAtoms", &MolModelJS::flipSelectedAtoms)
         .function("flipSubstituentAroundBond",

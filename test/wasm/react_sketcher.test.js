@@ -5997,4 +5997,71 @@ M  END`;
         expect(rd.bonds[0].bt).toBe(21); // ZERO
     });
 
+    // -------- Batch 55: monomer placement + chaining (peptides) --------
+    // Qt's DrawMonomerSceneTool armed with an amino acid. Clicking an AA tile
+    // arms the tool; empty-canvas clicks place a free monomer bead, clicks on
+    // an existing bead chain a new monomer. Backed by addMonomer /
+    // addBoundMonomer; the render description flags the scene monomeric with
+    // per-atom mon/lbl.
+    test('monomer tool: clicking Alanine then the canvas places a peptide bead', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        // The tile arms the monomer tool (active highlight).
+        await expect(page.getByTestId('monomer-aa-ala'))
+            .toHaveAttribute('aria-pressed', 'true');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 160, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.monomeric).toBe(true);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].lbl).toBe('A');
+        expect(rd.atoms[0].mon).toBe('pep');
+    });
+
+    test('monomer tool: clicking an existing bead chains a second monomer with a connection', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 160, y: 180 } });
+        // Arm Glycine, then click the existing Alanine bead to chain it.
+        await page.getByTestId('monomer-aa-gly').click();
+        await canvas.click({ position: { x: 160, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.bonds[0].mon).toBe(true);
+        expect(rd.atoms.map((a) => a.lbl).sort()).toEqual(['A', 'G']);
+    });
+
+    test('monomer tool: undo removes a placed monomer', async ({ page }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 160, y: 180 } });
+        expect((await snapshot(page)).atoms).toHaveLength(1);
+        await page.getByTestId('undo').click();
+        expect((await snapshot(page)).atoms).toHaveLength(0);
+    });
+
+    test('monomer tool: a single undo removes both the chained monomer and its connection', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 160, y: 180 } });
+        await page.getByTestId('monomer-aa-gly').click();
+        await canvas.click({ position: { x: 160, y: 180 } });
+        expect((await snapshot(page)).atoms).toHaveLength(2);
+        await page.getByTestId('undo').click();
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.bonds).toHaveLength(0);
+        expect(rd.atoms[0].lbl).toBe('A');
+    });
+
 });

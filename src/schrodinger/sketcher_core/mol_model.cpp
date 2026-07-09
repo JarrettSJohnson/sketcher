@@ -26,6 +26,7 @@
 #include <GraphMol/Chirality.h>
 #include <GraphMol/Conformer.h>
 #include <GraphMol/MolOps.h>
+#include <GraphMol/MonomerInfo.h>
 #include <GraphMol/QueryAtom.h>
 #include <GraphMol/QueryBond.h>
 #include <GraphMol/QueryOps.h>
@@ -34,7 +35,9 @@
 #include "schrodinger/rdkit_extensions/convert.h"
 #include "schrodinger/rdkit_extensions/coord_utils.h"
 #include "schrodinger/rdkit_extensions/dummy_atom.h"
+#include "schrodinger/rdkit_extensions/helm.h"
 #include "schrodinger/rdkit_extensions/molops.h"
+#include "schrodinger/rdkit_extensions/monomer_mol.h"
 #include "schrodinger/rdkit_extensions/rgroup.h"
 #include "schrodinger/sketcher_core/undo_stack.h"
 
@@ -796,6 +799,101 @@ void MolModel::addAtomChain(const std::vector<double>& xs,
             }
         },
         "Add chain");
+}
+
+namespace
+{
+// Read a monomer atom's chain id / residue number from its AtomPDBResidueInfo.
+// Returns {"", 0} if the atom carries no monomer info (defensive).
+std::pair<std::string, int> monomer_chain_and_resnum(const RDKit::Atom* atom)
+{
+    const auto* info = atom->getMonomerInfo();
+    const auto* res = dynamic_cast<const RDKit::AtomPDBResidueInfo*>(info);
+    if (res == nullptr) {
+        return {"", 0};
+    }
+    return {res->getChainId(), res->getResidueNumber()};
+}
+
+// Next free chain id for a fresh polymer of the given type, e.g. "PEPTIDE1".
+// Scans existing monomer atoms so sequential free monomers get PEPTIDE1,
+// PEPTIDE2, ... (matches HELM polymer naming).
+std::string next_chain_id(const RDKit::RWMol& mol,
+                          rdkit_extensions::ChainType chain_type)
+{
+    const std::string prefix = rdkit_extensions::toString(chain_type);
+    std::unordered_set<std::string> seen;
+    for (const auto* atom : mol.atoms()) {
+        const auto [chain, resnum] = monomer_chain_and_resnum(atom);
+        if (!chain.empty()) {
+            seen.insert(chain);
+        }
+    }
+    unsigned int n = 1;
+    while (seen.count(prefix + std::to_string(n)) != 0) {
+        ++n;
+    }
+    return prefix + std::to_string(n);
+}
+
+// Place a monomer atom's 2D coordinate, growing the conformer if needed (the
+// conformer doesn't auto-grow on addAtom — same idiom as MolModel::addAtom).
+void set_monomer_pos(RDKit::RWMol& mol, unsigned int idx, double x, double y)
+{
+    auto& conf = mol.getConformer();
+    auto& positions = conf.getPositions();
+    if (positions.size() < mol.getNumAtoms()) {
+        positions.resize(mol.getNumAtoms(), RDGeom::Point3D(0, 0, 0));
+    }
+    conf.setAtomPos(idx, RDGeom::Point3D(x, y, 0));
+}
+} // namespace
+
+void MolModel::addMonomer(const std::string& res_name, int chain_type,
+                          double x, double y)
+{
+    const auto ct = static_cast<rdkit_extensions::ChainType>(chain_type);
+    doMutation(
+        [this, res_name, ct, x, y] {
+            // Flag the mol monomeric so isMonomeric() / the render bridge treat
+            // every atom as a coarse-grained monomer. HELM_MODEL is a global
+            // constant declared in rdkit_extensions/helm.h.
+            m_mol.setProp(::HELM_MODEL, true);
+            const auto chain_id = next_chain_id(m_mol, ct);
+            const auto idx = rdkit_extensions::addMonomer(
+                m_mol, res_name, /*residue_number=*/1, chain_id,
+                rdkit_extensions::MonomerType::REGULAR);
+            set_monomer_pos(m_mol, static_cast<unsigned int>(idx), x, y);
+        },
+        "Add monomer");
+}
+
+void MolModel::addBoundMonomer(const std::string& res_name, int chain_type,
+                               double x, double y, unsigned int bound_to_idx)
+{
+    if (bound_to_idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    // chain_type is unused for a bound monomer (it inherits the neighbor's
+    // chain), but kept in the signature for symmetry with addMonomer.
+    (void) chain_type;
+    doMutation(
+        [this, res_name, x, y, bound_to_idx] {
+            m_mol.setProp(::HELM_MODEL, true);
+            // Continue the neighbor's chain: same chain id, next residue number.
+            const auto [chain_id, resnum] =
+                monomer_chain_and_resnum(m_mol.getAtomWithIdx(bound_to_idx));
+            const auto idx = rdkit_extensions::addMonomer(
+                m_mol, res_name, resnum + 1, chain_id,
+                rdkit_extensions::MonomerType::REGULAR);
+            set_monomer_pos(m_mol, static_cast<unsigned int>(idx), x, y);
+            // Backbone R2-R1 connection from the existing monomer to the new
+            // one (dative, direction-encoded — see addConnection).
+            rdkit_extensions::addConnection(
+                m_mol, bound_to_idx, idx,
+                rdkit_extensions::ConnectionType::FORWARD);
+        },
+        "Add bound monomer");
 }
 
 void MolModel::adjustChargeOnSelectedAtoms(int delta)

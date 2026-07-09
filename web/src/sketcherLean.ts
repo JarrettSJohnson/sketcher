@@ -148,6 +148,20 @@ export interface MolModelInstance {
      */
     addAtomChain(xs: number[], ys: number[], boundToAtomIdx: number): void;
     /**
+     * Place a free-standing monomer (coarse-grained peptide/nucleic bead) at
+     * (x, y), starting a fresh chain. `resName` is the monomer symbol (e.g.
+     * "A" for Alanine); `chainType` is a ChainType int (0=PEPTIDE, 1=RNA,
+     * 2=DNA, 3=CHEM). Flags the mol monomeric. Single undo step.
+     */
+    addMonomer(resName: string, chainType: number, x: number, y: number): void;
+    /**
+     * Add a monomer at (x, y) bonded to the existing monomer `boundToIdx` with
+     * a backbone (R2-R1) connection, continuing that chain. Single undo step.
+     * No-op when `boundToIdx` is out of range.
+     */
+    addBoundMonomer(resName: string, chainType: number, x: number, y: number,
+                    boundToIdx: number): void;
+    /**
      * Rotate selected atoms (or all atoms when nothing is selected) by
      * angle_rad counterclockwise around their centroid. Single undo step.
      */

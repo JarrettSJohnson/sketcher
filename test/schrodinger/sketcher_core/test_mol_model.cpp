@@ -16,7 +16,9 @@
 
 #include <GraphMol/Atom.h>
 #include <GraphMol/Bond.h>
+#include <GraphMol/MonomerInfo.h>
 
+#include "schrodinger/rdkit_extensions/helm.h"
 #include "schrodinger/sketcher_core/mol_model.h"
 #include "schrodinger/sketcher_core/undo_stack.h"
 
@@ -2343,4 +2345,90 @@ BOOST_AUTO_TEST_CASE(testAddRxnArrowAndPlusAreUndoable)
     BOOST_CHECK(m.hasRxnArrow());
     stack.redo();
     BOOST_CHECK_EQUAL(m.rxnPluses().size(), 1u);
+}
+
+// -------- Monomers (coarse-grained peptide mode) --------
+
+BOOST_AUTO_TEST_CASE(testAddMonomerCreatesMonomericMolWithLabelAndCoords)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    // chain_type 0 = PEPTIDE. "A" = Alanine.
+    m.addMonomer("A", 0, 2.0, 3.0);
+    BOOST_CHECK(schrodinger::rdkit_extensions::isMonomeric(m.mol()));
+    BOOST_REQUIRE_EQUAL(m.mol().getNumAtoms(), 1u);
+    const auto* atom = m.mol().getAtomWithIdx(0);
+    // Monomer atoms are dummies carrying an atomLabel = the residue symbol.
+    BOOST_CHECK_EQUAL(atom->getAtomicNum(), 0);
+    std::string label;
+    BOOST_CHECK(atom->getPropIfPresent(ATOM_LABEL, label));
+    BOOST_CHECK_EQUAL(label, "A");
+    BOOST_CHECK_CLOSE(m.mol().getConformer().getAtomPos(0).x, 2.0, 1e-6);
+    BOOST_CHECK_CLOSE(m.mol().getConformer().getAtomPos(0).y, 3.0, 1e-6);
+    // Undo removes the monomer (and the monomeric flag).
+    stack.undo();
+    BOOST_CHECK(m.isEmpty());
+}
+
+BOOST_AUTO_TEST_CASE(testAddBoundMonomerChainsWithConnectionInOneUndoStep)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addMonomer("A", 0, 0.0, 0.0);
+    const auto count_after_first = stack.count();
+    m.addBoundMonomer("G", 0, 1.5, 0.0, /*bound_to_idx=*/0);
+    // addBoundMonomer is a single undoable command (one snapshot mutation).
+    BOOST_CHECK_EQUAL(stack.count(), count_after_first + 1);
+    BOOST_REQUIRE_EQUAL(m.mol().getNumAtoms(), 2u);
+    BOOST_REQUIRE_EQUAL(m.mol().getNumBonds(), 1u);
+    // The two monomers share a chain; the new one is residue 2.
+    const auto* a0 = m.mol().getAtomWithIdx(0);
+    const auto* a1 = m.mol().getAtomWithIdx(1);
+    const auto* r0 =
+        dynamic_cast<const RDKit::AtomPDBResidueInfo*>(a0->getMonomerInfo());
+    const auto* r1 =
+        dynamic_cast<const RDKit::AtomPDBResidueInfo*>(a1->getMonomerInfo());
+    BOOST_REQUIRE(r0 != nullptr);
+    BOOST_REQUIRE(r1 != nullptr);
+    BOOST_CHECK_EQUAL(r0->getChainId(), r1->getChainId());
+    BOOST_CHECK_EQUAL(r1->getResidueNumber(), r0->getResidueNumber() + 1);
+    std::string g_label;
+    BOOST_CHECK(a1->getPropIfPresent(ATOM_LABEL, g_label));
+    BOOST_CHECK_EQUAL(g_label, "G");
+    // The connection carries the backbone linkage prop.
+    const auto* bond = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_REQUIRE(bond != nullptr);
+    std::string linkage;
+    BOOST_CHECK(bond->getPropIfPresent(LINKAGE, linkage));
+    BOOST_CHECK_EQUAL(linkage, BACKBONE_LINKAGE);
+    // A single undo removes both the new monomer and the connection.
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getNumAtoms(), 1u);
+    BOOST_CHECK_EQUAL(m.mol().getNumBonds(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(testAddMonomerAssignsSequentialChainsForFreeMonomers)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addMonomer("A", 0, 0.0, 0.0);
+    m.addMonomer("G", 0, 3.0, 0.0); // separate free monomer → new chain
+    const auto* r0 = dynamic_cast<const RDKit::AtomPDBResidueInfo*>(
+        m.mol().getAtomWithIdx(0)->getMonomerInfo());
+    const auto* r1 = dynamic_cast<const RDKit::AtomPDBResidueInfo*>(
+        m.mol().getAtomWithIdx(1)->getMonomerInfo());
+    BOOST_REQUIRE(r0 != nullptr && r1 != nullptr);
+    BOOST_CHECK_EQUAL(r0->getChainId(), "PEPTIDE1");
+    BOOST_CHECK_EQUAL(r1->getChainId(), "PEPTIDE2");
+}
+
+BOOST_AUTO_TEST_CASE(testAddBoundMonomerNoOpOnBadIndex)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addMonomer("A", 0, 0.0, 0.0);
+    const auto count_before = stack.count();
+    m.addBoundMonomer("G", 0, 1.5, 0.0, /*bound_to_idx=*/9);
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    BOOST_CHECK_EQUAL(m.mol().getNumAtoms(), 1u);
 }
