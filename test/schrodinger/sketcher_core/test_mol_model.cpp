@@ -812,6 +812,78 @@ BOOST_AUTO_TEST_CASE(testRotateAndFlipAreNoOpsOnEmptyMol)
     BOOST_CHECK_EQUAL(stack.count(), count_before);
 }
 
+BOOST_AUTO_TEST_CASE(testFlipSubstituentReflectsSmallerSideAcrossBondAxis)
+{
+    // Linear chain C0-C1-C2-C3 laid out on the x-axis with a kink: put C3
+    // above the axis so flipping the smaller substituent across the C1-C2
+    // bond (the x-axis here) mirrors its y-coordinate. Removing C1-C2 splits
+    // the mol into {C0,C1} and {C2,C3}; both are size 2, so substituents[0]
+    // (the {C0,C1} side, whichever getMolFrags returns first) is picked as
+    // "smaller" on the tie. To make the smaller side deterministic, hang an
+    // extra atom off C2 so the C2 side is strictly larger and the C0/C1 side
+    // is flipped.
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 1);   // 0 — above axis, on the smaller side
+    m.addAtom("C", 1, 0);   // 1 — on the C1-C2 bond axis
+    m.addAtom("C", 2, 0);   // 2 — on the axis
+    m.addAtom("C", 3, 0);   // 3 — larger side
+    m.addAtom("C", 4, 0);   // 4 — larger side
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    m.addBond(1, 2, RDKit::Bond::SINGLE); // the bond we flip across
+    m.addBond(2, 3, RDKit::Bond::SINGLE);
+    m.addBond(3, 4, RDKit::Bond::SINGLE);
+
+    // Bond axis is the line through C1(1,0) and C2(2,0) — the x-axis. The
+    // smaller substituent {C0,C1} reflects across it: C0 y: 1 → -1, C1 stays
+    // on the axis.
+    m.flipSubstituentAroundBond(1, 2);
+    const auto& conf = m.mol().getConformer();
+    BOOST_CHECK_CLOSE(conf.getAtomPos(0).y, -1.0, 1e-6);
+    BOOST_CHECK_CLOSE(conf.getAtomPos(0).x, 0.0, 1e-6);
+    // C1 sits on the axis, unchanged.
+    BOOST_CHECK_CLOSE(conf.getAtomPos(1).y, 0.0, 1e-6);
+    // Larger side untouched.
+    BOOST_CHECK_CLOSE(conf.getAtomPos(3).x, 3.0, 1e-6);
+    BOOST_CHECK_CLOSE(conf.getAtomPos(4).x, 4.0, 1e-6);
+
+    // Single undo restores C0 above the axis.
+    stack.undo();
+    BOOST_CHECK_CLOSE(m.mol().getConformer().getAtomPos(0).y, 1.0, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(testFlipSubstituentNoOpOnRingBond)
+{
+    // A 3-membered ring: removing any bond leaves the mol connected, so
+    // there aren't two substituents and the flip is a no-op (nothing pushed
+    // onto the undo stack).
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    m.addAtom("C", 0.5, 1);
+    m.addBond(0, 1, RDKit::Bond::SINGLE);
+    m.addBond(1, 2, RDKit::Bond::SINGLE);
+    m.addBond(2, 0, RDKit::Bond::SINGLE);
+    const auto count_before = stack.count();
+    m.flipSubstituentAroundBond(0, 1);
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    // Coordinates unchanged.
+    BOOST_CHECK_CLOSE(m.mol().getConformer().getAtomPos(2).y, 1.0, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(testFlipSubstituentNoOpWhenBondMissing)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0, 0);
+    m.addAtom("C", 1, 0);
+    // No bond between 0 and 1.
+    const auto count_before = stack.count();
+    m.flipSubstituentAroundBond(0, 1);
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+}
+
 BOOST_AUTO_TEST_CASE(testPropertyCacheRefreshExposesImplicitHs)
 {
     // doMutation refreshes the implicit-valence cache so callers can read

@@ -1217,6 +1217,83 @@ void MolModel::flipSelectedAtoms(bool horizontal)
     moveAtomsUndoable(indices, from_xs, from_ys, to_xs, to_ys);
 }
 
+void MolModel::flipSubstituentAroundBond(unsigned int begin_idx,
+                                         unsigned int end_idx)
+{
+    if (begin_idx >= m_mol.getNumAtoms() || end_idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    const auto* bond = m_mol.getBondBetweenAtoms(begin_idx, end_idx);
+    if (bond == nullptr) {
+        return;
+    }
+    // Find the smaller substituent by removing the bond and splitting the mol
+    // into fragments — same approach as Qt's get_smaller_substituent_atoms
+    // (rdkit/subset.cpp:89). A ring bond leaves the mol connected (one frag),
+    // so we bail out and the caller keeps the action disabled for ring bonds.
+    RDKit::RWMol cut(m_mol);
+    cut.removeBond(begin_idx, end_idx);
+    std::vector<int> frag_map;
+    std::vector<std::vector<int>> frag_atoms;
+    RDKit::MolOps::getMolFrags(cut, /*sanitizeFrags=*/false, &frag_map,
+                               &frag_atoms, /*copyConformers=*/false);
+    std::vector<std::vector<int>> substituents;
+    for (const auto& frag : frag_atoms) {
+        const bool has_begin =
+            std::find(frag.begin(), frag.end(),
+                      static_cast<int>(begin_idx)) != frag.end();
+        const bool has_end = std::find(frag.begin(), frag.end(),
+                                       static_cast<int>(end_idx)) != frag.end();
+        if (has_begin || has_end) {
+            substituents.push_back(frag);
+        }
+    }
+    if (substituents.size() != 2) {
+        // Ring bond (or otherwise not two clean substituents) — no-op.
+        return;
+    }
+    const auto& smaller = substituents[0].size() > substituents[1].size()
+                              ? substituents[1]
+                              : substituents[0];
+
+    // Reflect each atom of the smaller substituent across the line through the
+    // two bond endpoints. Mirrors Qt's flip_point (molviewer/coord_utils.cpp:
+    // 165) — a reflection across the start→end axis. Formula:
+    //   P' = A + 2*(v·d)d - v,  v = P - A,  d = unit(B - A)
+    const auto& conf = m_mol.getConformer();
+    const auto& a = conf.getAtomPos(begin_idx);
+    const auto& b = conf.getAtomPos(end_idx);
+    const double dx = b.x - a.x;
+    const double dy = b.y - a.y;
+    const double dlen = std::hypot(dx, dy);
+    if (dlen == 0.0) {
+        return;
+    }
+    const double ux = dx / dlen;
+    const double uy = dy / dlen;
+
+    std::vector<unsigned int> indices;
+    std::vector<double> from_xs;
+    std::vector<double> from_ys;
+    std::vector<double> to_xs;
+    std::vector<double> to_ys;
+    indices.reserve(smaller.size());
+    for (int raw_idx : smaller) {
+        const auto idx = static_cast<unsigned int>(raw_idx);
+        const auto& p = conf.getAtomPos(idx);
+        const double vx = p.x - a.x;
+        const double vy = p.y - a.y;
+        const double dot = vx * ux + vy * uy;
+        indices.push_back(idx);
+        from_xs.push_back(p.x);
+        from_ys.push_back(p.y);
+        to_xs.push_back(a.x + 2.0 * dot * ux - vx);
+        to_ys.push_back(a.y + 2.0 * dot * uy - vy);
+    }
+    // moveAtomsUndoable wraps the batch in a single undo macro.
+    moveAtomsUndoable(indices, from_xs, from_ys, to_xs, to_ys);
+}
+
 std::string MolModel::toMolBlock(bool v3000) const
 {
     if (m_mol.getNumAtoms() == 0) {

@@ -438,6 +438,19 @@ class MolModel : public UndoableModel
      */
     void flipSelectedAtoms(bool horizontal);
 
+    /**
+     * Flip the smaller of the two substituents hanging off `begin_idx`—
+     * `end_idx` across the bond axis. Mirrors Qt's `MolModel::flipSubstituent`
+     * (model/mol_model.cpp:1793) — backs the bond context menu's "Flip
+     * Substituent". Removes the bond internally to split the mol into two
+     * fragments, reflects the smaller fragment's atoms across the line through
+     * the two bond endpoints, and applies it as one undo step. No-op when the
+     * bond is missing or lies in a ring (removal wouldn't disconnect the mol,
+     * so there aren't two clean substituents).
+     */
+    void flipSubstituentAroundBond(unsigned int begin_idx,
+                                   unsigned int end_idx);
+
     // -- Selection --------------------------------------------------------
     // Selection is transient UI state, not undoable. Any mutation that may
     // reindex atoms/bonds clears it (matching the simplest correct policy

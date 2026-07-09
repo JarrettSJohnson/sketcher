@@ -4252,7 +4252,9 @@ test.describe('React Sketcher', () => {
         const before = await snapshot(page);
         await canvas.click({ position: { x: 190, y: 180 }, button: 'right' });
         await expect(page.getByTestId('bond-context-menu')).toBeVisible();
-        await page.getByTestId('sketcher-status').click();
+        // Dismiss via a viewport-corner click that's clearly outside the menu.
+        // (The status bar can sit under the now-taller bond menu.)
+        await page.mouse.click(2, 2);
         await expect(page.getByTestId('bond-context-menu')).toHaveCount(0);
         const after = await snapshot(page);
         expect(after.bonds).toHaveLength(before.bonds.length);
@@ -5432,6 +5434,114 @@ test.describe('React Sketcher', () => {
         await page.getByTestId('sel-ctx-bond-zero').click();
         const rd = await snapshot(page);
         expect(rd.bonds.every((b) => b.bt === 21)).toBe(true); // ZERO
+    });
+
+    // -------- Batch 47: Flip Substituent --------
+    // Qt's ModifyBondsMenu adds Flip Substituent first (bond_context_menu.cpp:
+    // 22), disabled for ring bonds (updateActions:38). Reflects the smaller
+    // substituent across the bond axis (MolModel::flipSubstituent). Backed by
+    // the lean flipSubstituentAroundBond primitive.
+
+    // A branched chain with an off-axis atom on the SMALLER side of a bond, so
+    // flipping visibly mirrors it. Atoms (0-indexed): 0=(0,0) 1=(0.8,0.8)
+    // 2=(1.5,0) 3=(3,0) 4=(4.5,0). Bonds 0-2, 0-1, 2-3, 3-4. Flip bond 0-2's
+    // axis is the x-axis; removing it splits into {0,1} (smaller) and {2,3,4}.
+    const FLIP_MOLBLOCK = `flip-test
+  test
+flip
+  5  4  0  0  0  0  0  0  0  0999 V2000
+    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+    0.8000    0.8000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+    1.5000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+    3.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+    4.5000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  1  3  1  0
+  1  2  1  0
+  3  4  1  0
+  4  5  1  0
+M  END`;
+
+    // Pixel midpoint of the bond between atoms ai and bi, via the live view
+    // transform (scale/offset) + current model coords. Canvas is 540×360.
+    async function bondMidPx(page, ai, bi) {
+        return await page.evaluate(({ ai, bi }) => {
+            const v = window.SketcherView.current;
+            const d = JSON.parse(window.SketcherModel.description());
+            const a = d.atoms.find((x) => x.i === ai);
+            const b = d.atoms.find((x) => x.i === bi);
+            const mx = (a.x + b.x) / 2;
+            const my = (a.y + b.y) / 2;
+            return {
+                px: mx * v.scale + 540 / 2 + v.offsetX,
+                py: -my * v.scale + 360 / 2 + v.offsetY,
+            };
+        }, { ai, bi });
+    }
+
+    test('bond context menu: Flip Substituent is present at the top of the menu', async ({
+        page,
+    }) => {
+        await loadText(page, FLIP_MOLBLOCK);
+        await page.getByTestId('tool-select').click();
+        const mid = await bondMidPx(page, 0, 2);
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: mid.px, y: mid.py },
+            button: 'right' });
+        await expect(page.getByTestId('bond-ctx-flip-substituent'))
+            .toBeVisible();
+    });
+
+    test('bond context menu: Flip Substituent mirrors the smaller substituent across the bond axis (one undo)', async ({
+        page,
+    }) => {
+        await loadText(page, FLIP_MOLBLOCK);
+        await page.getByTestId('tool-select').click();
+        const before = await snapshot(page);
+        const at = (rd, i) => rd.atoms.find((a) => a.i === i);
+        // Perpendicular offset of the branch atom (1) from the bond endpoint
+        // (0) that shares its substituent — positive before the flip.
+        const dyBefore = at(before, 1).y - at(before, 0).y;
+        const dxBefore = at(before, 1).x - at(before, 0).x;
+        expect(Math.abs(dyBefore)).toBeGreaterThan(0.5);
+
+        const mid = await bondMidPx(page, 0, 2);
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: mid.px, y: mid.py },
+            button: 'right' });
+        await page.getByTestId('bond-ctx-flip-substituent').click();
+        await expect(page.getByTestId('bond-context-menu')).toHaveCount(0);
+
+        const after = await snapshot(page);
+        // Axis is horizontal (atoms 0 & 2 share a y), so the flip negates the
+        // branch atom's perpendicular (y) offset and leaves x untouched.
+        const dyAfter = at(after, 1).y - at(after, 0).y;
+        const dxAfter = at(after, 1).x - at(after, 0).x;
+        expect(dyAfter).toBeCloseTo(-dyBefore, 4);
+        expect(dxAfter).toBeCloseTo(dxBefore, 4);
+        // The larger side (atoms 3, 4) is untouched.
+        expect(at(after, 3).x).toBeCloseTo(at(before, 3).x, 4);
+        expect(at(after, 3).y).toBeCloseTo(at(before, 3).y, 4);
+        expect(at(after, 4).x).toBeCloseTo(at(before, 4).x, 4);
+
+        // One undo restores the branch atom.
+        await page.getByTestId('undo').click();
+        const undone = await snapshot(page);
+        expect(at(undone, 1).y).toBeCloseTo(at(before, 1).y, 4);
+        expect(at(undone, 1).x).toBeCloseTo(at(before, 1).x, 4);
+    });
+
+    test('bond context menu: Flip Substituent is disabled for a ring bond', async ({
+        page,
+    }) => {
+        await loadText(page, 'C1CCCCC1'); // cyclohexane — every bond in a ring
+        await page.getByTestId('tool-select').click();
+        const mid = await bondMidPx(page, 0, 1);
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: mid.px, y: mid.py },
+            button: 'right' });
+        await expect(page.getByTestId('bond-context-menu')).toBeVisible();
+        await expect(page.getByTestId('bond-ctx-flip-substituent'))
+            .toBeDisabled();
     });
 
 });

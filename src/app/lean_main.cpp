@@ -657,6 +657,10 @@ class MolModelJS
     {
         m_model.flipSelectedAtoms(horizontal);
     }
+    void flipSubstituentAroundBond(unsigned int begin, unsigned int end)
+    {
+        m_model.flipSubstituentAroundBond(begin, end);
+    }
     void adjustChargeOnSelectedAtoms(int delta)
     {
         m_model.adjustChargeOnSelectedAtoms(delta);
@@ -937,6 +941,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("addAtomChain", &MolModelJS::addAtomChain)
         .function("rotateSelectedAtoms", &MolModelJS::rotateSelectedAtoms)
         .function("flipSelectedAtoms", &MolModelJS::flipSelectedAtoms)
+        .function("flipSubstituentAroundBond",
+                  &MolModelJS::flipSubstituentAroundBond)
         .function("adjustChargeOnSelectedAtoms",
                   &MolModelJS::adjustChargeOnSelectedAtoms)
         .function("setSelectedAtomsToHydrogenIsotope",

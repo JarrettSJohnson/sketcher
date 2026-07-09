@@ -129,6 +129,14 @@ export interface MolModelInstance {
      * step.
      */
     flipSelectedAtoms(horizontal: boolean): void;
+    /**
+     * Flip the smaller substituent hanging off the begin—end bond across the
+     * bond axis (Qt's `MolModel::flipSubstituent`, model/mol_model.cpp:1793).
+     * Backs the bond context menu's "Flip Substituent". Single undo step.
+     * No-op when the bond is missing or in a ring (removing it wouldn't split
+     * the mol into two substituents).
+     */
+    flipSubstituentAroundBond(begin: number, end: number): void;
     adjustChargeOnSelectedAtoms(delta: number): void;
     /**
      * Replace every selected atom with a hydrogen of the given mass-number

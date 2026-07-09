@@ -158,6 +158,36 @@ const BOND_TYPE_SINGLE = 1;
 const BOND_TYPE_DOUBLE = 2;
 const BOND_TYPE_DATIVE = 17;     // Qt BondTool::COORDINATE
 const BOND_TYPE_ZERO = 21;       // Qt BondTool::ZERO
+
+// True when the bond (ba,bb) lies in a ring: drop that bond from the graph and
+// BFS — if the two endpoints are still connected, they were part of a cycle.
+// Qt's ModifyBondsMenu::updateActions (bond_context_menu.cpp:38) disables Flip
+// Substituent for ring bonds via getRingInfo(); the lean render description
+// doesn't carry ring membership, so we recover it from the bond adjacency here.
+function bondIsInRing(bonds: BondDesc[], ba: number, bb: number): boolean {
+    const adj = new Map<number, number[]>();
+    for (const bd of bonds) {
+        // Skip the bond under test — we want reachability WITHOUT it.
+        if ((bd.a === ba && bd.b === bb) || (bd.a === bb && bd.b === ba)) {
+            continue;
+        }
+        (adj.get(bd.a) ?? adj.set(bd.a, []).get(bd.a)!).push(bd.b);
+        (adj.get(bd.b) ?? adj.set(bd.b, []).get(bd.b)!).push(bd.a);
+    }
+    const seen = new Set<number>([ba]);
+    const queue = [ba];
+    while (queue.length > 0) {
+        const cur = queue.shift()!;
+        if (cur === bb) return true;
+        for (const nb of adj.get(cur) ?? []) {
+            if (!seen.has(nb)) {
+                seen.add(nb);
+                queue.push(nb);
+            }
+        }
+    }
+    return false;
+}
 // Reaction objects live outside the RWMol — sketcher_core mirrors Qt's
 // `m_arrow` (optional) + `m_pluses` (vector) shape and emits them as a
 // flat `nonMol` array in render description JSON. Each entry's `type`
@@ -2149,7 +2179,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // current state without re-querying the model).
     const [bondContextMenu, setBondContextMenu] = useState<
         { x: number; y: number; bondIdx: number; a: number; b: number;
-          type: number; dir: number; bt?: number } | null
+          type: number; dir: number; bt?: number; inRing: boolean } | null
     >(null);
     // Per-atom right-click context menu — mirrors Qt's AtomContextMenu
     // (menu/atom_context_menu.cpp). Opens when right-click hits an atom and
@@ -3739,6 +3769,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         type: bd.o,
                         dir: bd.dir ?? 0,
                         bt: bd.bt,
+                        inRing: bondIsInRing(rd.bonds, bd.a, bd.b),
                     });
                     setBgContextMenu(null);
                     setSelContextMenu(null);
@@ -5737,8 +5768,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             {/* Bond context menu — mirrors Qt's BondContextMenu
                 (menu/bond_context_menu.cpp). Order/labels follow that file.
                 Sections that need infrastructure not yet ported are
-                intentionally omitted (Flip Substituent: needs adjacency +
-                non-ring detection; Query / Topology submenus: need RDKit
+                intentionally omitted (Query / Topology submenus: need RDKit
                 query bond support in the lean MolModel). Active bond-type
                 / bond-dir items show a leading checkmark so the user can
                 see the current state — Qt uses checkable QAction groups
@@ -5754,6 +5784,23 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     data-testid='bond-context-menu'
                     onContextMenu={(e) => e.preventDefault()}
                 >
+                    {/* Flip Substituent — Qt adds this first in
+                        ModifyBondsMenu (bond_context_menu.cpp:22), disabled
+                        for ring bonds (updateActions:38). Reflects the
+                        smaller substituent across the bond axis. */}
+                    <MoreItem
+                        label='Flip Substituent'
+                        testid='bond-ctx-flip-substituent'
+                        disabled={bondContextMenu.inRing}
+                        onClick={() => {
+                            const bm = bondContextMenu;
+                            setBondContextMenu(null);
+                            modelRef.current?.flipSubstituentAroundBond(
+                                bm.a, bm.b,
+                            );
+                            setStatus('flipped substituent');
+                        }} />
+                    <div style={styles.moreDivider} />
                     <MoreItem
                         label={(bondContextMenu.type === 1 ? '✓ ' : '   ')
                             + 'Single'}
