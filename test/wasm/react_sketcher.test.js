@@ -6426,6 +6426,61 @@ M  END`;
         }
     });
 
+    // -------- Batch 64: monomer drag-to-connect --------
+    // Qt DrawMonomerSceneTool click-and-drag: press a monomer bead and drag out;
+    // a ghost of the armed monomer follows the cursor and, on release, chains via
+    // the start monomer's AP nearest the drag direction. Reuses addBoundMonomerViaAP.
+    async function beadPixel(page, bead) {
+        const view = await page.evaluate(() => ({ ...window.SketcherView.current }));
+        return {
+            px: bead.x * view.scale + 540 / 2 + view.offsetX,
+            py: -bead.y * view.scale + 360 / 2 + view.offsetY,
+        };
+    }
+
+    test('monomer tool: dragging from a bead chains a different residue via the drag-direction AP', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        let rd = await snapshot(page);
+        const bp = await beadPixel(page, rd.atoms[0]);
+        const box = await canvas.boundingBox();
+        // Arm Glycine, then drag east off the Alanine bead.
+        await page.getByTestId('monomer-aa-gly').click();
+        await page.mouse.move(box.x + bp.px, box.y + bp.py);
+        await page.mouse.down();
+        await page.mouse.move(box.x + bp.px + 100, box.y + bp.py, { steps: 6 });
+        await page.mouse.up();
+        rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(2);
+        expect(rd.bonds).toHaveLength(1);
+        expect(rd.atoms.map((a) => a.lbl).sort()).toEqual(['A', 'G']);
+    });
+
+    test('monomer tool: a press without drag still mutates (no accidental chain)', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-aa-ala').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd0 = await snapshot(page);
+        const bp = await beadPixel(page, rd0.atoms[0]);
+        const box = await canvas.boundingBox();
+        // Arm Glycine and press+release on the bead body without moving → the
+        // press starts (then abandons) a drag, and the trailing click mutates.
+        await page.getByTestId('monomer-aa-gly').click();
+        await page.mouse.move(box.x + bp.px, box.y + bp.py);
+        await page.mouse.down();
+        await page.mouse.up();
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].lbl).toBe('G');
+    });
+
     // -------- Batch 62: Custom nucleotide triple-builder --------
     // Qt CustomNucleotidePopup: three text fields (sugar/base/phosphate). Editing
     // updates the armed triple; a canvas click places addNucleotide(sugar,base,phos).

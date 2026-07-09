@@ -1181,6 +1181,8 @@ function drawMonomers(
     view: View,
     rd: RenderDesc,
     showAps: boolean = false,
+    ghost: { startX: number; startY: number; curPx: number; curPy: number;
+             mon: string; lbl: string } | null = null,
 ): void {
     const byIdx = new Map<number, AtomDesc>();
     for (const a of rd.atoms) byIdx.set(a.i, a);
@@ -1278,6 +1280,43 @@ function drawMonomers(
             }
         }
     }
+    // Drag-to-connect ghost: a connector from the drag-start bead to the cursor
+    // plus a translucent preview of the armed monomer at the cursor.
+    if (ghost) {
+        const s = pixelFromModel(canvas, view, ghost.startX, ghost.startY);
+        ctx.strokeStyle = MONOMER_CONNECTOR_COLOR;
+        ctx.lineWidth = Math.max(2, view.scale * 0.1);
+        ctx.beginPath();
+        ctx.moveTo(s.px, s.py);
+        ctx.lineTo(ghost.curPx, ghost.curPy);
+        ctx.stroke();
+        const gh = Math.max(10, view.scale * 0.37);
+        const grad = Math.max(3, view.scale * 0.1);
+        ctx.globalAlpha = 0.55;
+        if (ghost.mon === 'base') {
+            diamondPath(ctx, ghost.curPx, ghost.curPy, gh * 1.35);
+        } else if (ghost.mon === 'phos') {
+            ctx.beginPath();
+            ctx.ellipse(ghost.curPx, ghost.curPy, gh, gh, 0, 0, 2 * Math.PI);
+        } else if (ghost.mon === 'sugar') {
+            ctx.beginPath();
+            ctx.rect(ghost.curPx - gh, ghost.curPy - gh, gh * 2, gh * 2);
+        } else {
+            roundedRectPath(ctx, ghost.curPx - gh, ghost.curPy - gh,
+                gh * 2, gh * 2, grad);
+        }
+        ctx.fillStyle = monomerFillFor(ghost.mon, ghost.lbl);
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = monomerBorderFor(ghost.mon, ghost.lbl);
+        ctx.stroke();
+        ctx.fillStyle = MONOMER_LABEL_COLOR;
+        ctx.font = `${Math.max(9, Math.round(view.scale * 0.42))}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(ghost.lbl.slice(0, 6), ghost.curPx, ghost.curPy);
+        ctx.globalAlpha = 1;
+    }
 }
 
 function drawSketch(
@@ -1291,6 +1330,8 @@ function drawSketch(
     chainDrag: ChainDrag | null,
     displayOptions: DisplayOptions = DEFAULT_DISPLAY_OPTIONS,
     showMonomerAps: boolean = false,
+    monomerGhost: { startX: number; startY: number; curPx: number;
+                    curPy: number; mon: string; lbl: string } | null = null,
 ): void {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -1305,7 +1346,7 @@ function drawSketch(
     // Coarse-grained monomeric scene: render labeled beads + connectors and
     // skip the atomistic passes entirely (Qt AbstractMonomerItem/Connector).
     if (rd.monomeric) {
-        drawMonomers(ctx, canvas, view, rd, showMonomerAps);
+        drawMonomers(ctx, canvas, view, rd, showMonomerAps, monomerGhost);
         return;
     }
 
@@ -2563,6 +2604,18 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // atomDrag/rotateDrag — we only need it while the user is actively
     // drawing a new chain, not the constant stream of an existing-mol drag.
     const [chainDrag, setChainDrag] = useState<ChainDrag | null>(null);
+    // Monomer drag-to-connect (Qt DrawMonomerSceneTool click-and-drag): press a
+    // monomer bead and drag out — a ghost of the armed monomer follows the
+    // cursor; on release it's chained via the start monomer's AP nearest the
+    // drag direction. Null when no monomer drag is in progress.
+    const [monomerDrag, setMonomerDrag] = useState<{
+        startIdx: number;
+        startX: number; startY: number;
+        startPx: number; startPy: number;
+        curPx: number; curPy: number;
+        moved: boolean;
+        aps: { r: string; dx: number; dy: number }[];
+    } | null>(null);
     // View transform — mirrors viewState into a ref so event handlers (which
     // capture the closure at mount) always read the current viewport.
     const viewRef = useRef<View>(DEFAULT_VIEW);
@@ -3161,6 +3214,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             chainDrag,
             displayOptions,
             tool === 'monomer',
+            monomerDrag && monomerDrag.moved
+                ? {
+                    startX: monomerDrag.startX,
+                    startY: monomerDrag.startY,
+                    curPx: monomerDrag.curPx,
+                    curPy: monomerDrag.curPy,
+                    mon: armedMonomerSubtype(monomerChainType, monomerResName),
+                    lbl: monomerResName,
+                }
+                : null,
         );
     });
 
@@ -3831,6 +3894,15 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 setChainDrag({ ...chainDrag, curPx: px, curPy: py });
                 return;
             }
+            if (monomerDrag) {
+                const dpx = px - monomerDrag.startPx;
+                const dpy = py - monomerDrag.startPy;
+                const moved = monomerDrag.moved ||
+                    Math.abs(dpx) >= ATOM_DRAG_THRESHOLD ||
+                    Math.abs(dpy) >= ATOM_DRAG_THRESHOLD;
+                setMonomerDrag({ ...monomerDrag, curPx: px, curPy: py, moved });
+                return;
+            }
             if (tool !== 'bond') {
                 if (hoverAtom !== null) setHoverAtom(null);
                 return;
@@ -3845,7 +3917,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const next = hit >= 0 ? hit : null;
             if (next !== hoverAtom) setHoverAtom(next);
         },
-        [tool, hoverAtom, dragShape, chainDrag],
+        [tool, hoverAtom, dragShape, chainDrag, monomerDrag],
     );
 
     const onCanvasMouseDown = useCallback(
@@ -3949,6 +4021,38 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
 
+            if (tool === 'monomer' && !nucleotideSpec) {
+                // Qt DrawMonomerSceneTool click-and-drag: press a monomer bead
+                // with an available AP to start dragging a new monomer off it.
+                // (Nucleotide tools + empty-space self-fragments are excluded.)
+                let rd: RenderDesc = BLANK_DESC;
+                try {
+                    rd = JSON.parse(model.description()) as RenderDesc;
+                } catch {
+                    rd = BLANK_DESC;
+                }
+                const hit = nearestAtomIndex(
+                    canvas, viewRef.current, rd.atoms, px, py,
+                );
+                const bead = hit >= 0
+                    ? rd.atoms.find((a) => a.i === hit) : undefined;
+                if (bead && bead.aps && bead.aps.length > 0) {
+                    setMonomerDrag({
+                        startIdx: hit,
+                        startX: bead.x,
+                        startY: bead.y,
+                        startPx: px,
+                        startPy: py,
+                        curPx: px,
+                        curPy: py,
+                        moved: false,
+                        aps: bead.aps.map(
+                            (a) => ({ r: a.r, dx: a.dx, dy: a.dy })),
+                    });
+                }
+                return;
+            }
+
             if (tool === 'atom-chain') {
                 // Qt DrawChainSceneTool::onLeftButtonDragStart
                 // (tool/draw_chain_scene_tool.cpp:58-63 + getStartPosAndAtom
@@ -4018,7 +4122,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 mode: tool === 'erase' ? 'erase' : 'select',
             });
         },
-        [tool],
+        [tool, nucleotideSpec],
     );
 
     const onCanvasMouseUp = useCallback(
@@ -4148,6 +4252,42 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 );
                 return;
             }
+            if (monomerDrag) {
+                const md = monomerDrag;
+                setMonomerDrag(null);
+                if (!md.moved) {
+                    // A click, not a drag — let onCanvasClick handle it.
+                    return;
+                }
+                const canvas = canvasRef.current;
+                const model = modelRef.current;
+                if (!canvas || !model) return;
+                const rect = canvas.getBoundingClientRect();
+                const px = e.clientX - rect.left;
+                const py = e.clientY - rect.top;
+                const { x: endX, y: endY } = modelFromPixel(
+                    canvas, viewRef.current, px, py,
+                );
+                // Pick the start monomer's AP whose direction best matches the
+                // drag vector (largest dot product), then chain via it.
+                const ddx = endX - md.startX;
+                const ddy = endY - md.startY;
+                let best = md.aps[0];
+                let bestDot = -Infinity;
+                for (const ap of md.aps) {
+                    const dot = ap.dx * ddx + ap.dy * ddy;
+                    if (dot > bestDot) {
+                        bestDot = dot;
+                        best = ap;
+                    }
+                }
+                model.addBoundMonomerViaAP(monomerResName, monomerChainType,
+                    endX, endY, md.startIdx, best.r);
+                suppressNextClickRef.current = true;
+                setStatus(`chained ${monomerResName} to monomer `
+                    + `#${md.startIdx} via ${best.r} (drag)`);
+                return;
+            }
             if (!dragShape) return;
             const canvas = canvasRef.current;
             const model = modelRef.current;
@@ -4251,7 +4391,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             }
             void e; // silence unused-param lint without changing the signature
         },
-        [dragShape, chainDrag],
+        [dragShape, chainDrag, monomerDrag, monomerResName, monomerChainType],
     );
 
     const onCanvasMouseLeave = useCallback((): void => {
