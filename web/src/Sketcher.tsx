@@ -23,11 +23,13 @@ type Tool = 'atom' | 'bond' | 'select' | 'move-rotate' | 'erase' | 'ring'
     | 'atom-chain' | 'rgroup' | 'attachment-point' | 'reaction'
     | 'atom-query' | 'bond-query' | 'monomer';
 
-// Reaction sub-mode — Qt: EnumerationTool::{RXN_ARROW, RXN_PLUS} in the
-// reaction popup. The two map 1:1 to MolModel::addRxnArrow / addRxnPlus.
-// Add Mapping / Remove Mapping (also in Qt's ReactionPopup) are deferred —
-// they need atom-mapping primitives the lean MolModel doesn't expose yet.
-type ReactionMode = 'arrow' | 'plus';
+// Reaction sub-mode — Qt: EnumerationTool::{RXN_ARROW, RXN_PLUS, ADD_MAPPING,
+// REMOVE_MAPPING} in the reaction popup. arrow/plus map 1:1 to
+// MolModel::addRxnArrow / addRxnPlus; map/unmap drive the atom-mapping tool
+// (Qt tool/atom_mapping_scene_tool.cpp) via MolModel::setAtomMapping. Add
+// Mapping drags a reactant atom onto a product atom; Remove Mapping clicks a
+// mapped atom.
+type ReactionMode = 'arrow' | 'plus' | 'map' | 'unmap';
 // SetAtomWidget.ui ships C/H/N/O/P/S/F/Cl/Si on the atomistic panel.
 // Element symbol — any RDKit-recognized symbol. The sidebar exposes
 // 8 fixed elements via dedicated buttons; everything else flows through
@@ -168,6 +170,13 @@ interface AtomDesc {
     // pretty label ("C"/"3'"), `r` the model name for the linkage ("R2"), and
     // (dx,dy) a model-space direction unit vector (+y up).
     aps?: { n: string; r: string; dx: number; dy: number }[];
+    // Reaction atom-map number (>0); omitted when unmapped. Rendered as ":n"
+    // near the atom (Qt: AtomItem paints the map number).
+    map?: number;
+    // Reaction role while an arrow exists: "r" (reactant) or "p" (product).
+    // Drives the Map Atoms drag valid-pair gate + Remove Mapping product
+    // special-case. Absent when there's no reaction arrow.
+    rxn?: string;
 }
 interface BondDesc {
     a: number;
@@ -1799,6 +1808,25 @@ function drawSketch(
         }
     }
 
+    // Reaction atom-map numbers (":n"). Qt paints the map number next to the
+    // atom (AtomItem). Drawn upper-left of the atom center in the small font so
+    // it clears the H/charge superscripts on the right.
+    {
+        ctx.save();
+        ctx.font = SUB_FONT;
+        ctx.fillStyle = palette.annotation;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        for (const a of rd.atoms) {
+            if (typeof a.map !== 'number' || a.map <= 0) continue;
+            const p = pixelFromModel(canvas, view, a.x, a.y);
+            ctx.fillText(`:${a.map}`, p.px - 6, p.py - 7);
+        }
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.restore();
+    }
+
     // Attachment-point squiggles. Drawn after the atom labels so the wavy
     // line lays on top of any bond endpoint stub. Qt's geometry: a wavy
     // path perpendicular to the bond, centered on the AP atom position
@@ -2465,6 +2493,17 @@ function buildSketchSvg(
             }
         }
     }
+    // Reaction atom-map numbers (":n") — mirrors the canvas map-label pass.
+    for (const a of rd.atoms) {
+        if (typeof a.map !== 'number' || a.map <= 0) continue;
+        const p = px(a.x, a.y);
+        parts.push(
+            `<text x='${f(p.px - 6)}' y='${f(p.py - 7)}' ` +
+            `fill='${palette.annotation}' font-family='sans-serif' ` +
+            `font-size='${SUB_FONT_PX}' text-anchor='end' ` +
+            `dominant-baseline='central'>:${a.map}</text>`,
+        );
+    }
     // Attachment-point squiggles — quadratic-bezier path matching the canvas
     // renderer. Stroke color/width tracks the bond palette so the squiggle
     // reads as a bond cap rather than a separate annotation.
@@ -2615,6 +2654,18 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
         curPx: number; curPy: number;
         moved: boolean;
         aps: { r: string; dx: number; dy: number }[];
+    } | null>(null);
+    // Reaction Map Atoms drag (Qt AtomMappingSceneTool, ADD): press a reactant
+    // atom and drag onto a product atom (or vice-versa) — a dotted arrow hint
+    // follows the cursor and snaps to a valid opposite-role target; on release
+    // both atoms get the same map number. `targetIdx` is the snapped valid
+    // partner (or -1). Null when no mapping drag is in progress.
+    const [mappingDrag, setMappingDrag] = useState<{
+        startIdx: number; startRxn: string;
+        startPx: number; startPy: number;
+        curPx: number; curPy: number;
+        targetIdx: number;
+        moved: boolean;
     } | null>(null);
     // View transform — mirrors viewState into a ref so event handlers (which
     // capture the closure at mount) always read the current viewport.
@@ -3003,20 +3054,27 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     ];
 
     // Reaction popup — Qt ReactionPopup (ui/reaction_popup.ui) has 4 choices:
-    // arrow / plus / map-atoms / remove-mapping. Mapping requires reaction
-    // atom-map plumbing in the lean MolModel (not yet wired) so the port
-    // exposes the two placement primitives only; mapping is deferred.
+    // arrow / plus / map-atoms / remove-mapping. All four are wired: arrow/plus
+    // place the non-molecular objects; Map Atoms drags a reactant atom onto a
+    // product atom to give both the same map number; Remove Mapping clicks a
+    // mapped atom to clear it (tool/atom_mapping_scene_tool.cpp).
     const REACTION_CHOICES: PopupChoice<ReactionMode>[] = [
         { value: 'arrow', icon: 'reaction_arrow', title: 'Reaction Arrow', testid: 'reaction-popup-arrow' },
         { value: 'plus',  icon: 'reaction_plus',  title: 'Reaction Plus',  testid: 'reaction-popup-plus' },
+        { value: 'map',   icon: 'reaction_map_atoms',   title: 'Map Atoms',      testid: 'reaction-popup-map' },
+        { value: 'unmap', icon: 'reaction_unmap_atoms', title: 'Remove Mapping', testid: 'reaction-popup-unmap' },
     ];
     const REACTION_ICON: Record<ReactionMode, string> = {
         arrow: 'reaction_arrow',
         plus: 'reaction_plus',
+        map: 'reaction_map_atoms',
+        unmap: 'reaction_unmap_atoms',
     };
     const REACTION_TITLE: Record<ReactionMode, string> = {
         arrow: 'Reaction Arrow',
         plus: 'Reaction Plus',
+        map: 'Map Atoms',
+        unmap: 'Remove Mapping',
     };
 
     // Base picker for the RNA / DNA nucleotide selectors — Qt's NucleotidePopup
@@ -3236,6 +3294,54 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 }
                 : null,
         );
+        // Map Atoms drag hint — a dotted arrow from the pressed atom to the
+        // cursor, snapping to a valid opposite-role target (Qt
+        // AtomMappingSceneTool arrow items). Drawn on top of the sketch; not
+        // part of the SVG export.
+        if (mappingDrag && mappingDrag.moved) {
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+                let ex = mappingDrag.curPx;
+                let ey = mappingDrag.curPy;
+                if (mappingDrag.targetIdx >= 0) {
+                    const t = rd.atoms.find(
+                        (a) => a.i === mappingDrag.targetIdx);
+                    if (t) {
+                        const p = pixelFromModel(canvas, view, t.x, t.y);
+                        ex = p.px;
+                        ey = p.py;
+                    }
+                }
+                const sx = mappingDrag.startPx;
+                const sy = mappingDrag.startPy;
+                ctx.save();
+                ctx.strokeStyle = mappingDrag.targetIdx >= 0
+                    ? ACCENT_GREEN : CHAIN_HINT_COLOR;
+                ctx.fillStyle = ctx.strokeStyle;
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([4, 3]);
+                ctx.beginPath();
+                ctx.moveTo(sx, sy);
+                ctx.lineTo(ex, ey);
+                ctx.stroke();
+                // Filled arrow head at the cursor/target end.
+                ctx.setLineDash([]);
+                const ang = Math.atan2(ey - sy, ex - sx);
+                const aLen = 9;
+                const aHalf = 5;
+                ctx.beginPath();
+                ctx.moveTo(ex, ey);
+                ctx.lineTo(
+                    ex - aLen * Math.cos(ang) + aHalf * Math.sin(ang),
+                    ey - aLen * Math.sin(ang) - aHalf * Math.cos(ang));
+                ctx.lineTo(
+                    ex - aLen * Math.cos(ang) - aHalf * Math.sin(ang),
+                    ey - aLen * Math.sin(ang) + aHalf * Math.cos(ang));
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+            }
+        }
     });
 
     // View-center-anchored wheel zoom, matching Qt's QGraphicsView::wheelEvent
@@ -3713,6 +3819,39 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             }
 
             if (tool === 'reaction') {
+                // Map Atoms is a drag gesture (handled in the mouse
+                // down/move/up path); a bare click does nothing here.
+                if (reactionMode === 'map') {
+                    setStatus('map atoms: drag a reactant onto a product atom');
+                    return;
+                }
+                // Remove Mapping — click a mapped atom. Qt
+                // AtomMappingSceneTool::onLeftButtonClick (REMOVE): find every
+                // atom sharing the clicked atom's map number; if the clicked
+                // atom is a product AND other product atoms keep that number,
+                // only clear the clicked atom, else clear the whole group.
+                if (reactionMode === 'unmap') {
+                    if (hit < 0) {
+                        setStatus('remove mapping: click a mapped atom');
+                        return;
+                    }
+                    const clicked = rd.atoms[hit];
+                    const mapN = clicked.map ?? 0;
+                    if (mapN < 1) {
+                        setStatus('remove mapping: atom is not mapped');
+                        return;
+                    }
+                    const group = rd.atoms.filter((a) => (a.map ?? 0) === mapN);
+                    const otherProducts = group.filter(
+                        (a) => a.i !== clicked.i && a.rxn === 'p',
+                    ).length;
+                    const targets = (clicked.rxn === 'p' && otherProducts > 0)
+                        ? [clicked.i]
+                        : group.map((a) => a.i);
+                    model.setAtomMapping(targets, 0);
+                    setStatus(`removed mapping :${mapN}`);
+                    return;
+                }
                 // Reaction tool: drop an arrow (RXN_ARROW) or plus (RXN_PLUS)
                 // at the click position. Qt: ArrowPlusSceneTool::onLeftButtonClick
                 // (tool/arrow_plus_scene_tool.cpp:21-26) calls
@@ -3934,6 +4073,38 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 setMonomerDrag({ ...monomerDrag, curPx: px, curPy: py, moved });
                 return;
             }
+            if (mappingDrag) {
+                // Snap the hint to a valid partner: nearest atom of the
+                // OPPOSITE reaction role (Qt isValidMappingPair). Otherwise the
+                // hint just tracks the cursor with no snap target.
+                let rd: RenderDesc = BLANK_DESC;
+                try {
+                    rd = JSON.parse(model.description()) as RenderDesc;
+                } catch {
+                    rd = BLANK_DESC;
+                }
+                const hit = nearestAtomIndex(
+                    canvas, viewRef.current, rd.atoms, px, py,
+                );
+                const cand = hit >= 0
+                    ? rd.atoms.find((a) => a.i === hit) : undefined;
+                const valid = cand != null && cand.i !== mappingDrag.startIdx &&
+                    (cand.rxn === 'r' || cand.rxn === 'p') &&
+                    cand.rxn !== mappingDrag.startRxn;
+                const dpx = px - mappingDrag.startPx;
+                const dpy = py - mappingDrag.startPy;
+                const moved = mappingDrag.moved ||
+                    Math.abs(dpx) >= ATOM_DRAG_THRESHOLD ||
+                    Math.abs(dpy) >= ATOM_DRAG_THRESHOLD;
+                setMappingDrag({
+                    ...mappingDrag,
+                    curPx: px,
+                    curPy: py,
+                    targetIdx: valid ? hit : -1,
+                    moved,
+                });
+                return;
+            }
             if (tool !== 'bond') {
                 if (hoverAtom !== null) setHoverAtom(null);
                 return;
@@ -3948,7 +4119,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             const next = hit >= 0 ? hit : null;
             if (next !== hoverAtom) setHoverAtom(next);
         },
-        [tool, hoverAtom, dragShape, chainDrag, monomerDrag],
+        [tool, hoverAtom, dragShape, chainDrag, monomerDrag, mappingDrag],
     );
 
     const onCanvasMouseDown = useCallback(
@@ -4084,6 +4255,39 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 return;
             }
 
+            if (tool === 'reaction' && reactionMode === 'map') {
+                // Qt AtomMappingSceneTool (ADD): press an atom (reactant or
+                // product) to start the map drag. Only atoms in a reaction
+                // (rxn role present) can be mapped; the release must land on an
+                // atom of the OPPOSITE role.
+                let rd: RenderDesc = BLANK_DESC;
+                try {
+                    rd = JSON.parse(model.description()) as RenderDesc;
+                } catch {
+                    rd = BLANK_DESC;
+                }
+                const hit = nearestAtomIndex(
+                    canvas, viewRef.current, rd.atoms, px, py,
+                );
+                const atom = hit >= 0
+                    ? rd.atoms.find((a) => a.i === hit) : undefined;
+                if (!atom || (atom.rxn !== 'r' && atom.rxn !== 'p')) {
+                    setStatus('map atoms: add a reaction arrow first');
+                    return;
+                }
+                setMappingDrag({
+                    startIdx: hit,
+                    startRxn: atom.rxn,
+                    startPx: px,
+                    startPy: py,
+                    curPx: px,
+                    curPy: py,
+                    targetIdx: -1,
+                    moved: false,
+                });
+                return;
+            }
+
             if (tool === 'atom-chain') {
                 // Qt DrawChainSceneTool::onLeftButtonDragStart
                 // (tool/draw_chain_scene_tool.cpp:58-63 + getStartPosAndAtom
@@ -4153,7 +4357,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                 mode: tool === 'erase' ? 'erase' : 'select',
             });
         },
-        [tool, nucleotideSpec],
+        [tool, nucleotideSpec, reactionMode],
     );
 
     const onCanvasMouseUp = useCallback(
@@ -4319,6 +4523,40 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     + `#${md.startIdx} via ${best.r} (drag)`);
                 return;
             }
+            if (mappingDrag) {
+                const mp = mappingDrag;
+                setMappingDrag(null);
+                if (!mp.moved || mp.targetIdx < 0) {
+                    // No drag, or released off a valid partner — no commit.
+                    // (A bare click on an atom in map mode is a no-op.)
+                    return;
+                }
+                const model = modelRef.current;
+                if (!model) return;
+                let rd: RenderDesc = BLANK_DESC;
+                try {
+                    rd = JSON.parse(model.description()) as RenderDesc;
+                } catch {
+                    rd = BLANK_DESC;
+                }
+                // Qt AtomMappingSceneTool::onLeftButtonDragRelease: if the
+                // pressed atom is already mapped, reuse that number for both;
+                // otherwise use the lowest available map number.
+                const start = rd.atoms.find((a) => a.i === mp.startIdx);
+                const startMap = start?.map ?? 0;
+                let mapping = startMap;
+                if (mapping < 1) {
+                    const used = new Set(
+                        rd.atoms.map((a) => a.map ?? 0).filter((n) => n > 0));
+                    mapping = 1;
+                    while (used.has(mapping)) mapping += 1;
+                }
+                model.setAtomMapping([mp.startIdx, mp.targetIdx], mapping);
+                suppressNextClickRef.current = true;
+                setStatus(`mapped atoms #${mp.startIdx} + #${mp.targetIdx} `
+                    + `as :${mapping}`);
+                return;
+            }
             if (!dragShape) return;
             const canvas = canvasRef.current;
             const model = modelRef.current;
@@ -4422,7 +4660,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             }
             void e; // silence unused-param lint without changing the signature
         },
-        [dragShape, chainDrag, monomerDrag, monomerResName, monomerChainType],
+        [dragShape, chainDrag, monomerDrag, monomerResName, monomerChainType,
+         mappingDrag],
     );
 
     const onCanvasMouseLeave = useCallback((): void => {
@@ -4473,7 +4712,11 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             setChainDrag(null);
             setStatus('chain cancelled');
         }
-    }, [dragShape, chainDrag]);
+        // Cancel an in-flight mapping drag — it's a pure hint until release.
+        if (mappingDrag) {
+            setMappingDrag(null);
+        }
+    }, [dragShape, chainDrag, mappingDrag]);
 
     // Right-click on the canvas — Qt's SketcherView::contextMenuEvent
     // (molviewer/sketcher_view.cpp) dispatches to one of:

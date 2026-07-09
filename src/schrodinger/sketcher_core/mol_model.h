@@ -402,6 +402,18 @@ class MolModel : public UndoableModel
         const std::vector<unsigned int>& atom_indices, int delta);
 
     /**
+     * Set the reaction atom-map number of every atom in `atom_indices` to
+     * `mapping_num` in a single undoable command (0 clears the mapping).
+     * Mirrors Qt's `MolModel::setAtomMapping` (used by the reaction-popup
+     * Map Atoms / Remove Mapping tools, tool/atom_mapping_scene_tool.cpp).
+     * Atom mapping is a per-atom property with no reindexing, so this uses
+     * doCommand (not doMutation) and preserves the selection. Atoms already at
+     * `mapping_num` are skipped; empty `atom_indices` or empty mol → no-op.
+     */
+    void setAtomMapping(const std::vector<unsigned int>& atom_indices,
+                        int mapping_num);
+
+    /**
      * Replace the element of a single atom (by index) with the element whose
      * RDKit atomic number is `atomic_num`. Used by the atom context menu's
      * "Set Element" submenu (Qt: ModifyAtomsMenu::createElementMenu →

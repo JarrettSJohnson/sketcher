@@ -1271,6 +1271,47 @@ void MolModel::adjustRadicalElectronsOnAtoms(
                         : "Remove unpaired electrons");
 }
 
+void MolModel::setAtomMapping(const std::vector<unsigned int>& atom_indices,
+                              int mapping_num)
+{
+    if (atom_indices.empty() || m_mol.getNumAtoms() == 0) {
+        return;
+    }
+    // Capture (idx, old_map) up front; redo sets the new number, undo restores
+    // the old one exactly (same shape as adjustRadicalElectronsOnAtoms). Atom
+    // mapping is a per-atom property with no reindexing, so doCommand keeps the
+    // selection intact. Atoms already at the target number are skipped.
+    std::vector<std::pair<unsigned int, int>> previous;
+    previous.reserve(atom_indices.size());
+    for (auto idx : atom_indices) {
+        if (idx >= m_mol.getNumAtoms()) {
+            continue;
+        }
+        const int old_map = m_mol.getAtomWithIdx(idx)->getAtomMapNum();
+        if (old_map == mapping_num) {
+            continue;
+        }
+        previous.emplace_back(idx, old_map);
+    }
+    if (previous.empty()) {
+        return;
+    }
+    auto redo = [this, previous, mapping_num] {
+        for (const auto& [idx, _old] : previous) {
+            m_mol.getAtomWithIdx(idx)->setAtomMapNum(mapping_num);
+        }
+        emitSignal(modelChanged);
+    };
+    auto undo = [this, previous] {
+        for (const auto& [idx, old_map] : previous) {
+            m_mol.getAtomWithIdx(idx)->setAtomMapNum(old_map);
+        }
+        emitSignal(modelChanged);
+    };
+    doCommand(std::move(redo), std::move(undo),
+              mapping_num == 0 ? "Remove atom mapping" : "Add atom mapping");
+}
+
 void MolModel::setAtomElement(unsigned int idx, unsigned int atomic_num)
 {
     if (idx >= m_mol.getNumAtoms()) {

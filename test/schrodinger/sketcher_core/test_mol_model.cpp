@@ -1950,6 +1950,69 @@ BOOST_AUTO_TEST_CASE(testAdjustRadicalElectronsNoOpCases)
     BOOST_CHECK_EQUAL(stack.count(), afterMax);
 }
 
+BOOST_AUTO_TEST_CASE(testSetAtomMappingSetsNumberAndIsUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    const auto base = stack.count();
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomMapNum(), 0);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(2)->getAtomMapNum(), 0);
+
+    // Map atoms 0 and 2 to number 1 in one undo step.
+    m.setAtomMapping({0u, 2u}, 1);
+    BOOST_CHECK_EQUAL(stack.count(), base + 1);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomMapNum(), 1);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getAtomMapNum(), 0);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(2)->getAtomMapNum(), 1);
+
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomMapNum(), 0);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(2)->getAtomMapNum(), 0);
+
+    stack.redo();
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomMapNum(), 1);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(2)->getAtomMapNum(), 1);
+}
+
+BOOST_AUTO_TEST_CASE(testSetAtomMappingZeroClearsMapping)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    m.setAtomMapping({0u, 1u}, 3);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomMapNum(), 3);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getAtomMapNum(), 3);
+
+    // Clear the mapping on atom 1 only (0 target).
+    m.setAtomMapping({1u}, 0);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomMapNum(), 3);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(1)->getAtomMapNum(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(testSetAtomMappingNoOpCases)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+
+    // Empty mol — no-op, no undo entry.
+    m.setAtomMapping({0u}, 1);
+    BOOST_CHECK_EQUAL(stack.count(), 0u);
+
+    m.loadFromSmiles("CCO");
+    const auto base = stack.count();
+
+    // Empty index list — no-op.
+    m.setAtomMapping({}, 1);
+    BOOST_CHECK_EQUAL(stack.count(), base);
+
+    // Setting the number an atom already has — no-op (skipped, no undo entry).
+    m.setAtomMapping({0u}, 5);
+    const auto afterSet = stack.count();
+    m.setAtomMapping({0u}, 5);
+    BOOST_CHECK_EQUAL(stack.count(), afterSet);
+}
+
 BOOST_AUTO_TEST_CASE(testKekulizeBenzeneReplacesAromaticWithExplicitDoubles)
 {
     UndoStack stack;

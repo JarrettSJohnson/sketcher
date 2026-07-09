@@ -6629,4 +6629,136 @@ M  END`;
         await expect(page.getByTestId('monomer-ctx-protonate')).toHaveCount(0);
     });
 
+    // -------- Batch 66: reaction atom-mapping --------
+    // Qt AtomMappingSceneTool (via ReactionPopup Map Atoms / Remove Mapping):
+    // drag a reactant atom onto a product atom to give both the same map
+    // number; click a mapped atom to clear it. Reactant/product is decided by
+    // fragment centroid-x vs the arrow x.
+    async function pickReactionMode(page, testid) {
+        const btn = page.getByTestId('reaction');
+        await btn.hover();
+        await page.mouse.down();
+        await page.waitForTimeout(350);
+        await expect(page.getByTestId('reaction-popup')).toBeVisible();
+        await page.mouse.up();
+        await page.getByTestId(testid).click();
+    }
+    // Build a reactant carbon (left) + product carbon (right) + an arrow
+    // between them; returns the reactant/product atom descriptors.
+    async function buildTwoAtomReaction(page) {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 120, y: 180 } }); // reactant
+        await canvas.click({ position: { x: 420, y: 180 } }); // product
+        await page.getByTestId('reaction').click(); // arrow mode (default)
+        await canvas.click({ position: { x: 270, y: 180 } }); // arrow
+        const rd = await snapshot(page);
+        return {
+            reactant: rd.atoms.find((a) => a.rxn === 'r'),
+            product: rd.atoms.find((a) => a.rxn === 'p'),
+        };
+    }
+
+    test('reaction map: dragging a reactant onto a product maps both with the same number', async ({
+        page,
+    }) => {
+        const { reactant, product } = await buildTwoAtomReaction(page);
+        expect(reactant).toBeTruthy();
+        expect(product).toBeTruthy();
+        await pickReactionMode(page, 'reaction-popup-map');
+        const canvas = page.getByTestId('sketcher-canvas');
+        const box = await canvas.boundingBox();
+        const rp = await beadPixel(page, reactant);
+        const pp = await beadPixel(page, product);
+        await page.mouse.move(box.x + rp.px, box.y + rp.py);
+        await page.mouse.down();
+        await page.mouse.move(box.x + pp.px, box.y + pp.py, { steps: 6 });
+        await page.mouse.up();
+        const rd = await snapshot(page);
+        const r = rd.atoms.find((a) => a.i === reactant.i);
+        const p = rd.atoms.find((a) => a.i === product.i);
+        expect(r.map).toBe(1);
+        expect(p.map).toBe(1);
+        // Undoable in one step.
+        await page.getByTestId('undo').click();
+        const rd2 = await snapshot(page);
+        expect(rd2.atoms.find((a) => a.i === reactant.i).map).toBeUndefined();
+        expect(rd2.atoms.find((a) => a.i === product.i).map).toBeUndefined();
+    });
+
+    test('reaction map: dragging between two reactants does nothing (invalid pair)', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Two reactant carbons (both left of the arrow) + a product + arrow.
+        await canvas.click({ position: { x: 100, y: 140 } });
+        await canvas.click({ position: { x: 100, y: 240 } });
+        await canvas.click({ position: { x: 440, y: 180 } });
+        await page.getByTestId('reaction').click();
+        await canvas.click({ position: { x: 280, y: 180 } });
+        let rd = await snapshot(page);
+        const reactants = rd.atoms.filter((a) => a.rxn === 'r');
+        expect(reactants.length).toBe(2);
+        await pickReactionMode(page, 'reaction-popup-map');
+        const box = await canvas.boundingBox();
+        const a = await beadPixel(page, reactants[0]);
+        const b = await beadPixel(page, reactants[1]);
+        await page.mouse.move(box.x + a.px, box.y + a.py);
+        await page.mouse.down();
+        await page.mouse.move(box.x + b.px, box.y + b.py, { steps: 6 });
+        await page.mouse.up();
+        rd = await snapshot(page);
+        // No atom picked up a mapping.
+        expect(rd.atoms.every((at) => (at.map ?? 0) === 0)).toBe(true);
+    });
+
+    test('reaction unmap: clicking a mapped atom clears the whole pair', async ({
+        page,
+    }) => {
+        const { reactant, product } = await buildTwoAtomReaction(page);
+        await pickReactionMode(page, 'reaction-popup-map');
+        const canvas = page.getByTestId('sketcher-canvas');
+        const box = await canvas.boundingBox();
+        const rp = await beadPixel(page, reactant);
+        const pp = await beadPixel(page, product);
+        await page.mouse.move(box.x + rp.px, box.y + rp.py);
+        await page.mouse.down();
+        await page.mouse.move(box.x + pp.px, box.y + pp.py, { steps: 6 });
+        await page.mouse.up();
+        let rd = await snapshot(page);
+        expect(rd.atoms.find((a) => a.i === reactant.i).map).toBe(1);
+        // Switch to Remove Mapping and click the reactant → clears both.
+        await pickReactionMode(page, 'reaction-popup-unmap');
+        const rp2 = await beadPixel(page,
+            rd.atoms.find((a) => a.i === reactant.i));
+        await canvas.click({ position: { x: rp2.px, y: rp2.py } });
+        rd = await snapshot(page);
+        expect(rd.atoms.find((a) => a.i === reactant.i).map).toBeUndefined();
+        expect(rd.atoms.find((a) => a.i === product.i).map).toBeUndefined();
+    });
+
+    test('reaction map: the map number renders in the exported SVG', async ({
+        page,
+    }) => {
+        const { reactant, product } = await buildTwoAtomReaction(page);
+        await pickReactionMode(page, 'reaction-popup-map');
+        const canvas = page.getByTestId('sketcher-canvas');
+        const box = await canvas.boundingBox();
+        const rp = await beadPixel(page, reactant);
+        const pp = await beadPixel(page, product);
+        await page.mouse.move(box.x + rp.px, box.y + rp.py);
+        await page.mouse.down();
+        await page.mouse.move(box.x + pp.px, box.y + pp.py, { steps: 6 });
+        await page.mouse.up();
+        await page.getByTestId('export').click();
+        await page.getByTestId('export-save-image').click();
+        await page.getByTestId('save-image-format-select').selectOption('svg');
+        const downloadPromise = page.waitForEvent('download');
+        await page.getByTestId('save-image-save').click();
+        const download = await downloadPromise;
+        const path = await download.path();
+        const fs = await import('node:fs/promises');
+        const body = await fs.readFile(path, 'utf8');
+        expect(body).toContain(':1');
+    });
+
 });

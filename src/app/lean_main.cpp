@@ -475,6 +475,32 @@ void apply_stereo_annotations(RDKit::RWMol& mol)
  * labels back out alongside the position/element data. The mutations are
  * idempotent — calling again with the same mol produces the same labels.
  */
+// Per-atom reaction role: 'r' (reactant) or 'p' (product), classified by each
+// connected fragment's centroid-x relative to the arrow x. Ported from Qt's
+// MolModel::isReactantAtom (model/mol_model.cpp:329): frag centroid x <= arrow
+// x ⇒ reactant, else product. Returns an empty vector when there's no arrow.
+std::vector<char> reaction_roles(RDKit::RWMol& mol, double arrow_x)
+{
+    std::vector<int> frag_of_atom;
+    const auto frags =
+        RDKit::MolOps::getMolFrags(mol, /*sanitizeFrags=*/false, &frag_of_atom);
+    const auto& conf = mol.getConformer();
+    std::vector<double> sum_x(frags.size(), 0.0);
+    std::vector<int> count(frags.size(), 0);
+    for (unsigned int i = 0; i < mol.getNumAtoms(); ++i) {
+        const int f = frag_of_atom[i];
+        sum_x[f] += conf.getAtomPos(i).x;
+        count[f] += 1;
+    }
+    std::vector<char> roles(mol.getNumAtoms(), 'r');
+    for (unsigned int i = 0; i < mol.getNumAtoms(); ++i) {
+        const int f = frag_of_atom[i];
+        const double cx = count[f] ? sum_x[f] / count[f] : 0.0;
+        roles[i] = (cx <= arrow_x) ? 'r' : 'p';
+    }
+    return roles;
+}
+
 std::string mol_to_render_description(
     RDKit::RWMol& mol,
     const schrodinger::sketcher_core::MolModel* model = nullptr)
@@ -521,6 +547,14 @@ std::string mol_to_render_description(
         apply_stereo_annotations(mol);
     }
     const auto& conf = mol.getConformer();
+
+    // Reaction roles (reactant/product per atom) — only meaningful once an
+    // arrow exists and the scene is atomistic. Computed once (getMolFrags is
+    // O(atoms+bonds)) and reused across the atom loop for the "rxn" field.
+    std::vector<char> rxn_roles;
+    if (model != nullptr && model->hasRxnArrow() && !is_monomeric) {
+        rxn_roles = reaction_roles(mol, model->rxnArrow().first);
+    }
 
     std::ostringstream os;
     os.precision(4);
@@ -690,6 +724,18 @@ std::string mol_to_render_description(
         if (chiral_possible &&
             !atom->hasProp(RDKit::common_properties::_CIPCode)) {
             os << ",\"psbl\":true";
+        }
+        // Reaction atom-map number (Qt: AtomItem paints ":n"). Emitted only
+        // when set so the common unmapped scene stays minimal.
+        const int map_num = atom->getAtomMapNum();
+        if (map_num != 0) {
+            os << ",\"map\":" << map_num;
+        }
+        // Reaction role (reactant/product) — drives the Map Atoms drag's
+        // valid-pair gate and the Remove Mapping product special-case. Present
+        // only while an arrow exists.
+        if (!rxn_roles.empty()) {
+            os << ",\"rxn\":\"" << rxn_roles[i] << "\"";
         }
         if (model != nullptr && model->isAtomSelected(i)) {
             os << ",\"sel\":true";
@@ -1327,6 +1373,15 @@ class MolModelJS
         }
         m_model.adjustRadicalElectronsOnAtoms(idx, delta);
     }
+    void setAtomMapping(emscripten::val atom_indices, int mapping_num)
+    {
+        const auto n = atom_indices["length"].as<unsigned int>();
+        std::vector<unsigned int> idx(n);
+        for (unsigned int i = 0; i < n; ++i) {
+            idx[i] = atom_indices[i].as<unsigned int>();
+        }
+        m_model.setAtomMapping(idx, mapping_num);
+    }
     void aromatize()
     {
         m_model.aromatize();
@@ -1571,6 +1626,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
                   &MolModelJS::removeExplicitHsFromAtoms)
         .function("adjustRadicalElectronsOnAtoms",
                   &MolModelJS::adjustRadicalElectronsOnAtoms)
+        .function("setAtomMapping", &MolModelJS::setAtomMapping)
         .function("aromatize", &MolModelJS::aromatize)
         .function("kekulize", &MolModelJS::kekulize)
         .function("cleanUp", &MolModelJS::cleanUp)

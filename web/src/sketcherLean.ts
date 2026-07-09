@@ -320,6 +320,12 @@ export interface MolModelInstance {
      * are skipped silently. No-op on empty input, delta=0, or empty mol.
      */
     adjustRadicalElectronsOnAtoms(atomIndices: number[], delta: number): void;
+    /**
+     * Set the reaction atom-map number of each atom in `atomIndices` to
+     * `mappingNum` (0 clears it). Single undo step; preserves the selection.
+     * Backs the reaction-popup Map Atoms / Remove Mapping tools.
+     */
+    setAtomMapping(atomIndices: number[], mappingNum: number): void;
     /** Perceive aromaticity — sets arom flag on atoms/bonds. Single undo step. */
     aromatize(): void;
     /** Kekulize aromatic bonds back to explicit SINGLE/DOUBLE alternation. Single undo step. */
