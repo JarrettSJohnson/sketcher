@@ -155,8 +155,9 @@ interface AtomDesc {
     // of the atom label. Qt: AtomItem::updateChargeAndRadicalLabel
     // (molviewer/atom_item.cpp:539-575).
     nrad?: number;
-    // Monomer bead type ("pep" for peptide; NA types follow later). Present
-    // only for coarse-grained monomer atoms; drives shape + color-class lookup.
+    // Monomer bead subtype: "pep" (peptide, rounded rect), "sugar" (NA, rect),
+    // "phos" (NA, ellipse), "base" (NA, diamond), or "chem". Present only for
+    // coarse-grained monomer atoms; drives shape + color-class lookup.
     mon?: string;
     // Monomer display label (1-letter residue symbol, e.g. "A"). Present with
     // `mon`. Rendered centered inside the bead.
@@ -185,6 +186,9 @@ interface BondDesc {
     // the renderer draws a plain connector between beads instead of a chemical
     // bond (a monomer bond is DATIVE and would otherwise render as an arrow).
     mon?: boolean;
+    // Monomer connector kind. "base" for a thin sugar→base branch connector
+    // (Qt NA_BACKBONE_TO_BASE_CONNECTOR); absent for a backbone connector.
+    conn?: string;
 }
 
 // Combined bond annotation text (query label + ring-topology symbol), drawn
@@ -208,12 +212,27 @@ const AMINO_ACID_COLOR_BY_RES_NAME: Record<string, string> = {
     R: '#B8D1FC', S: '#B9FCFD', T: '#B9FCFD', V: '#B4FCB4', W: '#FBC6B7',
     Y: '#FBC6B7', Z: '#F3E0F9',
 };
+// Nucleic-acid base fill colors by 1-letter residue, from Qt's
+// NUCLEIC_ACID_COLOR_BY_RES_NAME + MONOMER_COLOR_MAP (monomer_constants.h).
+const NUCLEIC_ACID_COLOR_BY_RES_NAME: Record<string, string> = {
+    A: '#B0A8F3', // ADENINE
+    C: '#FF9CB6', // CYTOSINE
+    G: '#6CF2BF', // GUANINE
+    T: '#F0F693', // THYMINE
+    U: '#F1CC6C', // URACIL
+};
 // Chrome colors (monomer_constants.h): unnatural fill, borders, label text.
 const MONOMER_DEFAULT_FILL = '#F0E7E1';   // OTHER
 const MONOMER_BORDER_STD = '#444444';     // GRAY4 — standard residues
 const MONOMER_BORDER_NONSTD = '#330000';  // DARK_RED — D-/non-standard
 const MONOMER_LABEL_COLOR = '#333333';    // GRAY3
 const MONOMER_CONNECTOR_COLOR = '#444444'; // GRAY4 — peptide linear connector
+// NA backbone bead fill (sugar + phosphate) — Qt NA_BACKBONE_COLOR.
+const NA_BACKBONE_FILL = '#E0E0E0';
+// NA sugar→base branch connector — a thinner, lighter GRAY6 line (Qt
+// NA_BACKBONE_TO_BASE_CONNECTOR). The backbone connector reuses
+// MONOMER_CONNECTOR_COLOR (GRAY4 #444444), shared with peptides.
+const NA_BASE_CONNECTOR_COLOR = '#666666';
 // Center-to-center spacing for a linear monomer chain, in model units. Matches
 // Qt's MONOMER_BOND_LENGTH (rdkit_extensions/helm/monomer_coordgen.cpp = 1.5).
 const MONOMER_BOND_LENGTH = 1.5;
@@ -247,6 +266,45 @@ function roundedRectPath(
     ctx.arcTo(x, y + h, x, y, rr);
     ctx.arcTo(x, y, x + w, y, rr);
     ctx.closePath();
+}
+// Trace a diamond (rhombus) subpath centered at (cx, cy). Used for nucleobase
+// beads (Qt NucleicAcidBaseItem::set_path_to_diamond).
+function diamondPath(
+    ctx: CanvasRenderingContext2D, cx: number, cy: number, half: number,
+): void {
+    ctx.beginPath();
+    ctx.moveTo(cx - half, cy);
+    ctx.lineTo(cx, cy + half);
+    ctx.lineTo(cx + half, cy);
+    ctx.lineTo(cx, cy - half);
+    ctx.closePath();
+}
+
+// A monomer bead's shape is chosen from its subtype (AtomDesc.mon): peptide →
+// rounded rect, sugar → plain rect, phosphate → ellipse, base → diamond.
+// Fill: peptide by AA class, sugar/phosphate the NA backbone gray, base by
+// nucleobase color (else the unnatural default). Border: gray for standard
+// residues, dark red otherwise — for NA, "standard" means A/C/G/T/U, so sugars,
+// phosphates, and non-standard bases (e.g. N) get the dark-red outline (Qt
+// get_border_and_font_settings_for_nucleic_acid + is_standard_nucleotide).
+function isStandardNucleobase(lbl: string | undefined): boolean {
+    return !!lbl && lbl in NUCLEIC_ACID_COLOR_BY_RES_NAME;
+}
+function monomerFillFor(mon: string | undefined, lbl: string | undefined): string {
+    if (mon === 'sugar' || mon === 'phos') return NA_BACKBONE_FILL;
+    if (mon === 'base') {
+        return (lbl && NUCLEIC_ACID_COLOR_BY_RES_NAME[lbl]) ||
+            MONOMER_DEFAULT_FILL;
+    }
+    return monomerFill(lbl); // peptide / chem
+}
+function monomerBorderFor(mon: string | undefined, lbl: string | undefined): string {
+    if (mon === 'sugar' || mon === 'phos') return MONOMER_BORDER_NONSTD;
+    if (mon === 'base') {
+        return isStandardNucleobase(lbl) ? MONOMER_BORDER_STD
+            : MONOMER_BORDER_NONSTD;
+    }
+    return monomerBorder(lbl); // peptide / chem
 }
 
 // Mirror RDKit::Bond::BondDir for the values we render.
@@ -1076,15 +1134,22 @@ function drawMonomers(
 ): void {
     const byIdx = new Map<number, AtomDesc>();
     for (const a of rd.atoms) byIdx.set(a.i, a);
-    // Connectors first so beads paint on top.
-    ctx.strokeStyle = MONOMER_CONNECTOR_COLOR;
-    ctx.lineWidth = Math.max(2, view.scale * 0.1);
+    // Connectors first so beads paint on top. A sugar→base branch (conn:"base")
+    // is drawn thinner and lighter than a peptide/NA backbone connector.
+    const backboneW = Math.max(2, view.scale * 0.1);
     for (const b of rd.bonds) {
         const a1 = byIdx.get(b.a);
         const a2 = byIdx.get(b.b);
         if (!a1 || !a2) continue;
         const p1 = pixelFromModel(canvas, view, a1.x, a1.y);
         const p2 = pixelFromModel(canvas, view, a2.x, a2.y);
+        if (b.conn === 'base') {
+            ctx.strokeStyle = NA_BASE_CONNECTOR_COLOR;
+            ctx.lineWidth = Math.max(1.5, view.scale * 0.05);
+        } else {
+            ctx.strokeStyle = MONOMER_CONNECTOR_COLOR;
+            ctx.lineWidth = backboneW;
+        }
         ctx.beginPath();
         ctx.moveTo(p1.px, p1.py);
         ctx.lineTo(p2.px, p2.py);
@@ -1094,21 +1159,35 @@ function drawMonomers(
     const half = Math.max(10, view.scale * 0.37);
     const radius = Math.max(3, view.scale * 0.1);
     const font = `${Math.max(9, Math.round(view.scale * 0.42))}px sans-serif`;
+    // Trace the bead outline for the given subtype into the current path.
+    const beadPath = (mon: string | undefined, cx: number, cy: number,
+                      h: number): void => {
+        if (mon === 'base') {
+            // Diamond needs a larger half-diagonal to enclose the same label.
+            diamondPath(ctx, cx, cy, h * 1.35);
+        } else if (mon === 'phos') {
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, h, h, 0, 0, 2 * Math.PI);
+        } else if (mon === 'sugar') {
+            ctx.beginPath();
+            ctx.rect(cx - h, cy - h, h * 2, h * 2);
+        } else {
+            roundedRectPath(ctx, cx - h, cy - h, h * 2, h * 2, radius);
+        }
+    };
     for (const a of rd.atoms) {
         const p = pixelFromModel(canvas, view, a.x, a.y);
         // Selection halo (sage ring), matching the atomistic selection look.
         if (a.sel) {
-            roundedRectPath(ctx, p.px - half - 3, p.py - half - 3,
-                (half + 3) * 2, (half + 3) * 2, radius + 2);
+            beadPath(a.mon, p.px, p.py, half + 3);
             ctx.fillStyle = ACCENT_GREEN;
             ctx.fill();
         }
-        roundedRectPath(ctx, p.px - half, p.py - half, half * 2, half * 2,
-            radius);
-        ctx.fillStyle = monomerFill(a.lbl);
+        beadPath(a.mon, p.px, p.py, half);
+        ctx.fillStyle = monomerFillFor(a.mon, a.lbl);
         ctx.fill();
         ctx.lineWidth = 2;
-        ctx.strokeStyle = monomerBorder(a.lbl);
+        ctx.strokeStyle = monomerBorderFor(a.mon, a.lbl);
         ctx.stroke();
         ctx.fillStyle = MONOMER_LABEL_COLOR;
         ctx.font = font;
@@ -1843,16 +1922,20 @@ function buildSketchSvg(
         const byIdx = new Map<number, AtomDesc>();
         for (const a of rd.atoms) byIdx.set(a.i, a);
         const cw = Math.max(2, view.scale * 0.1);
+        const baseCw = Math.max(1.5, view.scale * 0.05);
         for (const b of rd.bonds) {
             const a1 = byIdx.get(b.a);
             const a2 = byIdx.get(b.b);
             if (!a1 || !a2) continue;
             const p1 = px(a1.x, a1.y);
             const p2 = px(a2.x, a2.y);
+            const isBase = b.conn === 'base';
             parts.push(
                 `<line x1='${f(p1.px)}' y1='${f(p1.py)}' ` +
                 `x2='${f(p2.px)}' y2='${f(p2.py)}' ` +
-                `stroke='${MONOMER_CONNECTOR_COLOR}' stroke-width='${f(cw)}'/>`,
+                `stroke='${isBase ? NA_BASE_CONNECTOR_COLOR
+                    : MONOMER_CONNECTOR_COLOR}' ` +
+                `stroke-width='${f(isBase ? baseCw : cw)}'/>`,
             );
         }
         const half = Math.max(10, view.scale * 0.37);
@@ -1860,12 +1943,33 @@ function buildSketchSvg(
         const fs = Math.max(9, Math.round(view.scale * 0.42));
         for (const a of rd.atoms) {
             const p = px(a.x, a.y);
+            const fill = monomerFillFor(a.mon, a.lbl);
+            const stroke = monomerBorderFor(a.mon, a.lbl);
+            if (a.mon === 'base') {
+                const h = half * 1.35;
+                parts.push(
+                    `<polygon points='${f(p.px - h)},${f(p.py)} ` +
+                    `${f(p.px)},${f(p.py + h)} ${f(p.px + h)},${f(p.py)} ` +
+                    `${f(p.px)},${f(p.py - h)}' ` +
+                    `fill='${fill}' stroke='${stroke}' stroke-width='2'/>`,
+                );
+            } else if (a.mon === 'phos') {
+                parts.push(
+                    `<ellipse cx='${f(p.px)}' cy='${f(p.py)}' ` +
+                    `rx='${f(half)}' ry='${f(half)}' ` +
+                    `fill='${fill}' stroke='${stroke}' stroke-width='2'/>`,
+                );
+            } else {
+                // sugar → sharp rect; peptide/chem → rounded rect.
+                const rx = a.mon === 'sugar' ? 0 : radius;
+                parts.push(
+                    `<rect x='${f(p.px - half)}' y='${f(p.py - half)}' ` +
+                    `width='${f(half * 2)}' height='${f(half * 2)}' ` +
+                    `rx='${f(rx)}' ry='${f(rx)}' ` +
+                    `fill='${fill}' stroke='${stroke}' stroke-width='2'/>`,
+                );
+            }
             parts.push(
-                `<rect x='${f(p.px - half)}' y='${f(p.py - half)}' ` +
-                `width='${f(half * 2)}' height='${f(half * 2)}' ` +
-                `rx='${f(radius)}' ry='${f(radius)}' ` +
-                `fill='${monomerFill(a.lbl)}' ` +
-                `stroke='${monomerBorder(a.lbl)}' stroke-width='2'/>`,
                 `<text x='${f(p.px)}' y='${f(p.py)}' ` +
                 `fill='${MONOMER_LABEL_COLOR}' font-family='sans-serif' ` +
                 `font-size='${fs}' text-anchor='middle' ` +
@@ -2413,9 +2517,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     const [bondQueryMode, setBondQueryMode] =
         useState<BondQueryChoice>('aromatic');
     // Armed monomer for the monomer draw tool: the 1-letter residue symbol and
-    // its ChainType int (0=PEPTIDE). Set when an amino-acid tile is clicked.
+    // its ChainType int (0=PEPTIDE, 1=RNA). Set when an amino-acid or nucleic-
+    // acid building-block tile is clicked.
     const [monomerResName, setMonomerResName] = useState<string>('A');
     const [monomerChainType, setMonomerChainType] = useState<number>(0);
+    // Armed full nucleotide (sugar/base/phosphate symbols) for the RNA/DNA
+    // nucleotide tiles. Non-null routes the monomer tool through addNucleotide /
+    // addBoundNucleotide instead of the single-monomer path. `id` labels the
+    // active tile (e.g. "rna"/"dna") for the pressed-state highlight.
+    const [nucleotideSpec, setNucleotideSpec] = useState<
+        { id: string; sugar: string; base: string; phos: string } | null>(null);
     // Each stereo / bond-order slot is a Qt ModularToolButton: clicking
     // applies its currently-selected mode; picking from its popup swaps the
     // mode AND applies it. The selected mode determines both icon and
@@ -2786,9 +2897,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // [R dR P] (row 8) for the sugar / deoxyribose / phosphate
     // building blocks. Enum + display names mirror
     // src/schrodinger/sketcher/model/sketcher_model.h::NucleicAcidTool.
-    // Like the amino tiles, every click stubs through comingSoon since
-    // the lean MolModel doesn't speak monomer yet; long-press popups
-    // (RNA/DNA base picker + Custom triple-builder) are deferred.
+    // Base tiles place a single nucleobase (diamond) and the R/dR/P blocks a
+    // single sugar (rect) / phosphate (ellipse); the RNA/DNA selectors place a
+    // full sugar+base+phosphate nucleotide. Long-press base pickers and the
+    // Custom triple-builder popup are deferred to a later batch.
     const NUCLEIC_LETTERS: Array<readonly [string, string, string]> = [
         ['a',  'A',  'Adenine'],
         ['c',  'C',  'Cytosine'],
@@ -3255,17 +3367,33 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
 
             if (tool === 'monomer') {
                 // Monomer draw tool — Qt's DrawMonomerSceneTool. Clicking an
-                // existing monomer bead chains a new monomer off it (backbone
-                // connection, placed one MONOMER_BOND_LENGTH to the right);
-                // clicking empty canvas drops a free monomer.
-                if (hit >= 0) {
-                    const bead = rd.atoms.find((a) => a.i === hit);
-                    if (bead) {
-                        model.addBoundMonomer(monomerResName, monomerChainType,
-                            bead.x + MONOMER_BOND_LENGTH, bead.y, hit);
-                        setStatus(`chained ${monomerResName} to monomer #${hit}`);
+                // existing monomer bead chains new content off it; clicking
+                // empty canvas drops it free. A full nucleotide (RNA/DNA tile)
+                // routes through addNucleotide; a single monomer (amino-acid or
+                // NA building-block tile) through addMonomer.
+                const beadHit = hit >= 0
+                    ? rd.atoms.find((a) => a.i === hit) : undefined;
+                if (nucleotideSpec) {
+                    const { sugar, base, phos } = nucleotideSpec;
+                    if (beadHit) {
+                        model.addBoundNucleotide(sugar, base, phos,
+                            beadHit.x + MONOMER_BOND_LENGTH, beadHit.y, hit);
+                        setStatus(`chained ${sugar}(${base})${phos} nucleotide `
+                            + `to monomer #${hit}`);
                         return;
                     }
+                    const { x, y } =
+                        modelFromPixel(canvas, viewRef.current, px, py);
+                    model.addNucleotide(sugar, base, phos, x, y);
+                    setStatus(`placed ${sugar}(${base})${phos} nucleotide at `
+                        + `(${x.toFixed(2)}, ${y.toFixed(2)})`);
+                    return;
+                }
+                if (beadHit) {
+                    model.addBoundMonomer(monomerResName, monomerChainType,
+                        beadHit.x + MONOMER_BOND_LENGTH, beadHit.y, hit);
+                    setStatus(`chained ${monomerResName} to monomer #${hit}`);
+                    return;
                 }
                 const { x, y } = modelFromPixel(canvas, viewRef.current, px, py);
                 model.addMonomer(monomerResName, monomerChainType, x, y);
@@ -3448,7 +3576,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
             }
         },
         [tool, element, ring, reactionMode, atomQueryMode, bondQueryMode,
-         monomerResName, monomerChainType],
+         monomerResName, monomerChainType, nucleotideSpec],
     );
 
     const onCanvasMove = useCallback(
@@ -5602,11 +5730,13 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                     testid={`monomer-aa-${id}`}
                                     title={`Draw ${full} (${sym})`}
                                     active={tool === 'monomer'
+                                        && !nucleotideSpec
                                         && monomerChainType === 0
                                         && monomerResName === sym}
                                     onClick={() => {
                                         setMonomerResName(sym);
                                         setMonomerChainType(0); // PEPTIDE
+                                        setNucleotideSpec(null);
                                         setTool('monomer');
                                         setPendingBondAtom(null);
                                         setStatus(`monomer: ${full} (${sym}) `
@@ -5619,19 +5749,45 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         <div style={styles.nucleicGrid}
                             data-testid='nucleic-acid-grid'>
                             <button type='button'
-                                style={styles.nucleicWideBtn}
+                                style={{
+                                    ...styles.nucleicWideBtn,
+                                    ...(tool === 'monomer'
+                                        && nucleotideSpec?.id === 'rna'
+                                        ? styles.monomerTabBtnActive : {}),
+                                }}
                                 data-testid='monomer-na-rna'
-                                title='Add an RNA nucleotide (press & hold to pick a base)'
-                                onClick={() => comingSoon(
-                                    'Add RNA nucleotide')}>
+                                aria-pressed={tool === 'monomer'
+                                    && nucleotideSpec?.id === 'rna'}
+                                title='Add an RNA nucleotide (ribose + uracil + phosphate)'
+                                onClick={() => {
+                                    setNucleotideSpec({ id: 'rna', sugar: 'R',
+                                        base: 'U', phos: 'P' });
+                                    setTool('monomer');
+                                    setPendingBondAtom(null);
+                                    setStatus('nucleotide: RNA R(U)P '
+                                        + '— click canvas to place');
+                                }}>
                                 RNA
                             </button>
                             <button type='button'
-                                style={styles.nucleicWideBtn}
+                                style={{
+                                    ...styles.nucleicWideBtn,
+                                    ...(tool === 'monomer'
+                                        && nucleotideSpec?.id === 'dna'
+                                        ? styles.monomerTabBtnActive : {}),
+                                }}
                                 data-testid='monomer-na-dna'
-                                title='Add a DNA nucleotide (press & hold to pick a base)'
-                                onClick={() => comingSoon(
-                                    'Add DNA nucleotide')}>
+                                aria-pressed={tool === 'monomer'
+                                    && nucleotideSpec?.id === 'dna'}
+                                title='Add a DNA nucleotide (deoxyribose + thymine + phosphate)'
+                                onClick={() => {
+                                    setNucleotideSpec({ id: 'dna', sugar: 'dR',
+                                        base: 'T', phos: 'P' });
+                                    setTool('monomer');
+                                    setPendingBondAtom(null);
+                                    setStatus('nucleotide: DNA dR(T)P '
+                                        + '— click canvas to place');
+                                }}>
                                 DNA
                             </button>
                             <button type='button'
@@ -5649,8 +5805,19 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                         label={sym}
                                         testid={`monomer-na-${id}`}
                                         title={`Draw ${full} (${sym})`}
-                                        onClick={() => comingSoon(
-                                            `Draw ${full}`)} />
+                                        active={tool === 'monomer'
+                                            && !nucleotideSpec
+                                            && monomerChainType === 1
+                                            && monomerResName === sym}
+                                        onClick={() => {
+                                            setMonomerResName(sym);
+                                            setMonomerChainType(1); // RNA
+                                            setNucleotideSpec(null);
+                                            setTool('monomer');
+                                            setPendingBondAtom(null);
+                                            setStatus(`monomer: ${full} (${sym})`
+                                                + ' — click canvas to place');
+                                        }} />
                                 ))}
                             </div>
                             <div style={styles.elementGrid}>
@@ -5660,8 +5827,19 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                         label={sym}
                                         testid={`monomer-na-${id}`}
                                         title={`Draw ${full} (${sym})`}
-                                        onClick={() => comingSoon(
-                                            `Draw ${full}`)} />
+                                        active={tool === 'monomer'
+                                            && !nucleotideSpec
+                                            && monomerChainType === 1
+                                            && monomerResName === sym}
+                                        onClick={() => {
+                                            setMonomerResName(sym);
+                                            setMonomerChainType(1); // RNA
+                                            setNucleotideSpec(null);
+                                            setTool('monomer');
+                                            setPendingBondAtom(null);
+                                            setStatus(`monomer: ${full} (${sym})`
+                                                + ' — click canvas to place');
+                                        }} />
                                 ))}
                             </div>
                         </div>

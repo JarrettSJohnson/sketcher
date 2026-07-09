@@ -7,6 +7,7 @@
  * Copyright Schrodinger LLC, All Rights Reserved.
  --------------------------------------------------------------------------- */
 
+#include <cctype>
 #include <cstddef>
 #include <sstream>
 #include <string>
@@ -23,6 +24,7 @@
 #include <GraphMol/Conformer.h>
 #include <GraphMol/FileParsers/MolFileStereochem.h>
 #include <GraphMol/MolOps.h>
+#include <GraphMol/MonomerInfo.h>
 #include <GraphMol/RWMol.h>
 
 #include "schrodinger/rdkit_extensions/convert.h"
@@ -43,6 +45,40 @@ namespace
 using schrodinger::rdkit_extensions::compute2DCoords;
 using schrodinger::rdkit_extensions::Format;
 using schrodinger::rdkit_extensions::to_rdkit;
+
+/**
+ * Classify a monomer bead for the JS renderer's shape/color dispatch. Mirrors
+ * Qt's get_monomer_type / get_na_monomer_type_from_res_name (sketcher/rdkit/
+ * monomeric.cpp): a "PEPTIDE" chain prefix → "pep" (rounded rect); an "RNA"
+ * prefix (HELM uses it for DNA too) is sub-typed by the residue symbol's last
+ * character — "phos" (…p, ellipse), "sugar" (…r, rect), else "base" (diamond).
+ * Anything else is a generic "chem" monomer.
+ */
+std::string monomer_subtype(const RDKit::Atom* atom)
+{
+    const auto* info = dynamic_cast<const RDKit::AtomPDBResidueInfo*>(
+        atom->getMonomerInfo());
+    const std::string chain = info != nullptr ? info->getChainId() : "";
+    if (chain.rfind("PEPTIDE", 0) == 0) {
+        return "pep";
+    }
+    if (chain.rfind("RNA", 0) == 0) {
+        std::string sym;
+        atom->getPropIfPresent(ATOM_LABEL, sym);
+        if (!sym.empty()) {
+            switch (std::tolower(static_cast<unsigned char>(sym.back()))) {
+                case 'p':
+                    return "phos";
+                case 'r':
+                    return "sugar";
+                default:
+                    break;
+            }
+        }
+        return "base";
+    }
+    return "chem";
+}
 
 /**
  * Compute the per-atom chirality label for `atom`. Reads
@@ -234,12 +270,14 @@ std::string mol_to_render_description(
         os << "{\"i\":" << i << ",\"el\":\"" << atom->getSymbol()
            << "\",\"x\":" << p.x << ",\"y\":" << p.y;
         if (is_monomeric) {
-            // Monomer bead: emit its type (MVP: all peptide) and 1-letter
-            // display label (the residue symbol, from the atomLabel prop).
-            // Skip all atomistic chemistry annotations — they don't apply.
+            // Monomer bead: emit its subtype (pep / sugar / phos / base — drives
+            // the JS shape + color dispatch) and 1-letter display label (the
+            // residue symbol, from the atomLabel prop). Skip all atomistic
+            // chemistry annotations — they don't apply.
             std::string label;
             atom->getPropIfPresent(ATOM_LABEL, label);
-            os << ",\"mon\":\"pep\",\"lbl\":\"" << label << "\"";
+            os << ",\"mon\":\"" << monomer_subtype(atom) << "\",\"lbl\":\""
+               << label << "\"";
             if (model != nullptr && model->isAtomSelected(i)) {
                 os << ",\"sel\":true";
             }
@@ -385,7 +423,14 @@ std::string mol_to_render_description(
             // Monomer connection: the JS renderer draws a plain connector
             // between the two beads. Skip all atomistic bond annotations
             // (a monomer bond is DATIVE, which would otherwise emit "bt").
+            // A connection touching a nucleobase is a thin sugar→base branch
+            // (Qt NA_BACKBONE_TO_BASE_CONNECTOR); flag it so the renderer draws
+            // it lighter/thinner than a backbone connector.
             os << ",\"mon\":true";
+            if (monomer_subtype(b->getBeginAtom()) == "base" ||
+                monomer_subtype(b->getEndAtom()) == "base") {
+                os << ",\"conn\":\"base\"";
+            }
             if (model != nullptr && model->isBondSelected(i)) {
                 os << ",\"sel\":true";
             }
@@ -745,6 +790,17 @@ class MolModelJS
     {
         m_model.addBoundMonomer(res_name, chain_type, x, y, bound_to_idx);
     }
+    void addNucleotide(const std::string& sugar, const std::string& base,
+                       const std::string& phos, double x, double y)
+    {
+        m_model.addNucleotide(sugar, base, phos, x, y);
+    }
+    void addBoundNucleotide(const std::string& sugar, const std::string& base,
+                            const std::string& phos, double x, double y,
+                            unsigned int bound_to_idx)
+    {
+        m_model.addBoundNucleotide(sugar, base, phos, x, y, bound_to_idx);
+    }
     void rotateSelectedAtoms(double angle_rad)
     {
         m_model.rotateSelectedAtoms(angle_rad);
@@ -1058,6 +1114,8 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("addAtomChain", &MolModelJS::addAtomChain)
         .function("addMonomer", &MolModelJS::addMonomer)
         .function("addBoundMonomer", &MolModelJS::addBoundMonomer)
+        .function("addNucleotide", &MolModelJS::addNucleotide)
+        .function("addBoundNucleotide", &MolModelJS::addBoundNucleotide)
         .function("rotateSelectedAtoms", &MolModelJS::rotateSelectedAtoms)
         .function("flipSelectedAtoms", &MolModelJS::flipSelectedAtoms)
         .function("flipSubstituentAroundBond",

@@ -2432,3 +2432,114 @@ BOOST_AUTO_TEST_CASE(testAddBoundMonomerNoOpOnBadIndex)
     BOOST_CHECK_EQUAL(stack.count(), count_before);
     BOOST_CHECK_EQUAL(m.mol().getNumAtoms(), 1u);
 }
+
+BOOST_AUTO_TEST_CASE(testAddMonomerNucleicAcidUsesRnaChainPrefix)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    // chain_type 1 = RNA. A free nucleobase starts an "RNA" chain (HELM uses
+    // the RNA prefix for both RNA and DNA).
+    m.addMonomer("A", 1, 0.0, 0.0);
+    const auto* r0 = dynamic_cast<const RDKit::AtomPDBResidueInfo*>(
+        m.mol().getAtomWithIdx(0)->getMonomerInfo());
+    BOOST_REQUIRE(r0 != nullptr);
+    BOOST_CHECK_EQUAL(r0->getChainId(), "RNA1");
+}
+
+BOOST_AUTO_TEST_CASE(testAddBoundMonomerSugarToBaseUsesBranchLinkage)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    // A ribose sugar, then a base chained onto it. Sugar→base resolves to the
+    // R3-R1 branch linkage (not the R2-R1 backbone).
+    m.addMonomer("R", 1, 0.0, 0.0);
+    m.addBoundMonomer("A", 1, 0.0, -1.5, /*bound_to_idx=*/0);
+    BOOST_REQUIRE_EQUAL(m.mol().getNumAtoms(), 2u);
+    const auto* bond = m.mol().getBondBetweenAtoms(0, 1);
+    BOOST_REQUIRE(bond != nullptr);
+    std::string linkage;
+    BOOST_CHECK(bond->getPropIfPresent(LINKAGE, linkage));
+    BOOST_CHECK_EQUAL(linkage, BRANCH_LINKAGE);
+}
+
+BOOST_AUTO_TEST_CASE(testAddNucleotideBuildsSugarBasePhosphateInOneUndoStep)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    const auto count_before = stack.count();
+    // RNA nucleotide: ribose (R) + uracil (U) + phosphate (P).
+    m.addNucleotide("R", "U", "P", 2.0, 5.0);
+    // One undoable command builds all three monomers + both connections.
+    BOOST_CHECK_EQUAL(stack.count(), count_before + 1);
+    BOOST_CHECK(schrodinger::rdkit_extensions::isMonomeric(m.mol()));
+    BOOST_REQUIRE_EQUAL(m.mol().getNumAtoms(), 3u);
+    BOOST_REQUIRE_EQUAL(m.mol().getNumBonds(), 2u);
+    // Atom order: sugar (0), base (1), phosphate (2).
+    std::string sugar, base, phos;
+    BOOST_CHECK(m.mol().getAtomWithIdx(0)->getPropIfPresent(ATOM_LABEL, sugar));
+    BOOST_CHECK(m.mol().getAtomWithIdx(1)->getPropIfPresent(ATOM_LABEL, base));
+    BOOST_CHECK(m.mol().getAtomWithIdx(2)->getPropIfPresent(ATOM_LABEL, phos));
+    BOOST_CHECK_EQUAL(sugar, "R");
+    BOOST_CHECK_EQUAL(base, "U");
+    BOOST_CHECK_EQUAL(phos, "P");
+    // Layout: sugar at click, base one bond-length below, phosphate to the +x.
+    const auto& conf = m.mol().getConformer();
+    BOOST_CHECK_CLOSE(conf.getAtomPos(0).x, 2.0, 1e-6);
+    BOOST_CHECK_CLOSE(conf.getAtomPos(0).y, 5.0, 1e-6);
+    BOOST_CHECK_CLOSE(conf.getAtomPos(1).y, 5.0 - 1.5, 1e-6);
+    BOOST_CHECK_CLOSE(conf.getAtomPos(2).x, 2.0 + 1.5, 1e-6);
+    // Sugar→base is the R3-R1 branch; sugar→phosphate the R2-R1 backbone.
+    const auto* branch = m.mol().getBondBetweenAtoms(0, 1);
+    const auto* backbone = m.mol().getBondBetweenAtoms(0, 2);
+    BOOST_REQUIRE(branch != nullptr && backbone != nullptr);
+    std::string branch_linkage, backbone_linkage;
+    BOOST_CHECK(branch->getPropIfPresent(LINKAGE, branch_linkage));
+    BOOST_CHECK(backbone->getPropIfPresent(LINKAGE, backbone_linkage));
+    BOOST_CHECK_EQUAL(branch_linkage, BRANCH_LINKAGE);
+    BOOST_CHECK_EQUAL(backbone_linkage, BACKBONE_LINKAGE);
+    // A single undo removes the whole nucleotide.
+    stack.undo();
+    BOOST_CHECK(m.isEmpty());
+}
+
+BOOST_AUTO_TEST_CASE(testAddBoundNucleotideChainsToExistingPhosphate)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addNucleotide("R", "U", "P", 0.0, 0.0);
+    const auto count_after_first = stack.count();
+    // Chain a second nucleotide onto the first nucleotide's 3' phosphate (idx 2).
+    m.addBoundNucleotide("R", "A", "P", 3.0, 0.0, /*bound_to_idx=*/2);
+    BOOST_CHECK_EQUAL(stack.count(), count_after_first + 1);
+    BOOST_REQUIRE_EQUAL(m.mol().getNumAtoms(), 6u);
+    // 5 bonds: 2 per nucleotide + 1 inter-nucleotide backbone connection.
+    BOOST_REQUIRE_EQUAL(m.mol().getNumBonds(), 5u);
+    // The new sugar (idx 3) is bonded to the previous phosphate (idx 2) via a
+    // backbone connection, and shares the same chain.
+    const auto* link = m.mol().getBondBetweenAtoms(2, 3);
+    BOOST_REQUIRE(link != nullptr);
+    std::string linkage;
+    BOOST_CHECK(link->getPropIfPresent(LINKAGE, linkage));
+    BOOST_CHECK_EQUAL(linkage, BACKBONE_LINKAGE);
+    const auto* r_prev = dynamic_cast<const RDKit::AtomPDBResidueInfo*>(
+        m.mol().getAtomWithIdx(2)->getMonomerInfo());
+    const auto* r_new = dynamic_cast<const RDKit::AtomPDBResidueInfo*>(
+        m.mol().getAtomWithIdx(3)->getMonomerInfo());
+    BOOST_REQUIRE(r_prev != nullptr && r_new != nullptr);
+    BOOST_CHECK_EQUAL(r_prev->getChainId(), r_new->getChainId());
+    // A single undo removes the entire second nucleotide.
+    stack.undo();
+    BOOST_CHECK_EQUAL(m.mol().getNumAtoms(), 3u);
+    BOOST_CHECK_EQUAL(m.mol().getNumBonds(), 2u);
+}
+
+BOOST_AUTO_TEST_CASE(testAddBoundNucleotideNoOpOnBadIndex)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addNucleotide("R", "U", "P", 0.0, 0.0);
+    const auto count_before = stack.count();
+    m.addBoundNucleotide("R", "A", "P", 3.0, 0.0, /*bound_to_idx=*/99);
+    BOOST_CHECK_EQUAL(stack.count(), count_before);
+    BOOST_CHECK_EQUAL(m.mol().getNumAtoms(), 3u);
+}

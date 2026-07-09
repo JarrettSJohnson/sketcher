@@ -162,6 +162,23 @@ export interface MolModelInstance {
     addBoundMonomer(resName: string, chainType: number, x: number, y: number,
                     boundToIdx: number): void;
     /**
+     * Place a full nucleotide — sugar (rect) + branched base (diamond) +
+     * backbone phosphate (ellipse) — starting a fresh RNA chain. The sugar sits
+     * at (x, y), the phosphate one MONOMER_BOND_LENGTH to +x, the base one to
+     * -y. `sugar`/`base`/`phos` are monomer symbols (e.g. "R"/"U"/"P" for RNA,
+     * "dR"/"T"/"P" for DNA). Single undo step.
+     */
+    addNucleotide(sugar: string, base: string, phos: string, x: number,
+                  y: number): void;
+    /**
+     * Add a nucleotide (see addNucleotide) chained onto the existing monomer
+     * `boundToIdx` — the new sugar's 5' connects to it via a backbone (R2-R1)
+     * connection. Intended for clicking the 3' phosphate at a strand end.
+     * Single undo step. No-op when `boundToIdx` is out of range.
+     */
+    addBoundNucleotide(sugar: string, base: string, phos: string, x: number,
+                       y: number, boundToIdx: number): void;
+    /**
      * Rotate selected atoms (or all atoms when nothing is selected) by
      * angle_rad counterclockwise around their centroid. Single undo step.
      */

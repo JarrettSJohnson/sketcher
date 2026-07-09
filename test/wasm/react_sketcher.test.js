@@ -1101,8 +1101,8 @@ test.describe('React Sketcher', () => {
         //   row 2 (colspan 3): na_custom_nt_btn (Custom popup)
         //   rows 4-5: 3-col base letters [A C N / G U T]
         //   row 8:    3-col building blocks [R dR P]
-        // All clicks stub through comingSoon for now (lean MolModel
-        // doesn't speak monomer yet; popups deferred).
+        // RNA/DNA place a full nucleotide, base/sugar/phosphate tiles place a
+        // single monomer; only Custom still stubs through comingSoon.
         await page.getByTestId('mode-monomeric').click();
         await page.getByTestId('monomer-nucleic').click();
         const grid = page.getByTestId('nucleic-acid-grid');
@@ -1128,13 +1128,18 @@ test.describe('React Sketcher', () => {
         // Tooltip wires up the chemistry name.
         await expect(page.getByTestId('monomer-na-dr'))
             .toHaveAttribute('title', /Deoxyribose/);
-        // Clicks route to comingSoon — probe two representatives.
+        // RNA arms the nucleotide draw tool; the base tile arms a single
+        // monomer — both update the status line with the armed selection.
         await page.getByTestId('monomer-na-rna').click();
         await expect(page.getByTestId('sketcher-status'))
-            .toContainText(/RNA nucleotide/);
+            .toContainText(/nucleotide: RNA/);
         await page.getByTestId('monomer-na-g').click();
         await expect(page.getByTestId('sketcher-status'))
             .toContainText(/Guanine/);
+        // Custom still stubs through comingSoon.
+        await page.getByTestId('monomer-na-custom').click();
+        await expect(page.getByTestId('sketcher-status'))
+            .toContainText(/Custom nucleotide/);
     });
 
     test('Import menu: Paste in Text modal loads SMILES and closes', async ({
@@ -6062,6 +6067,87 @@ M  END`;
         expect(rd.atoms).toHaveLength(1);
         expect(rd.bonds).toHaveLength(0);
         expect(rd.atoms[0].lbl).toBe('A');
+    });
+
+    // -------- Batch 56: nucleic-acid monomers (3-node nucleotides) --------
+    // Qt's DrawMonomerFragmentSceneTool (RNA/DNA nucleotide tiles) + the single
+    // base/sugar/phosphate DrawMonomerSceneTool. A nucleotide is a faithful
+    // sugar + branched base + backbone phosphate; the render description carries
+    // per-bead mon subtypes (sugar/phos/base) and a conn:"base" flag on the
+    // sugar→base branch connector. Backed by addNucleotide / addBoundNucleotide.
+    test('nucleic tool: RNA tile then canvas places a 3-node nucleotide', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-nucleic').click();
+        await page.getByTestId('monomer-na-rna').click();
+        // The RNA tile arms the nucleotide draw tool (active highlight).
+        await expect(page.getByTestId('monomer-na-rna'))
+            .toHaveAttribute('aria-pressed', 'true');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.monomeric).toBe(true);
+        // Three beads: sugar (R) + base (U) + phosphate (P).
+        expect(rd.atoms).toHaveLength(3);
+        const byLbl = Object.fromEntries(rd.atoms.map((a) => [a.lbl, a]));
+        expect(byLbl.R.mon).toBe('sugar');
+        expect(byLbl.U.mon).toBe('base');
+        expect(byLbl.P.mon).toBe('phos');
+        // Two connections; exactly one is the thin sugar→base branch.
+        expect(rd.bonds).toHaveLength(2);
+        expect(rd.bonds.filter((b) => b.conn === 'base')).toHaveLength(1);
+        expect(rd.bonds.every((b) => b.mon === true)).toBe(true);
+    });
+
+    test('nucleic tool: a base tile places a single nucleobase bead', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-nucleic').click();
+        await page.getByTestId('monomer-na-a').click();
+        await expect(page.getByTestId('monomer-na-a'))
+            .toHaveAttribute('aria-pressed', 'true');
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        expect(rd.atoms[0].lbl).toBe('A');
+        expect(rd.atoms[0].mon).toBe('base');
+    });
+
+    test('nucleic tool: clicking an existing bead chains a second nucleotide', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-nucleic').click();
+        await page.getByTestId('monomer-na-rna').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        // Place the first nucleotide; its sugar sits at the click point.
+        await canvas.click({ position: { x: 200, y: 180 } });
+        expect((await snapshot(page)).atoms).toHaveLength(3);
+        // Clicking the existing sugar chains a second nucleotide off it.
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(6);
+        // 2 branch/backbone per nucleotide + 1 inter-nucleotide connection.
+        expect(rd.bonds).toHaveLength(5);
+    });
+
+    test('nucleic tool: a single undo removes the whole placed nucleotide', async ({
+        page,
+    }) => {
+        await page.getByTestId('mode-monomeric').click();
+        await page.getByTestId('monomer-nucleic').click();
+        await page.getByTestId('monomer-na-dna').click();
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const placed = await snapshot(page);
+        expect(placed.atoms).toHaveLength(3);
+        // DNA nucleotide: deoxyribose (dR) + thymine (T) + phosphate (P).
+        expect(placed.atoms.map((a) => a.lbl).sort()).toEqual(['P', 'T', 'dR']);
+        await page.getByTestId('undo').click();
+        expect((await snapshot(page)).atoms).toHaveLength(0);
     });
 
 });

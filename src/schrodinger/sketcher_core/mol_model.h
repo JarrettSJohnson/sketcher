@@ -318,14 +318,42 @@ class MolModel : public UndoableModel
                     double y);
 
     /**
-     * Add a monomer at (x, y) bonded to the existing monomer `bound_to_idx`
-     * with a backbone (R2-R1) connection, continuing that monomer's chain
-     * (residue number = neighbor + 1). Backs the monomer draw tool clicking on
-     * an existing monomer (Qt's MolModel::addBoundMonomer). Single undo step.
+     * Add a monomer at (x, y) bonded to the existing monomer `bound_to_idx`,
+     * continuing that monomer's chain (residue number = neighbor + 1). The
+     * attachment-point linkage is resolved from the two monomers' kinds
+     * (mirrors Qt's get_attachment_point_for_new_monomer): peptide↔peptide and
+     * sugar↔phosphate use a backbone (R2-R1) connection; sugar↔base uses a
+     * branch (R3-R1) connection. Backs the monomer draw tool clicking on an
+     * existing monomer (Qt's MolModel::addBoundMonomer). Single undo step.
      * No-op when `bound_to_idx` is out of range.
      */
     void addBoundMonomer(const std::string& res_name, int chain_type, double x,
                          double y, unsigned int bound_to_idx);
+
+    /**
+     * Place a full nucleotide — sugar (rect) + base (diamond, branched off the
+     * sugar's 1' via R3-R1) + phosphate (ellipse, backbone off the sugar's 3'
+     * via R2-R1) — starting a fresh RNA chain. The sugar sits at (x, y); the
+     * phosphate is one MONOMER_BOND_LENGTH to the +x side and the base one
+     * MONOMER_BOND_LENGTH to the -y side. `sugar`/`base`/`phos` are the monomer
+     * symbols (e.g. "R"/"U"/"P" for RNA, "dR"/"T"/"P" for DNA). Mirrors Qt's
+     * RNA/DNA nucleotide tool (draw_monomer_fragment_scene_tool, HELM
+     * "RNA1{R(U)P}"). All three monomers + two connections land in one undo
+     * step.
+     */
+    void addNucleotide(const std::string& sugar, const std::string& base,
+                       const std::string& phos, double x, double y);
+
+    /**
+     * Add a nucleotide (see addNucleotide) chained onto the existing monomer
+     * `bound_to_idx` — the new sugar's 5' (R1) connects to `bound_to_idx` via a
+     * backbone (R2-R1) connection, continuing that monomer's chain. Intended
+     * for clicking the 3' phosphate at the end of a strand. The new sugar sits
+     * at (x, y). Single undo step. No-op when `bound_to_idx` is out of range.
+     */
+    void addBoundNucleotide(const std::string& sugar, const std::string& base,
+                            const std::string& phos, double x, double y,
+                            unsigned int bound_to_idx);
 
     /**
      * Add `delta` to the formal charge of every selected atom in a single

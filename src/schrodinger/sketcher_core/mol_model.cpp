@@ -13,6 +13,7 @@
 #include "schrodinger/sketcher_core/mol_model.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -803,6 +804,10 @@ void MolModel::addAtomChain(const std::vector<double>& xs,
 
 namespace
 {
+// Center-to-center spacing for a linear monomer chain / nucleotide layout, in
+// model units. Matches Qt's MONOMER_BOND_LENGTH and the React renderer's copy.
+constexpr double MONOMER_BOND_LENGTH = 1.5;
+
 // Read a monomer atom's chain id / residue number from its AtomPDBResidueInfo.
 // Returns {"", 0} if the atom carries no monomer info (defensive).
 std::pair<std::string, int> monomer_chain_and_resnum(const RDKit::Atom* atom)
@@ -847,6 +852,77 @@ void set_monomer_pos(RDKit::RWMol& mol, unsigned int idx, double x, double y)
     }
     conf.setAtomPos(idx, RDGeom::Point3D(x, y, 0));
 }
+
+// Monomer subtype used for shape + attachment-point resolution. Mirrors Qt's
+// get_monomer_type / get_na_monomer_type_from_res_name (sketcher/rdkit/
+// monomeric.cpp): peptides are identified by the "PEPTIDE" chain prefix and
+// nucleic acids by the "RNA" prefix (which HELM also uses for DNA), sub-typed
+// by the monomer symbol's last character (…p → phosphate, …r → sugar, else
+// base). Anything else is a generic CHEM monomer.
+enum class MonomerKind { PEPTIDE, NA_SUGAR, NA_PHOSPHATE, NA_BASE, CHEM };
+
+MonomerKind na_kind_from_symbol(const std::string& sym)
+{
+    if (sym.empty()) {
+        return MonomerKind::NA_BASE;
+    }
+    switch (std::tolower(static_cast<unsigned char>(sym.back()))) {
+        case 'p':
+            return MonomerKind::NA_PHOSPHATE;
+        case 'r':
+            return MonomerKind::NA_SUGAR;
+        default:
+            return MonomerKind::NA_BASE;
+    }
+}
+
+MonomerKind monomer_kind(const RDKit::Atom* atom)
+{
+    const auto [chain, resnum] = monomer_chain_and_resnum(atom);
+    (void) resnum;
+    if (chain.rfind("PEPTIDE", 0) == 0) {
+        return MonomerKind::PEPTIDE;
+    }
+    if (chain.rfind("RNA", 0) == 0) {
+        std::string sym;
+        atom->getPropIfPresent(::ATOM_LABEL, sym);
+        return na_kind_from_symbol(sym);
+    }
+    return MonomerKind::CHEM;
+}
+
+// Resolve the connection between an existing monomer and a newly added one from
+// their kinds (Qt's get_attachment_point_for_new_monomer, simplified for the
+// linear/branch cases the lean draw tool supports). Returns the ordered pair of
+// monomer indices to pass to addConnection (begin, end) and the connection type
+// so the R#-R# linkage comes out correct. The base branch must be issued with
+// the sugar as the begin monomer (R3 lives on the sugar), so we swap the order
+// when the user clicked the base with a sugar tool.
+struct MonomerConnection {
+    size_t begin_idx;
+    size_t end_idx;
+    rdkit_extensions::ConnectionType type;
+};
+
+MonomerConnection resolve_monomer_connection(MonomerKind existing_kind,
+                                             size_t existing_idx,
+                                             MonomerKind new_kind,
+                                             size_t new_idx)
+{
+    using rdkit_extensions::ConnectionType;
+    // Sugar → base branch (R3-R1): the sugar must be the begin monomer.
+    if (existing_kind == MonomerKind::NA_SUGAR &&
+        new_kind == MonomerKind::NA_BASE) {
+        return {existing_idx, new_idx, ConnectionType::SIDECHAIN};
+    }
+    if (existing_kind == MonomerKind::NA_BASE &&
+        new_kind == MonomerKind::NA_SUGAR) {
+        return {new_idx, existing_idx, ConnectionType::SIDECHAIN};
+    }
+    // Everything else (peptide↔peptide, sugar↔phosphate, phosphate↔sugar) is a
+    // backbone (R2-R1) connection from the existing monomer to the new one.
+    return {existing_idx, new_idx, ConnectionType::FORWARD};
+}
 } // namespace
 
 void MolModel::addMonomer(const std::string& res_name, int chain_type,
@@ -881,19 +957,101 @@ void MolModel::addBoundMonomer(const std::string& res_name, int chain_type,
         [this, res_name, x, y, bound_to_idx] {
             m_mol.setProp(::HELM_MODEL, true);
             // Continue the neighbor's chain: same chain id, next residue number.
-            const auto [chain_id, resnum] =
-                monomer_chain_and_resnum(m_mol.getAtomWithIdx(bound_to_idx));
+            const auto* existing = m_mol.getAtomWithIdx(bound_to_idx);
+            const auto existing_kind = monomer_kind(existing);
+            const auto [chain_id, resnum] = monomer_chain_and_resnum(existing);
             const auto idx = rdkit_extensions::addMonomer(
                 m_mol, res_name, resnum + 1, chain_id,
                 rdkit_extensions::MonomerType::REGULAR);
             set_monomer_pos(m_mol, static_cast<unsigned int>(idx), x, y);
-            // Backbone R2-R1 connection from the existing monomer to the new
-            // one (dative, direction-encoded — see addConnection).
-            rdkit_extensions::addConnection(
-                m_mol, bound_to_idx, idx,
-                rdkit_extensions::ConnectionType::FORWARD);
+            // Resolve the R#-R# linkage from the two monomers' kinds — a
+            // backbone (R2-R1) or a sugar↔base branch (R3-R1). Dative /
+            // direction-encoded — see addConnection.
+            const auto conn = resolve_monomer_connection(
+                existing_kind, bound_to_idx, na_kind_from_symbol(res_name), idx);
+            rdkit_extensions::addConnection(m_mol, conn.begin_idx, conn.end_idx,
+                                            conn.type);
         },
         "Add bound monomer");
+}
+
+void MolModel::addNucleotide(const std::string& sugar, const std::string& base,
+                             const std::string& phos, double x, double y)
+{
+    doMutation(
+        [this, sugar, base, phos, x, y] {
+            m_mol.setProp(::HELM_MODEL, true);
+            // A nucleotide is one HELM residue: sugar + branched base +
+            // backbone phosphate, all in the same RNA chain / residue number
+            // (HELM "RNA1{R(U)P}"). See addNucleotide doc for the layout.
+            const auto chain_id =
+                next_chain_id(m_mol, rdkit_extensions::ChainType::RNA);
+            const auto sugar_idx = rdkit_extensions::addMonomer(
+                m_mol, sugar, /*residue_number=*/1, chain_id,
+                rdkit_extensions::MonomerType::REGULAR);
+            const auto base_idx = rdkit_extensions::addMonomer(
+                m_mol, base, 1, chain_id,
+                rdkit_extensions::MonomerType::REGULAR);
+            const auto phos_idx = rdkit_extensions::addMonomer(
+                m_mol, phos, 1, chain_id,
+                rdkit_extensions::MonomerType::REGULAR);
+            set_monomer_pos(m_mol, static_cast<unsigned int>(sugar_idx), x, y);
+            set_monomer_pos(m_mol, static_cast<unsigned int>(base_idx), x,
+                            y - MONOMER_BOND_LENGTH);
+            set_monomer_pos(m_mol, static_cast<unsigned int>(phos_idx),
+                            x + MONOMER_BOND_LENGTH, y);
+            // Base branch (sugar 1' R3 → base R1) then backbone (sugar 3' R2 →
+            // phosphate R1).
+            rdkit_extensions::addConnection(
+                m_mol, sugar_idx, base_idx,
+                rdkit_extensions::ConnectionType::SIDECHAIN);
+            rdkit_extensions::addConnection(
+                m_mol, sugar_idx, phos_idx,
+                rdkit_extensions::ConnectionType::FORWARD);
+        },
+        "Add nucleotide");
+}
+
+void MolModel::addBoundNucleotide(const std::string& sugar,
+                                  const std::string& base,
+                                  const std::string& phos, double x, double y,
+                                  unsigned int bound_to_idx)
+{
+    if (bound_to_idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    doMutation(
+        [this, sugar, base, phos, x, y, bound_to_idx] {
+            m_mol.setProp(::HELM_MODEL, true);
+            const auto [chain_id, resnum] =
+                monomer_chain_and_resnum(m_mol.getAtomWithIdx(bound_to_idx));
+            const auto sugar_idx = rdkit_extensions::addMonomer(
+                m_mol, sugar, resnum + 1, chain_id,
+                rdkit_extensions::MonomerType::REGULAR);
+            const auto base_idx = rdkit_extensions::addMonomer(
+                m_mol, base, resnum + 1, chain_id,
+                rdkit_extensions::MonomerType::REGULAR);
+            const auto phos_idx = rdkit_extensions::addMonomer(
+                m_mol, phos, resnum + 1, chain_id,
+                rdkit_extensions::MonomerType::REGULAR);
+            set_monomer_pos(m_mol, static_cast<unsigned int>(sugar_idx), x, y);
+            set_monomer_pos(m_mol, static_cast<unsigned int>(base_idx), x,
+                            y - MONOMER_BOND_LENGTH);
+            set_monomer_pos(m_mol, static_cast<unsigned int>(phos_idx),
+                            x + MONOMER_BOND_LENGTH, y);
+            // Backbone from the clicked monomer (typically the 3' phosphate) to
+            // the new sugar's 5', then the intra-nucleotide branch + backbone.
+            rdkit_extensions::addConnection(
+                m_mol, bound_to_idx, sugar_idx,
+                rdkit_extensions::ConnectionType::FORWARD);
+            rdkit_extensions::addConnection(
+                m_mol, sugar_idx, base_idx,
+                rdkit_extensions::ConnectionType::SIDECHAIN);
+            rdkit_extensions::addConnection(
+                m_mol, sugar_idx, phos_idx,
+                rdkit_extensions::ConnectionType::FORWARD);
+        },
+        "Add bound nucleotide");
 }
 
 void MolModel::adjustChargeOnSelectedAtoms(int delta)
