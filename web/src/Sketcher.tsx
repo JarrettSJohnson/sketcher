@@ -2865,11 +2865,16 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // Non-null while open; carries the target atom index. Field values live in
     // the sibling states below (strings so the inputs can be cleared).
     const [editAtomDialog, setEditAtomDialog] = useState<
-        { atomIdx: number } | null>(null);
+        { atomIdx: number; page: 'atom' | 'query' } | null>(null);
     const [editAtomEl, setEditAtomEl] = useState<string>('C');
     const [editAtomCharge, setEditAtomCharge] = useState<string>('0');
     const [editAtomIsotope, setEditAtomIsotope] = useState<string>('0');
     const [editAtomRadicals, setEditAtomRadicals] = useState<string>('0');
+    // Query-page fields (allowed-list query type). `editAtomList` is a
+    // comma-separated element list; `editAtomNotList` flips it to a
+    // not-allowed-list (Qt QueryType::NOT_ALLOWED_LIST).
+    const [editAtomList, setEditAtomList] = useState<string>('');
+    const [editAtomNotList, setEditAtomNotList] = useState<boolean>(false);
     const [bracketType, setBracketType] = useState<'SRU' | 'COP'>('SRU');
     const [bracketPattern, setBracketPattern] =
         useState<'HT' | 'HH' | 'EU'>('HT');
@@ -7700,8 +7705,8 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                         (atom_context_menu.cpp:167). Wildcard (query atoms) +
                         R-Group branches ship here via the lean
                         mutateAtomToWildcard / mutateAtomToRGroup primitives.
-                        Allowed List (needs the Edit Atom Properties dialog)
-                        stays deferred. "New R-Group" picks the first free
+                        Allowed List opens the Edit Atom Properties dialog on
+                        its Query page. "New R-Group" picks the first free
                         number; each existing Rn offers an in-place renumber.
                         Wildcard order mirrors Qt's createWildcardMenu:
                         A/Q/M/X, then AH/QH/MH/XH. */}
@@ -7729,6 +7734,23 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 setStatus(`Replaced with ${code}`);
                             }} />
                     ))}
+                    {/* Allowed List — Qt Replace-with opens the Edit Atom
+                        Properties dialog on the Query page (allowed-list). */}
+                    <MoreItem
+                        label='Allowed List…'
+                        testid='atom-ctx-replace-allowed-list'
+                        onClick={() => {
+                            const am = atomContextMenu;
+                            setAtomContextMenu(null);
+                            setEditAtomEl(am.el);
+                            setEditAtomCharge(String(am.q));
+                            setEditAtomIsotope(String(am.iso));
+                            setEditAtomRadicals(String(am.nrad));
+                            setEditAtomList('');
+                            setEditAtomNotList(false);
+                            setEditAtomDialog({
+                                atomIdx: am.atomIdx, page: 'query' });
+                        }} />
                     <div style={styles.moreDivider} />
                     <MoreItem
                         label={`New R-Group (R${atomContextMenu.nextRGroup})`}
@@ -7769,7 +7791,10 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             setEditAtomCharge(String(am.q));
                             setEditAtomIsotope(String(am.iso));
                             setEditAtomRadicals(String(am.nrad));
-                            setEditAtomDialog({ atomIdx: am.atomIdx });
+                            setEditAtomList('');
+                            setEditAtomNotList(false);
+                            setEditAtomDialog({
+                                atomIdx: am.atomIdx, page: 'atom' });
                         }} />
                     <div style={styles.moreDivider} />
                     <MoreItem label='Delete' testid='atom-ctx-delete'
@@ -8094,6 +8119,34 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                     }}>
                     <div style={styles.modalCard}>
                         <div style={styles.modalTitle}>Edit Atom Properties</div>
+                        {/* Set-as Atom / Query radios (Qt set_as_atom_rb /
+                            set_as_query_rb). The Query page currently offers the
+                            allowed-list type; other query types are deferred. */}
+                        <div style={styles.modalLabel}>
+                            Set as:
+                            <label style={{ marginLeft: 8 }}>
+                                <input
+                                    type='radio'
+                                    name='edit-atom-setas'
+                                    data-testid='edit-atom-setas-atom'
+                                    checked={editAtomDialog.page === 'atom'}
+                                    onChange={() => setEditAtomDialog({
+                                        ...editAtomDialog, page: 'atom' })}
+                                /> Atom
+                            </label>
+                            <label style={{ marginLeft: 8 }}>
+                                <input
+                                    type='radio'
+                                    name='edit-atom-setas'
+                                    data-testid='edit-atom-setas-query'
+                                    checked={editAtomDialog.page === 'query'}
+                                    onChange={() => setEditAtomDialog({
+                                        ...editAtomDialog, page: 'query' })}
+                                /> Query
+                            </label>
+                        </div>
+                        {editAtomDialog.page === 'atom' ? (
+                            <>
                         <label style={styles.modalLabel}>
                             Element:
                             <input
@@ -8138,6 +8191,32 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                     setEditAtomRadicals(e.target.value)}
                             />
                         </label>
+                            </>
+                        ) : (
+                            <>
+                        <label style={styles.modalLabel}>
+                            Allowed elements:
+                            <input
+                                type='text'
+                                style={styles.modalSelect}
+                                data-testid='edit-atom-list'
+                                value={editAtomList}
+                                spellCheck={false}
+                                placeholder='e.g. C, N, O'
+                                onChange={(e) => setEditAtomList(e.target.value)}
+                            />
+                        </label>
+                        <label style={styles.modalLabel}>
+                            <input
+                                type='checkbox'
+                                data-testid='edit-atom-notlist'
+                                checked={editAtomNotList}
+                                onChange={(e) =>
+                                    setEditAtomNotList(e.target.checked)}
+                            /> Not in list
+                        </label>
+                            </>
+                        )}
                         <div style={styles.modalButtons}>
                             <button type='button' style={styles.modalBtn}
                                 data-testid='edit-atom-cancel'
@@ -8148,6 +8227,37 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 data-testid='edit-atom-ok'
                                 onClick={() => {
                                     const ad = editAtomDialog;
+                                    if (ad.page === 'query') {
+                                        // Parse the comma-separated element list
+                                        // → atomic numbers (skip unknowns), build
+                                        // the "[C,N,O]" / "[!C,N,O]" label.
+                                        const syms = editAtomList.split(',')
+                                            .map((s) => s.trim())
+                                            .filter((s) => s.length > 0);
+                                        const nums: number[] = [];
+                                        const kept: string[] = [];
+                                        for (const s of syms) {
+                                            const n = SYMBOL_TO_ATOMIC_NUM[s];
+                                            if (n) {
+                                                nums.push(n);
+                                                kept.push(s);
+                                            }
+                                        }
+                                        if (nums.length === 0) {
+                                            setStatus(
+                                                'allowed list: enter element '
+                                                + 'symbols (e.g. C, N, O)');
+                                            return;
+                                        }
+                                        setEditAtomDialog(null);
+                                        const label = '[' + (editAtomNotList
+                                            ? '!' : '') + kept.join(',') + ']';
+                                        modelRef.current?.setAtomAllowedList(
+                                            ad.atomIdx, nums, editAtomNotList,
+                                            label);
+                                        setStatus(`set allowed list ${label}`);
+                                        return;
+                                    }
                                     setEditAtomDialog(null);
                                     const charge =
                                         parseInt(editAtomCharge, 10) || 0;

@@ -458,6 +458,19 @@ class MolModel : public UndoableModel
     void mutateAtomToWildcard(unsigned int idx, const std::string& label);
 
     /**
+     * Replace a single atom (by index) in place with an allowed-list (or
+     * not-allowed-list) query atom that matches any of `atomic_nums` (or none of
+     * them when `negate`). Ports the ALLOWED_LIST / NOT_ALLOWED_LIST query build
+     * from Qt's atom_properties.cpp (OR of AtomNum queries, or AND of negated
+     * ones). `label` (e.g. "[C,N,O]" / "[!C,N,O]") is stored in
+     * WILDCARD_LABEL_PROP for the render description. Bonds + position preserved.
+     * Single undo step. No-op when `idx` is out of range or `atomic_nums` empty.
+     */
+    void setAtomAllowedList(unsigned int idx,
+                            const std::vector<int>& atomic_nums, bool negate,
+                            const std::string& label);
+
+    /**
      * Place a new free-standing wildcard query atom (A/Q/M/X + H variants) at
      * (x, y). Click-to-place counterpart of mutateAtomToWildcard — backs the
      * atom-query (A▾) draw tool on empty canvas. Single undo step. No-op when

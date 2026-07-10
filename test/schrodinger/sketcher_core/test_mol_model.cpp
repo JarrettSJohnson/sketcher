@@ -2158,6 +2158,46 @@ BOOST_AUTO_TEST_CASE(testSetAtomPropertiesNoOpOnBadInput)
     BOOST_CHECK_EQUAL(stack.count(), base);
 }
 
+BOOST_AUTO_TEST_CASE(testSetAtomAllowedListMakesQueryAtomAndIsUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    const auto base = stack.count();
+    BOOST_CHECK(!m.mol().getAtomWithIdx(0)->hasQuery());
+
+    m.setAtomAllowedList(0, {6, 7, 8}, /*negate=*/false, "[C,N,O]");
+    BOOST_CHECK_EQUAL(stack.count(), base + 1);
+    const auto* a = m.mol().getAtomWithIdx(0);
+    BOOST_CHECK(a->hasQuery());
+    std::string label;
+    a->getPropIfPresent(schrodinger::sketcher_core::WILDCARD_LABEL_PROP, label);
+    BOOST_CHECK_EQUAL(label, "[C,N,O]");
+
+    stack.undo();
+    BOOST_CHECK(!m.mol().getAtomWithIdx(0)->hasQuery());
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomicNum(), 6);
+    stack.redo();
+    BOOST_CHECK(m.mol().getAtomWithIdx(0)->hasQuery());
+}
+
+BOOST_AUTO_TEST_CASE(testSetAtomAllowedListNoOpCases)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.loadFromSmiles("CCO");
+    const auto base = stack.count();
+
+    // Empty list — no-op.
+    m.setAtomAllowedList(0, {}, false, "[]");
+    BOOST_CHECK_EQUAL(stack.count(), base);
+    BOOST_CHECK(!m.mol().getAtomWithIdx(0)->hasQuery());
+
+    // Out-of-range index — no-op.
+    m.setAtomAllowedList(9, {6}, false, "[C]");
+    BOOST_CHECK_EQUAL(stack.count(), base);
+}
+
 BOOST_AUTO_TEST_CASE(testKekulizeBenzeneReplacesAromaticWithExplicitDoubles)
 {
     UndoStack stack;

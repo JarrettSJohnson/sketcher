@@ -267,6 +267,15 @@ export interface MolModelInstance {
      */
     mutateAtomToWildcard(idx: number, label: string): void;
     /**
+     * Replace the atom at `idx` with an allowed-list (or, when `negate`,
+     * not-allowed-list) query atom matching any of `atomicNums`. `label`
+     * (e.g. "[C,N,O]") is stored for rendering. Single undo step; no-op when
+     * `idx` is out of range or `atomicNums` is empty. Backs the Edit Atom
+     * Properties Query page + Replace-with "Allowed List".
+     */
+    setAtomAllowedList(idx: number, atomicNums: number[], negate: boolean,
+                       label: string): void;
+    /**
      * Place a new free-standing wildcard query atom (A/Q/M/X + H variants) at
      * (x, y) in model coords. Click-to-place counterpart of
      * mutateAtomToWildcard — backs the atom-query (A▾) draw tool on empty

@@ -1458,6 +1458,16 @@ class MolModelJS
     {
         m_model.mutateAtomToWildcard(idx, label);
     }
+    void setAtomAllowedList(unsigned int idx, emscripten::val atomic_nums,
+                            bool negate, const std::string& label)
+    {
+        const auto n = atomic_nums["length"].as<unsigned int>();
+        std::vector<int> nums(n);
+        for (unsigned int i = 0; i < n; ++i) {
+            nums[i] = atomic_nums[i].as<int>();
+        }
+        m_model.setAtomAllowedList(idx, nums, negate, label);
+    }
     void addWildcardAtom(const std::string& label, double x, double y)
     {
         m_model.addWildcardAtom(label, x, y);
@@ -1796,6 +1806,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
                   &MolModelJS::setElementForSelectedAtoms)
         .function("mutateAtomToRGroup", &MolModelJS::mutateAtomToRGroup)
         .function("mutateAtomToWildcard", &MolModelJS::mutateAtomToWildcard)
+        .function("setAtomAllowedList", &MolModelJS::setAtomAllowedList)
         .function("addWildcardAtom", &MolModelJS::addWildcardAtom)
         .function("loadFromSmiles", &MolModelJS::loadFromSmiles)
         .function("loadFromText", &MolModelJS::loadFromText)

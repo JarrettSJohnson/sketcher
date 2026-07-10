@@ -1687,6 +1687,66 @@ void MolModel::mutateAtomToWildcard(unsigned int idx, const std::string& label)
     doCommand(std::move(redo), std::move(undo), "Replace with wildcard");
 }
 
+namespace
+{
+// Build an allowed-list (OR of AtomNum) / not-allowed-list (AND of negated
+// AtomNum) query and assign it to `qa`. Ports the ALLOWED_LIST /
+// NOT_ALLOWED_LIST branch of Qt atom_properties.cpp:989.
+void assign_allowed_list_query(RDKit::QueryAtom& qa,
+                               const std::vector<int>& atomic_nums, bool negate)
+{
+    const auto op = negate ? Queries::COMPOSITE_AND : Queries::COMPOSITE_OR;
+    bool first = true;
+    for (int n : atomic_nums) {
+        auto* q = RDKit::makeAtomNumQuery(n);
+        if (negate) {
+            q->setNegation(true);
+        }
+        if (first) {
+            qa.setQuery(q); // takes ownership
+            first = false;
+        } else {
+            qa.expandQuery(q, op); // takes ownership
+        }
+    }
+    // A single allowed element also gets a concrete atomic number so the atom
+    // reads as that element where a bare query would show "*" (Qt sets it too).
+    if (!negate && atomic_nums.size() == 1) {
+        qa.setAtomicNum(atomic_nums.front());
+    }
+}
+} // namespace
+
+void MolModel::setAtomAllowedList(unsigned int idx,
+                                  const std::vector<int>& atomic_nums,
+                                  bool negate, const std::string& label)
+{
+    if (idx >= m_mol.getNumAtoms() || atomic_nums.empty()) {
+        return;
+    }
+    auto original = std::make_shared<RDKit::Atom>(*m_mol.getAtomWithIdx(idx));
+    auto refresh_cache = [this] {
+        try {
+            m_mol.updatePropertyCache(/*strict=*/false);
+        } catch (...) {
+        }
+    };
+    auto redo = [this, idx, atomic_nums, negate, label, refresh_cache] {
+        RDKit::QueryAtom qa(0);
+        assign_allowed_list_query(qa, atomic_nums, negate);
+        qa.setProp(WILDCARD_LABEL_PROP, label);
+        m_mol.replaceAtom(idx, &qa);
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    auto undo = [this, idx, original, refresh_cache] {
+        m_mol.replaceAtom(idx, original.get());
+        refresh_cache();
+        emitSignal(modelChanged);
+    };
+    doCommand(std::move(redo), std::move(undo), "Set allowed list");
+}
+
 void MolModel::setElementForSelectedAtoms(unsigned int atomic_num)
 {
     if (m_selected_atoms.empty()) {

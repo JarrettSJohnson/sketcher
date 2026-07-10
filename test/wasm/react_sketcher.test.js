@@ -6978,4 +6978,50 @@ M  END`;
         await expect(page.getByTestId('atom-ctx-edit-properties')).toBeDisabled();
     });
 
+    // -------- Batch 70: Edit Atom Properties Query page (allowed list) --------
+    // Qt EditAtomPropertiesDialog Query page: allowed-list / not-allowed-list
+    // query atoms (setAtomAllowedList). Replace-with "Allowed List" opens the
+    // dialog directly on the Query page.
+    test('allowed list: Replace with > Allowed List sets a list query atom', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        let rd = await snapshot(page);
+        const bp = await beadPixel(page, rd.atoms[0]);
+        await canvas.click({ position: { x: bp.px, y: bp.py }, button: 'right' });
+        await page.getByTestId('atom-ctx-replace-allowed-list').click();
+        await expect(page.getByTestId('edit-atom-modal')).toBeVisible();
+        // Opened directly on the Query page.
+        await expect(page.getByTestId('edit-atom-setas-query')).toBeChecked();
+        await page.getByTestId('edit-atom-list').fill('C, N, O');
+        await page.getByTestId('edit-atom-ok').click();
+        rd = await snapshot(page);
+        expect(rd.atoms[0].qlabel).toBe('[C,N,O]');
+        // Undoable back to a plain carbon.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms[0].qlabel).toBeUndefined();
+        expect(rd.atoms[0].el).toBe('C');
+    });
+
+    test('allowed list: Edit Properties Query page with "not in list"', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        const rd0 = await snapshot(page);
+        const bp = await beadPixel(page, rd0.atoms[0]);
+        await canvas.click({ position: { x: bp.px, y: bp.py }, button: 'right' });
+        await page.getByTestId('atom-ctx-edit-properties').click();
+        // Opens on the Atom page; switch to Query.
+        await expect(page.getByTestId('edit-atom-setas-atom')).toBeChecked();
+        await page.getByTestId('edit-atom-setas-query').check();
+        await page.getByTestId('edit-atom-list').fill('N,O');
+        await page.getByTestId('edit-atom-notlist').check();
+        await page.getByTestId('edit-atom-ok').click();
+        const rd = await snapshot(page);
+        expect(rd.atoms[0].qlabel).toBe('[!N,O]');
+    });
+
 });
