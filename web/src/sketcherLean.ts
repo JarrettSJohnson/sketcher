@@ -235,6 +235,14 @@ export interface MolModelInstance {
      */
     setAtomElement(idx: number, atomicNum: number): void;
     /**
+     * Set element (by symbol) + formal charge + isotope + unpaired-electron
+     * count on a single atom in one undo step. No-op if `idx` is out of range or
+     * `element` is not a known chemical symbol. Backs the Edit Atom Properties
+     * dialog's Atom page.
+     */
+    setAtomProperties(idx: number, element: string, charge: number,
+                      isotope: number, radicals: number): void;
+    /**
      * Selection-wide equivalent of setAtomElement. Replaces the element of
      * every selected atom with `atomicNum` in a single undo step. Mirrors
      * Qt's ModifyAtomsMenu "Set Element" submenu when invoked from the

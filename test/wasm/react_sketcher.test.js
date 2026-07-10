@@ -6924,4 +6924,58 @@ M  END`;
         expect(rd2.sgroups[0].label).toBe('co');
     });
 
+    // -------- Batch 69: Edit Atom Properties dialog (Atom page) --------
+    // Qt EditAtomPropertiesDialog Atom page: element + isotope + charge +
+    // unpaired electrons, applied via setAtomProperties in one undo step.
+    test('edit atom properties: sets element/charge/isotope/radicals in one undo', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } }); // place a carbon
+        let rd = await snapshot(page);
+        expect(rd.atoms).toHaveLength(1);
+        const bp = await beadPixel(page, rd.atoms[0]);
+        await canvas.click({ position: { x: bp.px, y: bp.py }, button: 'right' });
+        await expect(page.getByTestId('atom-context-menu')).toBeVisible();
+        await page.getByTestId('atom-ctx-edit-properties').click();
+        await expect(page.getByTestId('edit-atom-modal')).toBeVisible();
+        // Pre-filled from the plain carbon.
+        await expect(page.getByTestId('edit-atom-element')).toHaveValue('C');
+        await page.getByTestId('edit-atom-element').fill('N');
+        await page.getByTestId('edit-atom-charge').fill('-1');
+        await page.getByTestId('edit-atom-isotope').fill('15');
+        await page.getByTestId('edit-atom-radicals').fill('1');
+        await page.getByTestId('edit-atom-ok').click();
+        rd = await snapshot(page);
+        const a = rd.atoms[0];
+        expect(a.el).toBe('N');
+        expect(a.q).toBe(-1);
+        expect(a.iso).toBe(15);
+        expect(a.nrad).toBe(1);
+        // One undo restores every field.
+        await page.getByTestId('undo').click();
+        rd = await snapshot(page);
+        expect(rd.atoms[0].el).toBe('C');
+        expect(rd.atoms[0].q ?? 0).toBe(0);
+        expect(rd.atoms[0].iso ?? 0).toBe(0);
+        expect(rd.atoms[0].nrad ?? 0).toBe(0);
+    });
+
+    test('edit atom properties: disabled on an R-group atom', async ({
+        page,
+    }) => {
+        const canvas = page.getByTestId('sketcher-canvas');
+        await canvas.click({ position: { x: 200, y: 180 } });
+        let rd = await snapshot(page);
+        let bp = await beadPixel(page, rd.atoms[0]);
+        // Convert the atom to an R-group via the context menu.
+        await canvas.click({ position: { x: bp.px, y: bp.py }, button: 'right' });
+        await page.getByTestId('atom-ctx-replace-new-rgroup').click();
+        rd = await snapshot(page);
+        bp = await beadPixel(page, rd.atoms[0]);
+        await canvas.click({ position: { x: bp.px, y: bp.py }, button: 'right' });
+        await expect(page.getByTestId('atom-context-menu')).toBeVisible();
+        await expect(page.getByTestId('atom-ctx-edit-properties')).toBeDisabled();
+    });
+
 });

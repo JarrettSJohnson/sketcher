@@ -426,6 +426,17 @@ class MolModel : public UndoableModel
     void setAtomElement(unsigned int idx, unsigned int atomic_num);
 
     /**
+     * Set element (by symbol) + formal charge + isotope + unpaired-electron
+     * count on a single atom in one undo step. Backs the Edit Atom Properties
+     * dialog's Atom page (Qt EditAtomPropertiesDialog). No-op if `idx` is out of
+     * range or `element` is not a known chemical symbol. Preserves bonds +
+     * position (mutates the existing atom in place, not replaceAtom).
+     */
+    void setAtomProperties(unsigned int idx, const std::string& element,
+                           int charge, unsigned int isotope,
+                           unsigned int radicals);
+
+    /**
      * Replace a single atom (by index) in place with an R-group dummy carrying
      * `_MolFileRLabel = r_group_num`, preserving its bonds and 2D position.
      * Backs the atom context menu's "Replace with > R-Group" (Qt's

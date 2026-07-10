@@ -2861,6 +2861,15 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // label; copolymer forces "co".
     const [bracketDialog, setBracketDialog] = useState<
         { atomIndices: number[]; sgroupIdx?: number } | null>(null);
+    // Edit Atom Properties dialog (Qt EditAtomPropertiesDialog, Atom page).
+    // Non-null while open; carries the target atom index. Field values live in
+    // the sibling states below (strings so the inputs can be cleared).
+    const [editAtomDialog, setEditAtomDialog] = useState<
+        { atomIdx: number } | null>(null);
+    const [editAtomEl, setEditAtomEl] = useState<string>('C');
+    const [editAtomCharge, setEditAtomCharge] = useState<string>('0');
+    const [editAtomIsotope, setEditAtomIsotope] = useState<string>('0');
+    const [editAtomRadicals, setEditAtomRadicals] = useState<string>('0');
     const [bracketType, setBracketType] = useState<'SRU' | 'COP'>('SRU');
     const [bracketPattern, setBracketPattern] =
         useState<'HT' | 'HH' | 'EU'>('HT');
@@ -2959,7 +2968,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
     // can show the current state and gate actions without re-querying.
     const [atomContextMenu, setAtomContextMenu] = useState<
         { x: number; y: number; atomIdx: number; el: string;
-          q: number; nh: number; nrad: number;
+          q: number; nh: number; nrad: number; iso: number;
           isRGroupOrAp: boolean;
           // Existing R-group numbers in the mol + the next free number, both
           // snapshotted at open time so the "Replace with > R-Group" submenu
@@ -5034,6 +5043,7 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                             q: ad.q ?? 0,
                             nh: ad.nh ?? 0,
                             nrad: ad.nrad ?? 0,
+                            iso: ad.iso ?? 0,
                             isRGroupOrAp:
                                 typeof ad.rlabel === 'number'
                                 || typeof ad.ap === 'number'
@@ -7743,6 +7753,24 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                 setStatus(`Replaced with R${n}`);
                             }} />
                     ))}
+                    {/* Edit Properties… — Qt ModifyAtomsMenu edit-properties
+                        action (atom_context_menu.cpp:70) opens the Edit Atom
+                        Properties dialog. Disabled on R-groups / attachment
+                        points (query-atom filter). */}
+                    <div style={styles.moreDivider} />
+                    <MoreItem
+                        label='Edit Properties…'
+                        testid='atom-ctx-edit-properties'
+                        disabled={atomContextMenu.isRGroupOrAp}
+                        onClick={() => {
+                            const am = atomContextMenu;
+                            setAtomContextMenu(null);
+                            setEditAtomEl(am.el);
+                            setEditAtomCharge(String(am.q));
+                            setEditAtomIsotope(String(am.iso));
+                            setEditAtomRadicals(String(am.nrad));
+                            setEditAtomDialog({ atomIdx: am.atomIdx });
+                        }} />
                     <div style={styles.moreDivider} />
                     <MoreItem label='Delete' testid='atom-ctx-delete'
                         onClick={() => {
@@ -8044,6 +8072,93 @@ export function Sketcher({ module: Module }: SketcherProps): JSX.Element {
                                         modelRef.current?.clearSelection();
                                         setStatus('added bracket subgroup');
                                     }
+                                }}>
+                                OK
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* Edit Atom Properties dialog — Qt EditAtomPropertiesDialog, Atom
+                page (dialog/edit_atom_properties.cpp). Element + isotope +
+                charge + unpaired electrons; applies via setAtomProperties in one
+                undo step. The Query page (allowed list / SMARTS / query
+                properties) is a deferred follow-up. */}
+            {editAtomDialog && (
+                <div style={styles.modalOverlay}
+                    data-testid='edit-atom-modal'
+                    onClick={(e) => {
+                        if (e.target === e.currentTarget) {
+                            setEditAtomDialog(null);
+                        }
+                    }}>
+                    <div style={styles.modalCard}>
+                        <div style={styles.modalTitle}>Edit Atom Properties</div>
+                        <label style={styles.modalLabel}>
+                            Element:
+                            <input
+                                type='text'
+                                style={styles.modalSelect}
+                                data-testid='edit-atom-element'
+                                value={editAtomEl}
+                                spellCheck={false}
+                                onChange={(e) => setEditAtomEl(e.target.value)}
+                            />
+                        </label>
+                        <label style={styles.modalLabel}>
+                            Isotope:
+                            <input
+                                type='number'
+                                style={styles.modalSelect}
+                                data-testid='edit-atom-isotope'
+                                value={editAtomIsotope}
+                                onChange={(e) =>
+                                    setEditAtomIsotope(e.target.value)}
+                            />
+                        </label>
+                        <label style={styles.modalLabel}>
+                            Charge:
+                            <input
+                                type='number'
+                                style={styles.modalSelect}
+                                data-testid='edit-atom-charge'
+                                value={editAtomCharge}
+                                onChange={(e) =>
+                                    setEditAtomCharge(e.target.value)}
+                            />
+                        </label>
+                        <label style={styles.modalLabel}>
+                            Unpaired Electrons:
+                            <input
+                                type='number'
+                                style={styles.modalSelect}
+                                data-testid='edit-atom-radicals'
+                                value={editAtomRadicals}
+                                onChange={(e) =>
+                                    setEditAtomRadicals(e.target.value)}
+                            />
+                        </label>
+                        <div style={styles.modalButtons}>
+                            <button type='button' style={styles.modalBtn}
+                                data-testid='edit-atom-cancel'
+                                onClick={() => setEditAtomDialog(null)}>
+                                Cancel
+                            </button>
+                            <button type='button' style={styles.modalBtnPrimary}
+                                data-testid='edit-atom-ok'
+                                onClick={() => {
+                                    const ad = editAtomDialog;
+                                    setEditAtomDialog(null);
+                                    const charge =
+                                        parseInt(editAtomCharge, 10) || 0;
+                                    const isotope = Math.max(0,
+                                        parseInt(editAtomIsotope, 10) || 0);
+                                    const radicals = Math.max(0,
+                                        parseInt(editAtomRadicals, 10) || 0);
+                                    modelRef.current?.setAtomProperties(
+                                        ad.atomIdx, editAtomEl.trim(),
+                                        charge, isotope, radicals);
+                                    setStatus('edited atom properties');
                                 }}>
                                 OK
                             </button>

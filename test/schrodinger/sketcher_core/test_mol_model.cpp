@@ -2118,6 +2118,46 @@ BOOST_AUTO_TEST_CASE(testModifySGroupUpdatesNotation)
     }
 }
 
+BOOST_AUTO_TEST_CASE(testSetAtomPropertiesSetsAllFieldsAndIsUndoable)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0.0, 0.0);
+    const auto base = stack.count();
+    const auto* a = m.mol().getAtomWithIdx(0);
+    BOOST_CHECK_EQUAL(a->getAtomicNum(), 6);
+
+    m.setAtomProperties(0, "N", -1, 15, 1);
+    BOOST_CHECK_EQUAL(stack.count(), base + 1);
+    BOOST_CHECK_EQUAL(a->getAtomicNum(), 7);
+    BOOST_CHECK_EQUAL(a->getFormalCharge(), -1);
+    BOOST_CHECK_EQUAL(a->getIsotope(), 15u);
+    BOOST_CHECK_EQUAL(a->getNumRadicalElectrons(), 1u);
+
+    stack.undo();
+    BOOST_CHECK_EQUAL(a->getAtomicNum(), 6);
+    BOOST_CHECK_EQUAL(a->getFormalCharge(), 0);
+    BOOST_CHECK_EQUAL(a->getIsotope(), 0u);
+    BOOST_CHECK_EQUAL(a->getNumRadicalElectrons(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(testSetAtomPropertiesNoOpOnBadInput)
+{
+    UndoStack stack;
+    MolModel m(&stack);
+    m.addAtom("C", 0.0, 0.0);
+    const auto base = stack.count();
+
+    // Unknown element symbol — no-op, no undo entry.
+    m.setAtomProperties(0, "Xx", 0, 0, 0);
+    BOOST_CHECK_EQUAL(stack.count(), base);
+    BOOST_CHECK_EQUAL(m.mol().getAtomWithIdx(0)->getAtomicNum(), 6);
+
+    // Out-of-range index — no-op.
+    m.setAtomProperties(9, "N", 0, 0, 0);
+    BOOST_CHECK_EQUAL(stack.count(), base);
+}
+
 BOOST_AUTO_TEST_CASE(testKekulizeBenzeneReplacesAromaticWithExplicitDoubles)
 {
     UndoStack stack;

@@ -1440,6 +1440,12 @@ class MolModelJS
     {
         m_model.setAtomElement(idx, atomic_num);
     }
+    void setAtomProperties(unsigned int idx, const std::string& element,
+                           int charge, unsigned int isotope,
+                           unsigned int radicals)
+    {
+        m_model.setAtomProperties(idx, element, charge, isotope, radicals);
+    }
     void setElementForSelectedAtoms(unsigned int atomic_num)
     {
         m_model.setElementForSelectedAtoms(atomic_num);
@@ -1785,6 +1791,7 @@ EMSCRIPTEN_BINDINGS(sketcher_lean)
         .function("setSelectedAtomsToHydrogenIsotope",
                   &MolModelJS::setSelectedAtomsToHydrogenIsotope)
         .function("setAtomElement", &MolModelJS::setAtomElement)
+        .function("setAtomProperties", &MolModelJS::setAtomProperties)
         .function("setElementForSelectedAtoms",
                   &MolModelJS::setElementForSelectedAtoms)
         .function("mutateAtomToRGroup", &MolModelJS::mutateAtomToRGroup)

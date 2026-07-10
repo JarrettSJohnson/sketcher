@@ -30,6 +30,7 @@
 #include <GraphMol/MonomerInfo.h>
 #include <GraphMol/QueryAtom.h>
 #include <GraphMol/QueryBond.h>
+#include <GraphMol/PeriodicTable.h>
 #include <GraphMol/QueryOps.h>
 #include <GraphMol/SubstanceGroup.h>
 
@@ -1531,6 +1532,34 @@ void MolModel::setAtomElement(unsigned int idx, unsigned int atomic_num)
         emitSignal(modelChanged);
     };
     doCommand(std::move(redo), std::move(undo), "Set element");
+}
+
+void MolModel::setAtomProperties(unsigned int idx, const std::string& element,
+                                 int charge, unsigned int isotope,
+                                 unsigned int radicals)
+{
+    if (idx >= m_mol.getNumAtoms()) {
+        return;
+    }
+    int atomic_num = 0;
+    try {
+        atomic_num =
+            RDKit::PeriodicTable::getTable()->getAtomicNumber(element);
+    } catch (...) {
+        return; // not a known chemical symbol — leave the atom untouched
+    }
+    // Snapshot-based undo: the atom's element/charge/isotope/radical all change
+    // together and the implicit-H cache re-perceives, so a whole-mol snapshot is
+    // the simplest correct restore.
+    doMutation(
+        [this, idx, atomic_num, charge, isotope, radicals] {
+            auto* a = m_mol.getAtomWithIdx(idx);
+            a->setAtomicNum(atomic_num);
+            a->setFormalCharge(charge);
+            a->setIsotope(isotope);
+            a->setNumRadicalElectrons(radicals);
+        },
+        "Edit atom properties");
 }
 
 void MolModel::mutateAtomToRGroup(unsigned int idx, unsigned int r_group_num)
